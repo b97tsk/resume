@@ -219,6 +219,12 @@ func main() {
 						return
 					}
 
+					defer func() {
+						if err != nil {
+							resp.Body.Close()
+						}
+					}()
+
 					if resp.StatusCode != 206 {
 						err = fmt.Errorf("range request failed: %v", resp.Status)
 						return
@@ -277,6 +283,7 @@ func main() {
 
 					go func() (err error) {
 						defer func() {
+							resp.Body.Close()
 							file.ReturnIncomplete(offset, size)
 							ob.Next(_CompleteMessage{err})
 							ob.Complete()
@@ -484,6 +491,7 @@ func _loadSingleLine(name string, max int) (line string, err error) {
 	if s.Scan() {
 		line = strings.TrimSpace(s.Text())
 	}
+	err = s.Err()
 	return
 }
 

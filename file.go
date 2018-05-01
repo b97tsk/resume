@@ -48,6 +48,8 @@ func (f *_DataFile) LoadHashFile() (err error) {
 	file, err := os.Open(name + "New")
 	if err != nil {
 		file, err = os.Open(name)
+	} else {
+		os.Rename(name+"New", name)
 	}
 	if err != nil {
 		return
