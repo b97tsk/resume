@@ -27,7 +27,7 @@ $ echo "http://www.example.com/" >Referer
 ### Specify user agent
 $ echo "Wget" >UserAgent
 ### Specify cookies
-# printf ".example.com\tTRUE\t/\tFALSE\t1552218794\tNAME\tVALUE\n" >Cookies
+# echo -e ".example.com\tTRUE\t/\tFALSE\t1552218794\tNAME\tVALUE" >Cookies
 ```
 
 # Files
