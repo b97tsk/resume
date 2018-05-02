@@ -75,7 +75,7 @@ func (f *_DataFile) LoadHashFile() (err error) {
 			f.file.Seek(offset, io.SeekStart)
 			_, err := io.ReadFull(f.file, buf[:p.Size])
 			if err == nil && crc32.ChecksumIEEE(buf[:p.Size]) == p.HashCode {
-				incomplete.DeleteRange(offset, offset+int64(p.Size)-1)
+				incomplete.DeleteRange(offset, offset+int64(p.Size))
 				completeSize += int64(p.Size)
 				continue
 			}
@@ -128,21 +128,21 @@ func (f *_DataFile) TakeIncomplete(max int64) (offset, size int64) {
 		max = _pieceSize
 	}
 	r := f.incomplete[0]
-	x, y := r.X, (r.X+max)/_pieceSize*_pieceSize-1
-	if x > y {
+	low, high := r.Low, (r.Low+max)/_pieceSize*_pieceSize
+	if low >= high {
 		return
 	}
-	if y > r.Y {
-		y = r.Y
+	if high > r.High {
+		high = r.High
 	}
-	f.incomplete.DeleteRange(x, y)
-	return x, y - x + 1
+	f.incomplete.DeleteRange(low, high)
+	return low, high - low
 }
 
 func (f *_DataFile) ReturnIncomplete(offset, size int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.incomplete.AddRange(offset, offset+size-1)
+	f.incomplete.AddRange(offset, offset+size)
 	if f.fileSize > 0 {
 		f.incomplete.DeleteRange(f.fileSize, math.MaxInt64)
 	}
@@ -163,7 +163,7 @@ func (f *_DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 		panic("WriteAt failed")
 	}
 
-	f.incomplete.DeleteRange(offset, offset+int64(n)-1)
+	f.incomplete.DeleteRange(offset, offset+int64(n))
 
 	completeSize := f.completeSize
 	defer func() {
