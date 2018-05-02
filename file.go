@@ -20,6 +20,7 @@ type _DataFile struct {
 	mu              sync.Mutex
 	name            string
 	file            *os.File
+	fileSize        int64
 	pieces          []_PieceInfo
 	incomplete      _RangeSet
 	completeSize    int64
@@ -99,6 +100,8 @@ func (f *_DataFile) SetFileSize(size int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	f.fileSize = size
+
 	pieceCount := int(math.Ceil(float64(size) / _pieceSize))
 	if len(f.pieces) != pieceCount {
 		pieces := f.pieces
@@ -140,24 +143,27 @@ func (f *_DataFile) ReturnIncomplete(offset, size int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.incomplete.AddRange(offset, offset+size-1)
+	if f.fileSize > 0 {
+		f.incomplete.DeleteRange(f.fileSize, math.MaxInt64)
+	}
 }
 
-func (f *_DataFile) WriteAt(b []byte, off int64) (n int, err error) {
+func (f *_DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	n, err = f.file.WriteAt(b, off)
+	n, err = f.file.WriteAt(b, offset)
 	if err != nil || n == 0 {
 		return
 	}
 
-	i := int(off / _pieceSize)
+	i := int(offset / _pieceSize)
 	p := &f.pieces[i]
-	if off != _pieceSize*int64(i)+int64(p.Size) {
+	if offset != _pieceSize*int64(i)+int64(p.Size) {
 		panic("WriteAt failed")
 	}
 
-	f.incomplete.DeleteRange(off, off+int64(n)-1)
+	f.incomplete.DeleteRange(offset, offset+int64(n)-1)
 
 	completeSize := f.completeSize
 	defer func() {

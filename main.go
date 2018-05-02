@@ -146,6 +146,21 @@ func main() {
 			},
 		)).MapTo(_PrintMessage{}))
 
+		takeIncomplete := func() (offset, size int64) {
+			splitSize := int64(_splitSize) * 1024 * 1024
+			if _contentLength > 0 {
+				size := (_contentLength - file.CompleteSize()) / int64(_concurrent)
+				if size < splitSize {
+					splitSize = size
+				}
+			}
+			return file.TakeIncomplete(splitSize)
+		}
+
+		returnIncomplete := func(offset, size int64) {
+			file.ReturnIncomplete(offset, size)
+		}
+
 		for {
 			switch {
 			case atomic.LoadUint32(&isPaused) != 0:
@@ -158,14 +173,7 @@ func main() {
 			case atomic.LoadUint32(&activeCount) >= uint32(_concurrent):
 
 			default:
-				splitSize := int64(_splitSize) * 1024 * 1024
-				if _contentLength > 0 {
-					size := (_contentLength - file.CompleteSize()) / int64(_concurrent)
-					if size < splitSize {
-						splitSize = size
-					}
-				}
-				offset, size := file.TakeIncomplete(splitSize)
+				offset, size := takeIncomplete()
 				if size == 0 {
 					if atomic.LoadUint32(&activeCount) == 0 {
 						return
@@ -179,7 +187,7 @@ func main() {
 					var err error
 					defer func() {
 						if err != nil {
-							file.ReturnIncomplete(offset, size)
+							returnIncomplete(offset, size)
 							ob.Next(_CompleteMessage{err})
 							ob.Complete()
 							cancel()
@@ -271,20 +279,23 @@ func main() {
 
 					file.SetFileSize(contentLength)
 
-					ob.Next(_ResponseMessage{})
-
 					body := io.Reader(resp.Body)
 					if shouldLimitSize {
-						if size > contentLength-offset {
-							size = contentLength - offset
+						returnIncomplete(offset, size)
+						previousOffset := offset
+						offset, size = takeIncomplete()
+						if offset != previousOffset {
+							panic("offset != previousOffset")
 						}
 						body = io.LimitReader(body, size)
 					}
 
+					ob.Next(_ResponseMessage{})
+
 					go func() (err error) {
 						defer func() {
 							resp.Body.Close()
-							file.ReturnIncomplete(offset, size)
+							returnIncomplete(offset, size)
 							ob.Next(_CompleteMessage{err})
 							ob.Complete()
 							cancel()
