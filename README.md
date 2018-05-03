@@ -38,11 +38,10 @@ $ echo "Wget" >UserAgent
 - **Cookies** (optional) contains the cookies. The file format is [Netscape format](https://unix.stackexchange.com/a/210282).
 ## Output Files
 - **File** contains all the data downloaded from the URL.
-> If this file is missing, download will start from the beginning.
 - **Hash** contains hash information about the File.
-> If this file is missing, download will start from the beginning.
 - **ContentLength** contains the content length of the URL.
 - **ContentMD5** contains the content MD5 of the URL if found in the response header.
 - **ETag** contains the entity tag of the URL if found in the response header.
 - **LastModified** contains the last modified time of the URL if found in the response header.
-> If ETag is found in the response header, this file will not be created.
+> If **File** or **Hash** is missing, download will start from the beginning.
+> If **ETag** is found in the response header, **LastModified** will not be created.
