@@ -45,7 +45,8 @@ type (
 	}
 
 	_CompleteMessage struct {
-		Err error
+		Err   error
+		Fatal bool
 	}
 )
 
@@ -194,11 +195,14 @@ func main() {
 				cr := func(parent context.Context, ob observable.Observer) (ctx context.Context, cancel context.CancelFunc) {
 					ctx, cancel = context.WithCancel(activeCtx)
 
-					var err error
+					var (
+						err   error
+						fatal bool
+					)
 					defer func() {
 						if err != nil {
 							returnIncomplete(offset, size)
-							ob.Next(_CompleteMessage{err})
+							ob.Next(_CompleteMessage{err, fatal})
 							ob.Complete()
 							cancel()
 						}
@@ -243,14 +247,21 @@ func main() {
 						}
 					}()
 
+					if resp.StatusCode == 200 {
+						err = errors.New("this server does not support partial requests")
+						fatal = true
+						return
+					}
+
 					if resp.StatusCode != 206 {
-						err = fmt.Errorf("range request failed: %v", resp.Status)
+						err = errors.New(resp.Status)
 						return
 					}
 
 					contentRange := resp.Header.Get("Content-Range")
 					if contentRange == "" {
 						err = errors.New("Content-Range not found")
+						fatal = true
 						return
 					}
 
@@ -258,27 +269,32 @@ func main() {
 					slice := re.FindStringSubmatch(contentRange)
 					if slice == nil {
 						err = fmt.Errorf("Content-Range unrecognized: %v", contentRange)
+						fatal = true
 						return
 					}
 
 					contentLength, _ := strconv.ParseInt(slice[3], 10, 0)
 					err = _setContentLength(contentLength)
 					if err != nil {
+						fatal = true
 						return
 					}
 					err = _setContentMD5(resp.Header.Get("Content-MD5"))
 					if err != nil {
+						fatal = true
 						return
 					}
 
 					if eTag := resp.Header.Get("ETag"); eTag != "" {
 						err = _setEntityTag(eTag)
 						if err != nil {
+							fatal = true
 							return
 						}
 					} else if lastModified := resp.Header.Get("Last-Modified"); lastModified != "" {
 						err = _setLastModified(lastModified)
 						if err != nil {
+							fatal = true
 							return
 						}
 					}
@@ -306,7 +322,7 @@ func main() {
 						defer func() {
 							resp.Body.Close()
 							returnIncomplete(offset, size)
-							ob.Next(_CompleteMessage{err})
+							ob.Next(_CompleteMessage{err, false})
 							ob.Complete()
 							cancel()
 						}()
@@ -369,6 +385,9 @@ func main() {
 								} else {
 									atomic.StoreUint32(&shouldDelay, 0)
 								}
+							}
+							if v.Err != nil && v.Fatal {
+								atomic.StoreUint32(&errorCount, uint32(_errorCapacity))
 							}
 
 							select {
