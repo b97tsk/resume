@@ -18,11 +18,13 @@ func (s *_RangeSet) AddRange(low, high int64) {
 	if low >= high {
 		return
 	}
+
 	i := sort.Search(len(*s), func(i int) bool { return (*s)[i].Low > low }) - 1
 	j := sort.Search(len(*s), func(i int) bool { return (*s)[i].High > high })
-	if i >= j {
+	if i == j {
 		return
 	}
+
 	var r _Range
 	if i >= 0 && low <= (*s)[i].High {
 		r.Low = (*s)[i].Low
@@ -36,16 +38,16 @@ func (s *_RangeSet) AddRange(low, high int64) {
 	} else {
 		r.High = high
 	}
-	{
-		if i < j {
-			(*s)[i] = r
-		} else {
-			*s = append(*s, _Range{})
-			copy((*s)[i+1:], (*s)[i:])
-			(*s)[i] = r
-		}
-		i++
+
+	if i < j {
+		(*s)[i] = r
+	} else {
+		*s = append(*s, _Range{})
+		copy((*s)[i+1:], (*s)[i:])
+		(*s)[i] = r
 	}
+	i++
+
 	if i < j {
 		*s = append((*s)[:i], (*s)[j:]...)
 	}
@@ -59,11 +61,10 @@ func (s *_RangeSet) DeleteRange(low, high int64) {
 	if low >= high {
 		return
 	}
+
 	i := sort.Search(len(*s), func(i int) bool { return (*s)[i].Low > low }) - 1
 	j := sort.Search(len(*s), func(i int) bool { return (*s)[i].High > high })
-	if i > j {
-		return
-	}
+
 	var r1, r2 _Range
 	if i >= 0 && low <= (*s)[i].High {
 		r1.Low, r1.High = (*s)[i].Low, low
@@ -74,14 +75,9 @@ func (s *_RangeSet) DeleteRange(low, high int64) {
 		r2.Low, r2.High = high, (*s)[j].High
 		j++
 	}
+
 	if r1.Low < r1.High {
-		if i < j {
-			(*s)[i] = r1
-		} else {
-			*s = append(*s, _Range{})
-			copy((*s)[i+1:], (*s)[i:])
-			(*s)[i] = r1
-		}
+		(*s)[i] = r1
 		i++
 	}
 	if r2.Low < r2.High {
@@ -94,6 +90,7 @@ func (s *_RangeSet) DeleteRange(low, high int64) {
 		}
 		i++
 	}
+
 	if i < j {
 		*s = append((*s)[:i], (*s)[j:]...)
 	}
