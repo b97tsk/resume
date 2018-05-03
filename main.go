@@ -26,11 +26,12 @@ import (
 )
 
 const (
-	_defaultSplitSize     = 80 // MiB
-	_defaultConcurrent    = 4
-	_defaultErrorCapacity = 4
-	_readBufferSize       = 4096
-	_readTimeout          = 30 * time.Second
+	_defaultSplitSize       = 80 // MiB
+	_defaultConcurrent      = 4
+	_defaultErrorCapacity   = 4
+	_defaultRequestInterval = 2 * time.Second
+	_readBufferSize         = 4096
+	_readTimeout            = 30 * time.Second
 )
 
 type (
@@ -48,22 +49,24 @@ type (
 )
 
 var (
-	_url           string
-	_referer       string
-	_userAgent     string
-	_contentLength int64
-	_contentMD5    string
-	_entityTag     string
-	_lastModified  string
-	_splitSize     uint
-	_concurrent    uint
-	_errorCapacity uint
+	_url             string
+	_referer         string
+	_userAgent       string
+	_contentLength   int64
+	_contentMD5      string
+	_entityTag       string
+	_lastModified    string
+	_splitSize       uint
+	_concurrent      uint
+	_errorCapacity   uint
+	_requestInterval time.Duration
 )
 
 func main() {
 	flag.UintVar(&_splitSize, "s", _defaultSplitSize, "split size (MiB)")
 	flag.UintVar(&_concurrent, "c", _defaultConcurrent, "maximum number of parallel downloads")
 	flag.UintVar(&_errorCapacity, "e", _defaultErrorCapacity, "maximum number of errors")
+	flag.DurationVar(&_requestInterval, "i", _defaultRequestInterval, "request interval")
 	flag.Parse()
 
 	rawurl, err := _loadURL(filepath.Join(".", "URL"))
@@ -130,7 +133,9 @@ func main() {
 
 		var (
 			stateChanged = make(chan struct{}, 1)
-			isPaused     uint32
+			beingDelayed <-chan time.Time
+			beingPaused  uint32
+			shouldDelay  uint32
 			errorCount   uint32
 		)
 
@@ -163,13 +168,17 @@ func main() {
 
 		for {
 			switch {
-			case atomic.LoadUint32(&isPaused) != 0:
+			case atomic.LoadUint32(&beingPaused) != 0:
+			case beingDelayed != nil:
+
+			case atomic.LoadUint32(&shouldDelay) != 0:
+				atomic.StoreUint32(&shouldDelay, 0)
+				beingDelayed = time.After(_requestInterval)
 
 			case atomic.LoadUint32(&errorCount) >= uint32(_errorCapacity):
 				if atomic.LoadUint32(&activeCount) == 0 {
 					return
 				}
-
 			case atomic.LoadUint32(&activeCount) >= uint32(_concurrent):
 
 			default:
@@ -342,7 +351,7 @@ func main() {
 
 						case _ResponseMessage:
 							hasResponseMessage = true
-							atomic.StoreUint32(&isPaused, 0)
+							atomic.StoreUint32(&beingPaused, 0)
 							atomic.StoreUint32(&errorCount, 0)
 
 							select {
@@ -353,9 +362,11 @@ func main() {
 						case _CompleteMessage:
 							atomic.AddUint32(&activeCount, math.MaxUint32)
 							if !hasResponseMessage {
-								atomic.StoreUint32(&isPaused, 0)
+								atomic.StoreUint32(&beingPaused, 0)
 								if v.Err != nil {
 									atomic.AddUint32(&errorCount, 1)
+								} else {
+									atomic.StoreUint32(&shouldDelay, 0)
 								}
 							}
 
@@ -367,7 +378,8 @@ func main() {
 					}
 				}
 
-				atomic.StoreUint32(&isPaused, 1)
+				atomic.StoreUint32(&beingPaused, 1)
+				atomic.StoreUint32(&shouldDelay, 1)
 				atomic.AddUint32(&activeCount, 1)
 
 				ob.Next(observable.Create(cr).Do(observable.ObserverFunc(do)))
@@ -377,6 +389,8 @@ func main() {
 			case <-activeDone:
 				return
 			case <-stateChanged:
+			case <-beingDelayed:
+				beingDelayed = nil
 			}
 		}
 	}
