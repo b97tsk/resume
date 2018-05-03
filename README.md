@@ -31,16 +31,18 @@ $ echo "Wget" >UserAgent
 ```
 
 # Files
-* **URL** (mandatory) contains the URL you want to download.
-* **Referer** (optional) contains the referer.
-* **UserAgent** (optional) contains the user agent.
-* **Cookies** (optional) contains the cookies. The file format is [Netscape format](https://unix.stackexchange.com/a/210282).
-* **File** contains all the data downloaded from the URL.
+## Input Files
+- **URL** (mandatory) contains the URL you want to download.
+- **Referer** (optional) contains the referer.
+- **UserAgent** (optional) contains the user agent.
+- **Cookies** (optional) contains the cookies. The file format is [Netscape format](https://unix.stackexchange.com/a/210282).
+## Output Files
+- **File** contains all the data downloaded from the URL.
 If this file is missing, download will start from the beginning.
-* **Hash** contains hash information about the File.
+- **Hash** contains hash information about the File.
 If this file is missing, download will start from the beginning.
-* **ContentLength** contains the content length of the URL.
-* **ContentMD5** contains the content MD5 of the URL if found in the response header.
-* **ETag** contains the entity tag of the URL if found in the response header.
-* **LastModified** contains the last modified time of the URL if found in the response header.
+- **ContentLength** contains the content length of the URL.
+- **ContentMD5** contains the content MD5 of the URL if found in the response header.
+- **ETag** contains the entity tag of the URL if found in the response header.
+- **LastModified** contains the last modified time of the URL if found in the response header.
 If ETag is found in the response header, this file will not be created.
