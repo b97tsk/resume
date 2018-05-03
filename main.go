@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -400,7 +401,10 @@ func main() {
 		Size int64
 	}
 
-	const statCapacity = 5
+	const (
+		statCapacity = 30
+		instantCount = 5
+	)
 
 	var (
 		statList    = make([]stat, 0, statCapacity)
@@ -408,10 +412,9 @@ func main() {
 	)
 
 	do := func(t observable.Notification) {
+		shouldPrint := false
 		switch {
 		case t.HasValue:
-			shouldPrint := false
-
 			switch v := t.Value.(type) {
 			case _ProgressMessage:
 				statCurrent.Size += int64(v.Just)
@@ -426,47 +429,64 @@ func main() {
 				shouldPrint = true
 
 			case _CompleteMessage:
-				switch v.Err {
+				unwrappedErr := v.Err
+				switch e := unwrappedErr.(type) {
+				case *net.OpError:
+					unwrappedErr = e.Err
+				case *url.Error:
+					unwrappedErr = e.Err
+				}
+				switch unwrappedErr {
 				case nil, io.ErrUnexpectedEOF, context.Canceled:
 				default:
 					fmt.Print("\r\033[K")
-					fmt.Println(v.Err)
+					fmt.Println(unwrappedErr)
 					shouldPrint = true
 				}
 			}
-
-			if shouldPrint {
-				fmt.Print("\r\033[K")
-
-				if _contentLength > 0 {
-					const length = 20
-					n := int(float64(file.CompleteSize()) / float64(_contentLength) * 100)
-					fmt.Printf("%v%% [%-*s]", n, length, strings.Repeat("=", length*n/100))
-				}
-
-				activeCount := atomic.LoadUint32(&activeCount)
-				if activeCount > 0 {
-					stat := statCurrent
-					for _, s := range statList {
-						stat.Size += s.Size
-					}
-					if len(statList) > 0 {
-						stat.Time = statList[0].Time
-					}
-					bytes := float64(stat.Size)
-					seconds := time.Since(stat.Time).Seconds()
-					fmt.Printf(" DL:%v %vB/s", activeCount, _formatBytes(int64(bytes/seconds)))
-				}
-			}
-
-		case t.HasError:
-
 		default:
+			shouldPrint = true
+		}
+		if shouldPrint {
 			fmt.Print("\r\033[K")
+
 			if _contentLength > 0 {
 				const length = 20
 				n := int(float64(file.CompleteSize()) / float64(_contentLength) * 100)
-				fmt.Printf("%v%% [%-*s]\n", n, length, strings.Repeat("=", length*n/100))
+				fmt.Printf("%v%% [%-*s] ", n, length, strings.Repeat("=", length*n/100))
+			}
+
+			fmt.Printf("DL:%v", atomic.LoadUint32(&activeCount))
+
+			if activeCount > 0 {
+				stat := statCurrent
+				statList := statList
+				if len(statList) >= instantCount {
+					statList = statList[len(statList)-instantCount:]
+				}
+				if len(statList) > 0 {
+					stat.Time = statList[0].Time
+				}
+				for _, s := range statList {
+					stat.Size += s.Size
+				}
+				speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
+				fmt.Printf(" %vB/s", _formatBytes(int64(speed)))
+			}
+
+			if _contentLength > 0 {
+				stat := statCurrent
+				if len(statList) > 0 {
+					stat.Time = statList[0].Time
+				}
+				for _, s := range statList {
+					stat.Size += s.Size
+				}
+				if stat.Size > 0 {
+					speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
+					remaining := float64(_contentLength - file.CompleteSize())
+					fmt.Printf(" %v", time.Duration(remaining/speed)*time.Second)
+				}
 			}
 		}
 	}
