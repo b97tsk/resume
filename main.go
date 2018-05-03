@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -83,7 +84,7 @@ func main() {
 
 	contentLength, err := _loadSingleLine(filepath.Join(".", "ContentLength"), 16)
 	if err == nil {
-		i, err := strconv.ParseInt(contentLength, 10, 0)
+		i, err := strconv.ParseInt(contentLength, 10, 64)
 		if err == nil {
 			_contentLength = i
 		}
@@ -273,7 +274,7 @@ func main() {
 						return
 					}
 
-					contentLength, _ := strconv.ParseInt(slice[3], 10, 0)
+					contentLength, _ := strconv.ParseInt(slice[3], 10, 64)
 					err = _setContentLength(contentLength)
 					if err != nil {
 						fatal = true
@@ -426,8 +427,10 @@ func main() {
 	)
 
 	var (
-		statList    = make([]stat, 0, statCapacity)
-		statCurrent = stat{time.Now(), 0}
+		statList      = make([]stat, 0, statCapacity)
+		statCurrent   = stat{time.Now(), 0}
+		firstRecvTime time.Time
+		totalReceived int64
 	)
 
 	do := func(t observable.Notification) {
@@ -437,6 +440,10 @@ func main() {
 			switch v := t.Value.(type) {
 			case _ProgressMessage:
 				statCurrent.Size += int64(v.Just)
+				if totalReceived == 0 {
+					firstRecvTime = time.Now()
+				}
+				totalReceived += int64(v.Just)
 
 			case _PrintMessage:
 				if len(statList) == statCapacity {
@@ -459,7 +466,7 @@ func main() {
 				case nil, io.ErrUnexpectedEOF, context.Canceled:
 				default:
 					fmt.Print("\r\033[K")
-					fmt.Println(unwrappedErr)
+					log.Println(unwrappedErr)
 					shouldPrint = true
 				}
 			}
@@ -472,12 +479,19 @@ func main() {
 			if _contentLength > 0 {
 				const length = 20
 				n := int(float64(file.CompleteSize()) / float64(_contentLength) * 100)
-				fmt.Printf("%v%% [%-*s] ", n, length, strings.Repeat("=", length*n/100))
+				s := strings.Repeat("=", length*n/100)
+				if len(s) < length {
+					s += ">"
+				}
+				if len(s) < length {
+					s += strings.Repeat("-", length-len(s))
+				}
+				fmt.Printf("%v%% [%v] ", n, s)
 			}
 
 			fmt.Printf("DL:%v", atomic.LoadUint32(&activeCount))
 
-			if activeCount > 0 {
+			{
 				stat := statCurrent
 				statList := statList
 				if len(statList) >= instantCount {
@@ -508,6 +522,15 @@ func main() {
 				}
 			}
 		}
+		if !t.HasValue && totalReceived > 0 {
+			timeUsed := time.Since(firstRecvTime)
+			fmt.Printf(
+				"\nreceived %vB in %v, %vB/s\n",
+				_formatBytes(totalReceived),
+				timeUsed.Truncate(time.Second),
+				_formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
+			)
+		}
 	}
 
 	ctx, _ := observable.Create(cr).MergeAll().Subscribe(topCtx, observable.ObserverFunc(do))
@@ -527,21 +550,18 @@ func main() {
 }
 
 func _formatBytes(n int64) string {
-	if n < 1 {
-		return "0"
-	}
 	if n < 1024 {
-		return "<1K"
+		return strconv.FormatInt(n, 10)
 	}
 	kilobytes := int64(math.Ceil(float64(n) / 1024))
 	if kilobytes < 1000 {
-		return fmt.Sprintf("%vK", kilobytes)
+		return strconv.FormatInt(kilobytes, 10) + "K"
 	}
 	if kilobytes < 102400 {
 		return fmt.Sprintf("%.1fM", float64(n)/(1024*1024))
 	}
 	megabytes := int64(math.Ceil(float64(n) / (1024 * 1024)))
-	return fmt.Sprintf("%vM", megabytes)
+	return strconv.FormatInt(megabytes, 10) + "M"
 }
 
 func _loadSingleLine(name string, max int) (line string, err error) {
@@ -588,7 +608,7 @@ func _loadCookies(name string) (jar http.CookieJar, err error) {
 			continue
 		}
 
-		expires, err := strconv.ParseInt(fields[4], 10, 0)
+		expires, err := strconv.ParseInt(fields[4], 10, 64)
 		if err != nil {
 			continue
 		}
@@ -611,7 +631,7 @@ func _loadCookies(name string) (jar http.CookieJar, err error) {
 			host = host[1:]
 		}
 
-		u, err := url.Parse(fmt.Sprintf("%v://%v/", scheme, host))
+		u, err := url.Parse(scheme + "://" + host + "/")
 		if err != nil {
 			continue
 		}
