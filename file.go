@@ -213,24 +213,42 @@ func (f *_DataFile) syncLocked() error {
 	if err != nil {
 		return err
 	}
+	defer os.Remove(name + "New")
 
-	nerr := gob.NewEncoder(file).Encode(&f.pieces)
-	serr := file.Sync()
-	cerr := file.Close()
+	err1 := gob.NewEncoder(file).Encode(&f.pieces)
+	err2 := file.Sync()
+	err3 := file.Close()
+	err4 := f.file.Sync()
 
-	if nerr == nil && serr == nil && cerr == nil {
-		os.Rename(name+"New", name)
+	if err1 != nil {
+		return err1
+	}
+	if err2 != nil {
+		return err2
+	}
+	if err3 != nil {
+		return err3
 	}
 
-	return f.file.Sync()
+	os.Rename(name+"New", name)
+
+	return err4
 }
 
 func (f *_DataFile) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	var err1 error
 	if f.recentIncrement > 0 {
 		f.recentIncrement = 0
-		f.syncLocked()
+		err1 = f.syncLocked()
 	}
-	return f.file.Close()
+
+	err2 := f.file.Close()
+
+	if err1 != nil {
+		return err1
+	}
+	return err2
 }

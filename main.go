@@ -75,41 +75,73 @@ func main() {
 
 	rawurl, err := _loadURL(filepath.Join(".", "URL"))
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		return
 	}
 	_url = rawurl
 
-	_referer, _ = _loadSingleLine(filepath.Join(".", "Referer"), 1024)
-	_userAgent, _ = _loadSingleLine(filepath.Join(".", "UserAgent"), 1024)
-
-	contentLength, err := _loadSingleLine(filepath.Join(".", "ContentLength"), 16)
-	if err == nil {
-		i, err := strconv.ParseInt(contentLength, 10, 64)
+	if err == nil || os.IsNotExist(err) {
+		_referer, err = _loadSingleLine(filepath.Join(".", "Referer"), 1024)
+	}
+	if err == nil || os.IsNotExist(err) {
+		_userAgent, err = _loadSingleLine(filepath.Join(".", "UserAgent"), 1024)
+	}
+	if err == nil || os.IsNotExist(err) {
+		var contentLength string
+		contentLength, err = _loadSingleLine(filepath.Join(".", "ContentLength"), 16)
 		if err == nil {
-			_contentLength = i
+			_contentLength, err = strconv.ParseInt(contentLength, 10, 64)
+			if _contentLength < 1 {
+				log.Println("ContentLength is invalid")
+				return
+			}
+		}
+	}
+	if err == nil || os.IsNotExist(err) {
+		_contentMD5, err = _loadSingleLine(filepath.Join(".", "ContentMD5"), 36)
+	}
+	if err == nil || os.IsNotExist(err) {
+		_entityTag, err = _loadSingleLine(filepath.Join(".", "ETag"), 64)
+	}
+	if err == nil || os.IsNotExist(err) {
+		_lastModified, err = _loadSingleLine(filepath.Join(".", "LastModified"), 36)
+	}
+
+	client := http.DefaultClient
+	if err == nil || os.IsNotExist(err) {
+		var jar http.CookieJar
+		jar, err = _loadCookies(filepath.Join(".", "Cookies"))
+		if err == nil {
+			client = &http.Client{Jar: jar}
 		}
 	}
 
-	_contentMD5, _ = _loadSingleLine(filepath.Join(".", "ContentMD5"), 36)
-	_entityTag, _ = _loadSingleLine(filepath.Join(".", "ETag"), 64)
-	_lastModified, _ = _loadSingleLine(filepath.Join(".", "LastModified"), 36)
-
-	jar, _ := _loadCookies(filepath.Join(".", "Cookies"))
-	client := &http.Client{Jar: jar}
-
 	fileName := filepath.Join(".", "File")
 	fileSize := int64(0)
-	if info, err := os.Stat(fileName); err == nil {
-		fileSize = info.Size()
+	if err == nil || os.IsNotExist(err) {
+		var info os.FileInfo
+		info, err = os.Stat(fileName)
+		if err == nil {
+			fileSize = info.Size()
+		}
+	}
+
+	if err != nil && !os.IsNotExist(err) {
+		log.Println(err)
+		return
 	}
 
 	file, err := _openDataFile(fileName)
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		return
 	}
-	defer file.Close()
+	defer func() {
+		err := file.Close()
+		if err != nil {
+			log.Println(err)
+		}
+	}()
 
 	if fileSize > 0 {
 		fmt.Print("verifying...")
@@ -226,7 +258,11 @@ func main() {
 			default:
 				offset, size := takeIncomplete()
 				if size == 0 {
-					return
+					if atomic.LoadUint32(&activeCount) == 0 {
+						// return only when activeCount==0, since new request may be needed due to errors
+						return
+					}
+					break
 				}
 
 				addActiveCount(1)
@@ -260,12 +296,6 @@ func main() {
 					} else {
 						req.Header.Set("Range", fmt.Sprintf("bytes=%v-", offset))
 						shouldLimitSize = true
-					}
-
-					if _entityTag != "" {
-						req.Header.Set("If-Range", _entityTag)
-					} else if _lastModified != "" {
-						req.Header.Set("If-Range", _lastModified)
 					}
 
 					if _referer != "" {
@@ -558,12 +588,16 @@ func main() {
 					fmt.Printf(" %v", time.Duration(remaining/speed)*time.Second)
 				}
 			}
+
+			if !t.HasValue {
+				// about to exit, keep this status line
+				fmt.Println()
+			}
 		}
 		if !t.HasValue && totalReceived > 0 {
 			timeUsed := time.Since(firstRecvTime)
-			fmt.Println()
 			log.Printf(
-				"received %vB in %v, %vB/s\n",
+				"recv %vB in %v, %vB/s\n",
 				_formatBytes(totalReceived),
 				timeUsed.Truncate(time.Second),
 				_formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
