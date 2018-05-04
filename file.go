@@ -148,13 +148,13 @@ func (f *_DataFile) ReturnIncomplete(offset, size int64) {
 	}
 }
 
-func (f *_DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
+func (f *_DataFile) WriteAt(b []byte, offset int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	n, err = f.file.WriteAt(b, offset)
-	if err != nil || n == 0 {
-		return
+	n, err := f.file.WriteAt(b, offset)
+	if err != nil {
+		panic(err)
 	}
 
 	i := int(offset / _pieceSize)
@@ -205,7 +205,6 @@ func (f *_DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 			p.Size = uint32(len(b))
 		}
 	}
-	return
 }
 
 func (f *_DataFile) syncLocked() error {

@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -134,13 +135,40 @@ func main() {
 			cancel()
 		}()
 
-		var (
-			stateChanged = make(chan struct{}, 1)
-			beingDelayed <-chan time.Time
-			beingPaused  uint32
-			shouldDelay  uint32
-			errorCount   uint32
-		)
+		queuedWorks := observable.NewSubject()
+		subscription, _ := queuedWorks.AsObservable().Congest(int(_concurrent*2)).Subscribe(ctx, observable.ObserverFunc(
+			func(t observable.Notification) {
+				if t.HasValue {
+					t.Value.(func())()
+				}
+			},
+		))
+		defer func() {
+			queuedWorks.Complete()
+			<-subscription.Done()
+		}()
+
+		bufferPool := sync.Pool{
+			New: func() interface{} { return make([]byte, _readBufferSize) },
+		}
+
+		readAndWrite := func(body io.Reader, offset int64) (n int, err error) {
+			buf := bufferPool.Get().([]byte)
+			n, err = body.Read(buf)
+			if n > 0 {
+				queuedWorks.Next(func() {
+					file.WriteAt(buf[:n], offset)
+					bufferPool.Put(buf)
+				})
+			}
+			return
+		}
+
+		waitWriteDone := func() {
+			q := make(chan struct{})
+			queuedWorks.Next(func() { close(q) })
+			<-q
+		}
 
 		ob.Next(observable.Interval(time.Second).TakeUntil(observable.Create(
 			func(ctx context.Context, ob observable.Observer) (context.Context, context.CancelFunc) {
@@ -153,6 +181,14 @@ func main() {
 				return ctx, cancel
 			},
 		)).MapTo(_PrintMessage{}))
+
+		var (
+			errorCount   uint32
+			beingPaused  uint32
+			shouldDelay  uint32
+			beingDelayed <-chan time.Time
+			stateChanged = make(chan struct{}, 1)
+		)
 
 		takeIncomplete := func() (offset, size int64) {
 			splitSize := int64(_splitSize) * 1024 * 1024
@@ -169,29 +205,33 @@ func main() {
 			file.ReturnIncomplete(offset, size)
 		}
 
+		activeWaitGroup := sync.WaitGroup{}
+		defer activeWaitGroup.Wait()
+
+		addActiveCount := func(delta int) {
+			atomic.AddUint32(&activeCount, uint32(delta))
+			activeWaitGroup.Add(delta)
+		}
+
 		for {
 			switch {
+			case atomic.LoadUint32(&errorCount) >= uint32(_errorCapacity):
+				return
+			case atomic.LoadUint32(&activeCount) >= uint32(_concurrent):
 			case atomic.LoadUint32(&beingPaused) != 0:
-			case beingDelayed != nil:
-
 			case atomic.LoadUint32(&shouldDelay) != 0:
 				atomic.StoreUint32(&shouldDelay, 0)
 				beingDelayed = time.After(_requestInterval)
-
-			case atomic.LoadUint32(&errorCount) >= uint32(_errorCapacity):
-				if atomic.LoadUint32(&activeCount) == 0 {
-					return
-				}
-			case atomic.LoadUint32(&activeCount) >= uint32(_concurrent):
-
+			case beingDelayed != nil:
 			default:
 				offset, size := takeIncomplete()
 				if size == 0 {
-					if atomic.LoadUint32(&activeCount) == 0 {
-						return
-					}
-					break
+					return
 				}
+
+				addActiveCount(1)
+				atomic.StoreUint32(&beingPaused, 1)
+				atomic.StoreUint32(&shouldDelay, 1)
 
 				cr := func(parent context.Context, ob observable.Observer) (ctx context.Context, cancel context.CancelFunc) {
 					ctx, cancel = context.WithCancel(activeCtx)
@@ -320,32 +360,33 @@ func main() {
 					ob.Next(_ResponseMessage{})
 
 					go func() (err error) {
+						var (
+							readTimer        = time.AfterFunc(_readTimeout, cancel)
+							shouldResetTimer bool
+							shouldWaitWrite  bool
+						)
+
 						defer func() {
 							resp.Body.Close()
+							if shouldWaitWrite {
+								waitWriteDone()
+							}
 							returnIncomplete(offset, size)
 							ob.Next(_CompleteMessage{err, false})
 							ob.Complete()
 							cancel()
 						}()
 
-						var (
-							buf              = make([]byte, _readBufferSize)
-							readTimer        = time.AfterFunc(_readTimeout, cancel)
-							shouldResetTimer bool
-						)
-
 						for {
 							if shouldResetTimer {
 								readTimer.Reset(_readTimeout)
 							}
-							n, err := body.Read(buf)
+							n, err := readAndWrite(body, offset)
 							readTimer.Stop()
 							shouldResetTimer = true
 							if n > 0 {
-								if _, err := file.WriteAt(buf[:n], offset); err != nil {
-									return err
-								}
 								offset, size = offset+int64(n), size-int64(n)
+								shouldWaitWrite = true
 								ob.Next(_ProgressMessage{n})
 							}
 							if err != nil {
@@ -378,7 +419,7 @@ func main() {
 							}
 
 						case _CompleteMessage:
-							atomic.AddUint32(&activeCount, math.MaxUint32)
+							addActiveCount(-1)
 							if !hasResponseMessage {
 								atomic.StoreUint32(&beingPaused, 0)
 								if v.Err != nil {
@@ -398,10 +439,6 @@ func main() {
 						}
 					}
 				}
-
-				atomic.StoreUint32(&beingPaused, 1)
-				atomic.StoreUint32(&shouldDelay, 1)
-				atomic.AddUint32(&activeCount, 1)
 
 				ob.Next(observable.Create(cr).Do(observable.ObserverFunc(do)))
 			}
@@ -465,7 +502,7 @@ func main() {
 				switch unwrappedErr {
 				case nil, io.ErrUnexpectedEOF, context.Canceled:
 				default:
-					fmt.Print("\r\033[K")
+					fmt.Print("\033[1K\r")
 					log.Println(unwrappedErr)
 					shouldPrint = true
 				}
@@ -474,7 +511,7 @@ func main() {
 			shouldPrint = true
 		}
 		if shouldPrint {
-			fmt.Print("\r\033[K")
+			fmt.Print("\033[1K\r")
 
 			if _contentLength > 0 {
 				const length = 20
@@ -524,8 +561,9 @@ func main() {
 		}
 		if !t.HasValue && totalReceived > 0 {
 			timeUsed := time.Since(firstRecvTime)
-			fmt.Printf(
-				"\nreceived %vB in %v, %vB/s\n",
+			fmt.Println()
+			log.Printf(
+				"received %vB in %v, %vB/s\n",
 				_formatBytes(totalReceived),
 				timeUsed.Truncate(time.Second),
 				_formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
