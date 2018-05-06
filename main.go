@@ -56,10 +56,6 @@ var (
 	_url             string
 	_referer         string
 	_userAgent       string
-	_contentLength   int64
-	_contentMD5      string
-	_entityTag       string
-	_lastModified    string
 	_splitSize       uint
 	_concurrent      uint
 	_errorCapacity   uint
@@ -81,30 +77,10 @@ func main() {
 	_url = rawurl
 
 	if err == nil || os.IsNotExist(err) {
-		_referer, err = _loadSingleLine(filepath.Join(".", "Referer"), 1024)
+		_referer, err = _loadURL(filepath.Join(".", "Referer"))
 	}
 	if err == nil || os.IsNotExist(err) {
 		_userAgent, err = _loadSingleLine(filepath.Join(".", "UserAgent"), 1024)
-	}
-	if err == nil || os.IsNotExist(err) {
-		var contentLength string
-		contentLength, err = _loadSingleLine(filepath.Join(".", "ContentLength"), 16)
-		if err == nil {
-			_contentLength, err = strconv.ParseInt(contentLength, 10, 64)
-			if _contentLength < 1 {
-				log.Println("ContentLength is invalid")
-				return
-			}
-		}
-	}
-	if err == nil || os.IsNotExist(err) {
-		_contentMD5, err = _loadSingleLine(filepath.Join(".", "ContentMD5"), 36)
-	}
-	if err == nil || os.IsNotExist(err) {
-		_entityTag, err = _loadSingleLine(filepath.Join(".", "ETag"), 64)
-	}
-	if err == nil || os.IsNotExist(err) {
-		_lastModified, err = _loadSingleLine(filepath.Join(".", "LastModified"), 36)
 	}
 
 	client := http.DefaultClient
@@ -145,10 +121,19 @@ func main() {
 
 	if fileSize > 0 {
 		fmt.Print("verifying...")
-		file.LoadHashFile()
+		err := file.LoadHashFile()
+		fmt.Print("\033[1K\r")
+		if err != nil && !os.IsNotExist(err) {
+			log.Println(err)
+			return
+		}
 	}
-	if _contentLength > 0 {
-		file.SetFileSize(_contentLength)
+
+	if file.FileSize() > 0 {
+		fmt.Println("File Size:", file.FileSize())
+	}
+	if file.FileMD5() != "" {
+		fmt.Println("File MD5:", file.FileMD5())
 	}
 
 	topCtx := context.TODO()
@@ -224,8 +209,8 @@ func main() {
 
 		takeIncomplete := func() (offset, size int64) {
 			splitSize := int64(_splitSize) * 1024 * 1024
-			if _contentLength > 0 {
-				size := (_contentLength - file.CompleteSize()) / int64(_concurrent)
+			if file.FileSize() > 0 {
+				size := (file.FileSize() - file.CompleteSize()) / int64(_concurrent)
 				if size < splitSize {
 					splitSize = size
 				}
@@ -291,7 +276,7 @@ func main() {
 					}
 
 					shouldLimitSize := false
-					if _contentLength > 0 {
+					if file.FileSize() > 0 {
 						req.Header.Set("Range", fmt.Sprintf("bytes=%v-%v", offset, offset+size-1))
 					} else {
 						req.Header.Set("Range", fmt.Sprintf("bytes=%v-", offset))
@@ -344,37 +329,72 @@ func main() {
 						return
 					}
 
+					shouldSync := false
+
 					contentLength, _ := strconv.ParseInt(slice[3], 10, 64)
-					err = _setContentLength(contentLength)
-					if err != nil {
-						fatal = true
-						return
-					}
-					err = _setContentMD5(resp.Header.Get("Content-MD5"))
-					if err != nil {
+					switch file.FileSize() {
+					case contentLength:
+					case 0:
+						shouldSync = true
+						file.SetFileSize(contentLength)
+						fmt.Print("\033[1K\r")
+						fmt.Println("Content-Length:", contentLength)
+					default:
+						fmt.Print("\033[1K\r")
+						fmt.Println("Content-Length:", contentLength)
+						err = errors.New("Content-Length mismatched")
 						fatal = true
 						return
 					}
 
+					if contentMD5 := resp.Header.Get("Content-MD5"); contentMD5 != "" {
+						switch file.FileMD5() {
+						case contentMD5:
+						case "":
+							shouldSync = true
+							file.SetFileMD5(contentMD5)
+							fmt.Print("\033[1K\r")
+							fmt.Println("Content-MD5:", contentMD5)
+						default:
+							fmt.Print("\033[1K\r")
+							fmt.Println("Content-MD5:", contentMD5)
+							err = errors.New("Content-MD5 mismatched")
+							fatal = true
+							return
+						}
+					}
+
 					if eTag := resp.Header.Get("ETag"); eTag != "" {
-						err = _setEntityTag(eTag)
-						if err != nil {
+						switch file.EntityTag() {
+						case eTag:
+						case "":
+							shouldSync = true
+							file.SetEntityTag(eTag)
+						default:
+							err = errors.New("ETag mismatched")
 							fatal = true
 							return
 						}
 					} else if lastModified := resp.Header.Get("Last-Modified"); lastModified != "" {
-						err = _setLastModified(lastModified)
-						if err != nil {
+						switch file.LastModified() {
+						case lastModified:
+						case "":
+							shouldSync = true
+							file.SetLastModified(lastModified)
+						default:
+							err = errors.New("Last-Modified mismatched")
 							fatal = true
 							return
 						}
+					}
+
+					if shouldSync {
+						file.Sync()
 					}
 
 					if req != resp.Request {
 						_url = resp.Request.URL.String()
 					}
-
-					file.SetFileSize(contentLength)
 
 					body := io.Reader(resp.Body)
 					if shouldLimitSize {
@@ -543,9 +563,9 @@ func main() {
 		if shouldPrint {
 			fmt.Print("\033[1K\r")
 
-			if _contentLength > 0 {
+			if file.FileSize() > 0 {
 				const length = 20
-				n := int(float64(file.CompleteSize()) / float64(_contentLength) * 100)
+				n := int(float64(file.CompleteSize()) / float64(file.FileSize()) * 100)
 				s := strings.Repeat("=", length*n/100)
 				if len(s) < length {
 					s += ">"
@@ -574,7 +594,7 @@ func main() {
 				fmt.Printf(" %vB/s", _formatBytes(int64(speed)))
 			}
 
-			if _contentLength > 0 {
+			if file.FileSize() > 0 {
 				stat := statCurrent
 				if len(statList) > 0 {
 					stat.Time = statList[0].Time
@@ -584,7 +604,7 @@ func main() {
 				}
 				if stat.Size > 0 {
 					speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
-					remaining := float64(_contentLength - file.CompleteSize())
+					remaining := float64(file.FileSize() - file.CompleteSize())
 					fmt.Printf(" %v", time.Duration(remaining/speed)*time.Second)
 				}
 			}
@@ -719,68 +739,4 @@ func _loadCookies(name string) (jar http.CookieJar, err error) {
 		jar.SetCookies(u, []*http.Cookie{&cookie})
 	}
 	return
-}
-
-func _storeSingleLine(name string, line string) error {
-	file, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, _filePerm)
-	if err != nil {
-		return err
-	}
-	_, werr := file.WriteString(line)
-	serr := file.Sync()
-	cerr := file.Close()
-	if werr != nil {
-		return werr
-	}
-	if serr != nil {
-		return serr
-	}
-	return cerr
-}
-
-func _setContentLength(contentLength int64) error {
-	if _contentLength != contentLength {
-		if _contentLength != 0 {
-			return errors.New("Content-Length mismatched")
-		}
-		_contentLength = contentLength
-		_storeSingleLine(
-			filepath.Join(".", "ContentLength"),
-			strconv.FormatInt(_contentLength, 10),
-		)
-	}
-	return nil
-}
-
-func _setContentMD5(contentMD5 string) error {
-	if _contentMD5 != contentMD5 {
-		if _contentMD5 != "" {
-			return errors.New("Content-MD5 mismatched")
-		}
-		_contentMD5 = contentMD5
-		_storeSingleLine(filepath.Join(".", "ContentMD5"), _contentMD5)
-	}
-	return nil
-}
-
-func _setEntityTag(eTag string) error {
-	if _entityTag != eTag {
-		if _entityTag != "" {
-			return errors.New("ETag mismatched")
-		}
-		_entityTag = eTag
-		_storeSingleLine(filepath.Join(".", "ETag"), _entityTag)
-	}
-	return nil
-}
-
-func _setLastModified(lastModified string) error {
-	if _lastModified != lastModified {
-		if _lastModified != "" {
-			return errors.New("Last-Modified mismatched")
-		}
-		_lastModified = lastModified
-		_storeSingleLine(filepath.Join(".", "LastModified"), _lastModified)
-	}
-	return nil
 }

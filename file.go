@@ -17,11 +17,16 @@ const (
 )
 
 type _DataFile struct {
-	mu              sync.Mutex
-	name            string
-	file            *os.File
-	fileSize        int64
-	pieces          []_PieceInfo
+	mu   sync.Mutex
+	name string
+	file *os.File
+	hash struct {
+		Pieces       []_PieceInfo
+		FileSize     int64
+		FileMD5      string
+		EntityTag    string
+		LastModified string
+	}
 	incomplete      _RangeSet
 	completeSize    int64
 	recentIncrement int
@@ -57,8 +62,8 @@ func (f *_DataFile) LoadHashFile() (err error) {
 	}
 	defer file.Close()
 
-	var pieces []_PieceInfo
-	err = gob.NewDecoder(file).Decode(&pieces)
+	hash := f.hash
+	err = gob.NewDecoder(file).Decode(&hash)
 	if err != nil {
 		return
 	}
@@ -68,8 +73,8 @@ func (f *_DataFile) LoadHashFile() (err error) {
 	incomplete.AddRange(0, math.MaxInt64)
 
 	var buf [_pieceSize]byte
-	for i := range pieces {
-		p := &pieces[i]
+	for i := range hash.Pieces {
+		p := &hash.Pieces[i]
 		if p.Size > 0 && p.Size <= _pieceSize && p.HashCode > 0 {
 			offset := _pieceSize * int64(i)
 			f.file.Seek(offset, io.SeekStart)
@@ -84,9 +89,13 @@ func (f *_DataFile) LoadHashFile() (err error) {
 		p.HashCode = 0
 	}
 
-	f.pieces = pieces
+	f.hash = hash
 	f.incomplete = incomplete
 	f.completeSize = completeSize
+
+	if hash.FileSize > 0 {
+		f.setFileSizeLocked(hash.FileSize)
+	}
 	return
 }
 
@@ -99,14 +108,17 @@ func (f *_DataFile) CompleteSize() int64 {
 func (f *_DataFile) SetFileSize(size int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.setFileSizeLocked(size)
+}
 
-	f.fileSize = size
+func (f *_DataFile) setFileSizeLocked(size int64) error {
+	f.hash.FileSize = size
 
 	pieceCount := int(math.Ceil(float64(size) / _pieceSize))
-	if len(f.pieces) != pieceCount {
-		pieces := f.pieces
-		f.pieces = make([]_PieceInfo, pieceCount)
-		copy(f.pieces, pieces)
+	if len(f.hash.Pieces) != pieceCount {
+		pieces := f.hash.Pieces
+		f.hash.Pieces = make([]_PieceInfo, pieceCount)
+		copy(f.hash.Pieces, pieces)
 	}
 
 	f.incomplete.DeleteRange(size, math.MaxInt64)
@@ -116,6 +128,48 @@ func (f *_DataFile) SetFileSize(size int64) error {
 	}
 
 	return f.file.Truncate(size)
+}
+
+func (f *_DataFile) FileSize() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hash.FileSize
+}
+
+func (f *_DataFile) SetFileMD5(fileMD5 string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hash.FileMD5 = fileMD5
+}
+
+func (f *_DataFile) FileMD5() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hash.FileMD5
+}
+
+func (f *_DataFile) SetEntityTag(entityTag string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hash.EntityTag = entityTag
+}
+
+func (f *_DataFile) EntityTag() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hash.EntityTag
+}
+
+func (f *_DataFile) SetLastModified(lastModified string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hash.LastModified = lastModified
+}
+
+func (f *_DataFile) LastModified() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hash.LastModified
 }
 
 func (f *_DataFile) TakeIncomplete(max int64) (offset, size int64) {
@@ -143,8 +197,8 @@ func (f *_DataFile) ReturnIncomplete(offset, size int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.incomplete.AddRange(offset, offset+size)
-	if f.fileSize > 0 {
-		f.incomplete.DeleteRange(f.fileSize, math.MaxInt64)
+	if f.hash.FileSize > 0 {
+		f.incomplete.DeleteRange(f.hash.FileSize, math.MaxInt64)
 	}
 }
 
@@ -158,7 +212,7 @@ func (f *_DataFile) WriteAt(b []byte, offset int64) {
 	}
 
 	i := int(offset / _pieceSize)
-	p := &f.pieces[i]
+	p := &f.hash.Pieces[i]
 	if offset != _pieceSize*int64(i)+int64(p.Size) {
 		panic("WriteAt failed")
 	}
@@ -188,7 +242,7 @@ func (f *_DataFile) WriteAt(b []byte, offset int64) {
 	b, i = b[pieceSizeRequired:], i+1
 
 	for len(b) >= _pieceSize {
-		p := &f.pieces[i]
+		p := &f.hash.Pieces[i]
 		if p.Size < _pieceSize {
 			f.completeSize += _pieceSize - int64(p.Size)
 			p.HashCode = crc32.ChecksumIEEE(b[:_pieceSize])
@@ -198,13 +252,19 @@ func (f *_DataFile) WriteAt(b []byte, offset int64) {
 	}
 
 	if len(b) > 0 {
-		p := &f.pieces[i]
+		p := &f.hash.Pieces[i]
 		if int(p.Size) < len(b) {
 			f.completeSize += int64(len(b) - int(p.Size))
 			p.HashCode = crc32.ChecksumIEEE(b)
 			p.Size = uint32(len(b))
 		}
 	}
+}
+
+func (f *_DataFile) Sync() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.syncLocked()
 }
 
 func (f *_DataFile) syncLocked() error {
@@ -215,7 +275,7 @@ func (f *_DataFile) syncLocked() error {
 	}
 	defer os.Remove(name + "New")
 
-	err1 := gob.NewEncoder(file).Encode(&f.pieces)
+	err1 := gob.NewEncoder(file).Encode(&f.hash)
 	err2 := file.Sync()
 	err3 := file.Close()
 	err4 := f.file.Sync()

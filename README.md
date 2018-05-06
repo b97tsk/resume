@@ -7,7 +7,7 @@ go get -u github.com/b97tsk/resume
 ```
 
 # Usage
-```
+```console
 ### Create a working dir
 $ mkdir work && cd work
 ### Create a URL file
@@ -20,28 +20,13 @@ $ cp File path/to/file
 $ cd .. && rm -rf work
 ```
 
-# Advanced Usage
-```
-### Specify referer
-$ echo "http://www.example.com/" >Referer
-### Specify user agent
-$ echo "Wget" >UserAgent
-### Specify cookies
-# echo -e ".example.com\tTRUE\t/\tFALSE\t1552218794\tNAME\tVALUE" >Cookies
-```
-
 # Files
-## Input Files
+### Input Files
 - **URL** (mandatory) contains the URL you want to download.
 - **Referer** (optional) contains the referer.
 - **UserAgent** (optional) contains the user agent.
 - **Cookies** (optional) contains the cookies. The file format is [Netscape format](https://unix.stackexchange.com/a/210282).
-## Output Files
-- **File** contains all the data downloaded from the URL.
-- **Hash** contains hash information about the File.
-- **ContentLength** contains the content length of the URL.
-- **ContentMD5** contains the content MD5 of the URL if found in the response header.
-- **ETag** contains the entity tag of the URL if found in the response header.
-- **LastModified** contains the last modified time of the URL if found in the response header.
+### Output Files
+- **File** contains all the data downloaded from the **URL**.
+- **Hash** contains hash information of the **File**.
 > If **File** or **Hash** is missing, download will start from the beginning.
-> If **ETag** is found in the response header, **LastModified** will not be created.
