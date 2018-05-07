@@ -69,23 +69,32 @@ func main() {
 	flag.DurationVar(&_requestInterval, "i", _defaultRequestInterval, "request interval")
 	flag.Parse()
 
-	rawurl, err := _loadURL(filepath.Join(".", "URL"))
+	var err error
+
+	fmt.Print("\033[1K\r")
+	fmt.Print("loading URL...")
+	_url, err = _loadURL(filepath.Join(".", "URL"))
 	if err != nil {
-		log.Println(err)
+		fmt.Println(err)
 		return
 	}
-	_url = rawurl
 
 	if err == nil || os.IsNotExist(err) {
+		fmt.Print("\033[1K\r")
+		fmt.Print("loading Referer...")
 		_referer, err = _loadURL(filepath.Join(".", "Referer"))
 	}
 	if err == nil || os.IsNotExist(err) {
+		fmt.Print("\033[1K\r")
+		fmt.Print("loading UserAgent...")
 		_userAgent, err = _loadSingleLine(filepath.Join(".", "UserAgent"), 1024)
 	}
 
 	client := http.DefaultClient
 	if err == nil || os.IsNotExist(err) {
 		var jar http.CookieJar
+		fmt.Print("\033[1K\r")
+		fmt.Print("loading Cookies...")
 		jar, err = _loadCookies(filepath.Join(".", "Cookies"))
 		if err == nil {
 			client = &http.Client{Jar: jar}
@@ -103,31 +112,35 @@ func main() {
 	}
 
 	if err != nil && !os.IsNotExist(err) {
-		log.Println(err)
+		fmt.Println(err)
 		return
 	}
 
+	fmt.Print("\033[1K\r")
+	fmt.Print("opening File...")
 	file, err := _openDataFile(fileName)
 	if err != nil {
-		log.Println(err)
+		fmt.Println(err)
 		return
 	}
 	defer func() {
 		err := file.Close()
 		if err != nil {
-			log.Println(err)
+			fmt.Println(err)
 		}
 	}()
 
 	if fileSize > 0 {
-		fmt.Print("verifying...")
-		err := file.LoadHashFile()
 		fmt.Print("\033[1K\r")
+		fmt.Print("loading Hash...")
+		err := file.LoadHashFile()
 		if err != nil && !os.IsNotExist(err) {
-			log.Println(err)
+			fmt.Println(err)
 			return
 		}
 	}
+
+	fmt.Print("\033[1K\r")
 
 	if file.FileSize() > 0 {
 		fmt.Println("File Size:", file.FileSize())
@@ -672,7 +685,7 @@ func _loadSingleLine(name string, max int) (line string, err error) {
 }
 
 func _loadURL(name string) (rawurl string, err error) {
-	rawurl, err = _loadSingleLine(name, 1024)
+	rawurl, err = _loadSingleLine(name, 2048)
 	if err != nil {
 		return
 	}
