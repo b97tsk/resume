@@ -170,7 +170,7 @@ func main() {
 	topCtx := context.TODO()
 
 	queuedMessages := observable.NewSubject()
-	queuedMessagesCtx, _ := queuedMessages.AsObservable().Congest(int(_concurrent*2)).Subscribe(
+	queuedMessagesCtx, _ := queuedMessages.Congest(int(_concurrent*2)).Subscribe(
 		topCtx,
 		observable.ObserverFunc(
 			func(t observable.Notification) {
@@ -298,7 +298,7 @@ func main() {
 	}()
 
 	queuedWrites := observable.NewSubject()
-	queuedWritesCtx, _ := queuedWrites.AsObservable().Congest(int(_concurrent*2)).Subscribe(
+	queuedWritesCtx, _ := queuedWrites.Congest(int(_concurrent*2)).Subscribe(
 		topCtx,
 		observable.ObserverFunc(
 			func(t observable.Notification) {
@@ -351,7 +351,7 @@ func main() {
 	}
 
 	activeTasks := observable.NewSubject()
-	activeTasksCtx, _ := activeTasks.AsObservable().MergeAll().Subscribe(topCtx, queuedMessages)
+	activeTasksCtx, _ := activeTasks.MergeAll().Subscribe(topCtx, queuedMessages)
 	defer func() {
 		activeTasks.Complete()
 		<-activeTasksCtx.Done()
