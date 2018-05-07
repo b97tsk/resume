@@ -216,17 +216,23 @@ func main() {
 				if shouldPrint {
 					fmt.Print("\033[1K\r")
 
-					if file.FileSize() > 0 {
+					fileSize := file.FileSize()
+					completeSize := file.CompleteSize()
+
+					{
 						const length = 20
-						n := int(float64(file.CompleteSize()) / float64(file.FileSize()) * 100)
-						s := strings.Repeat("=", length*n/100)
-						if len(s) < length {
+						progress := 0
+						if fileSize > 0 {
+							progress = int(float64(completeSize) / float64(fileSize) * 100)
+						}
+						s := strings.Repeat("=", length*progress/100)
+						if len(s) < length && completeSize > 0 {
 							s += ">"
 						}
 						if len(s) < length {
 							s += strings.Repeat("-", length-len(s))
 						}
-						fmt.Printf("%v%% [%v] ", n, s)
+						fmt.Printf("%v%% [%v] ", progress, s)
 					}
 
 					fmt.Printf("DL:%v", atomic.LoadUint32(&activeCount))
@@ -247,7 +253,7 @@ func main() {
 						fmt.Printf(" %vB/s", _formatBytes(int64(speed)))
 					}
 
-					if file.FileSize() > 0 {
+					if fileSize > 0 {
 						stat := statCurrent
 						if len(statList) > 0 {
 							stat.Time = statList[0].Time
@@ -257,7 +263,7 @@ func main() {
 						}
 						if stat.Size > 0 {
 							speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
-							remaining := float64(file.FileSize() - file.CompleteSize())
+							remaining := float64(fileSize - completeSize)
 							fmt.Printf(" %v", time.Duration(remaining/speed)*time.Second)
 						}
 					}
@@ -282,6 +288,13 @@ func main() {
 	defer func() {
 		queuedMessages.Complete()
 		<-queuedMessagesCtx.Done()
+	}()
+
+	intervalCtx, intervalCancel := observable.Interval(time.Second).
+		MapTo(_PrintMessage{}).Subscribe(topCtx, queuedMessages)
+	defer func() {
+		intervalCancel()
+		<-intervalCtx.Done()
 	}()
 
 	queuedWrites := observable.NewSubject()
@@ -322,22 +335,6 @@ func main() {
 		<-q
 	}
 
-	activeCtx, activeCancel := context.WithCancel(topCtx)
-	activeDone := activeCtx.Done()
-	defer activeCancel()
-
-	observable.Interval(time.Second).TakeUntil(observable.Create(
-		func(ctx context.Context, ob observable.Observer) (context.Context, context.CancelFunc) {
-			ctx, cancel := context.WithCancel(ctx)
-			go func() {
-				defer cancel()
-				<-activeDone
-				ob.Complete()
-			}()
-			return ctx, cancel
-		},
-	)).MapTo(_PrintMessage{}).Subscribe(topCtx, queuedMessages)
-
 	takeIncomplete := func() (offset, size int64) {
 		splitSize := int64(_splitSize) * 1024 * 1024
 		if file.FileSize() > 0 {
@@ -360,8 +357,12 @@ func main() {
 		<-activeTasksCtx.Done()
 	}()
 
+	activeCtx, activeCancel := context.WithCancel(topCtx)
+	defer activeCancel()
+
 	waitSignal := make(chan os.Signal, 1)
 	signal.Notify(waitSignal, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(waitSignal)
 
 	var (
 		errorCount   uint32
@@ -636,8 +637,6 @@ func main() {
 
 		select {
 		case <-waitSignal:
-			signal.Stop(waitSignal)
-			activeCancel()
 			return
 		case <-stateChanged:
 		case <-beingDelayed:
