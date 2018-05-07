@@ -149,373 +149,6 @@ func main() {
 		fmt.Println("File MD5:", file.FileMD5())
 	}
 
-	topCtx := context.TODO()
-
-	activeCtx, activeCancel := context.WithCancel(topCtx)
-	activeDone := activeCtx.Done()
-	defer activeCancel()
-
-	activeCount := uint32(0)
-
-	cr := func(parent context.Context, ob observable.Observer) (ctx context.Context, cancel context.CancelFunc) {
-		ctx, cancel = context.WithCancel(parent)
-		defer func() {
-			activeCancel()
-			ob.Complete()
-			cancel()
-		}()
-
-		queuedWorks := observable.NewSubject()
-		subscription, _ := queuedWorks.AsObservable().Congest(int(_concurrent*2)).Subscribe(ctx, observable.ObserverFunc(
-			func(t observable.Notification) {
-				if t.HasValue {
-					t.Value.(func())()
-				}
-			},
-		))
-		defer func() {
-			queuedWorks.Complete()
-			<-subscription.Done()
-		}()
-
-		bufferPool := sync.Pool{
-			New: func() interface{} { return make([]byte, _readBufferSize) },
-		}
-
-		readAndWrite := func(body io.Reader, offset int64) (n int, err error) {
-			buf := bufferPool.Get().([]byte)
-			n, err = body.Read(buf)
-			if n > 0 {
-				queuedWorks.Next(func() {
-					file.WriteAt(buf[:n], offset)
-					bufferPool.Put(buf)
-				})
-			}
-			return
-		}
-
-		waitWriteDone := func() {
-			q := make(chan struct{})
-			queuedWorks.Next(func() { close(q) })
-			<-q
-		}
-
-		ob.Next(observable.Interval(time.Second).TakeUntil(observable.Create(
-			func(ctx context.Context, ob observable.Observer) (context.Context, context.CancelFunc) {
-				ctx, cancel := context.WithCancel(ctx)
-				go func() {
-					defer cancel()
-					<-activeDone
-					ob.Complete()
-				}()
-				return ctx, cancel
-			},
-		)).MapTo(_PrintMessage{}))
-
-		var (
-			errorCount   uint32
-			beingPaused  uint32
-			shouldDelay  uint32
-			beingDelayed <-chan time.Time
-			stateChanged = make(chan struct{}, 1)
-		)
-
-		takeIncomplete := func() (offset, size int64) {
-			splitSize := int64(_splitSize) * 1024 * 1024
-			if file.FileSize() > 0 {
-				size := (file.FileSize() - file.CompleteSize()) / int64(_concurrent)
-				if size < splitSize {
-					splitSize = size
-				}
-			}
-			return file.TakeIncomplete(splitSize)
-		}
-
-		returnIncomplete := func(offset, size int64) {
-			file.ReturnIncomplete(offset, size)
-		}
-
-		activeWaitGroup := sync.WaitGroup{}
-		defer activeWaitGroup.Wait()
-
-		addActiveCount := func(delta int) {
-			atomic.AddUint32(&activeCount, uint32(delta))
-			activeWaitGroup.Add(delta)
-		}
-
-		for {
-			switch {
-			case atomic.LoadUint32(&errorCount) >= uint32(_errorCapacity):
-				return
-			case atomic.LoadUint32(&activeCount) >= uint32(_concurrent):
-			case atomic.LoadUint32(&beingPaused) != 0:
-			case atomic.LoadUint32(&shouldDelay) != 0:
-				atomic.StoreUint32(&shouldDelay, 0)
-				beingDelayed = time.After(_requestInterval)
-			case beingDelayed != nil:
-			default:
-				offset, size := takeIncomplete()
-				if size == 0 {
-					if atomic.LoadUint32(&activeCount) == 0 {
-						// return only when activeCount==0, since new request may be needed due to errors
-						return
-					}
-					break
-				}
-
-				addActiveCount(1)
-				atomic.StoreUint32(&beingPaused, 1)
-				atomic.StoreUint32(&shouldDelay, 1)
-
-				cr := func(parent context.Context, ob observable.Observer) (ctx context.Context, cancel context.CancelFunc) {
-					ctx, cancel = context.WithCancel(activeCtx)
-
-					var (
-						err   error
-						fatal bool
-					)
-					defer func() {
-						if err != nil {
-							returnIncomplete(offset, size)
-							ob.Next(_CompleteMessage{err, fatal})
-							ob.Complete()
-							cancel()
-						}
-					}()
-
-					req, err := http.NewRequest(http.MethodGet, _url, nil)
-					if err != nil {
-						return
-					}
-
-					shouldLimitSize := false
-					if file.FileSize() > 0 {
-						req.Header.Set("Range", fmt.Sprintf("bytes=%v-%v", offset, offset+size-1))
-					} else {
-						req.Header.Set("Range", fmt.Sprintf("bytes=%v-", offset))
-						shouldLimitSize = true
-					}
-
-					if _referer != "" {
-						req.Header.Set("Referer", _referer)
-					}
-					if _userAgent != "" {
-						req.Header.Set("User-Agent", _userAgent)
-					}
-
-					req = req.WithContext(ctx)
-
-					resp, err := client.Do(req)
-					if err != nil {
-						return
-					}
-
-					defer func() {
-						if err != nil {
-							resp.Body.Close()
-						}
-					}()
-
-					if resp.StatusCode == 200 {
-						err = errors.New("this server does not support partial requests")
-						fatal = true
-						return
-					}
-
-					if resp.StatusCode != 206 {
-						err = errors.New(resp.Status)
-						return
-					}
-
-					contentRange := resp.Header.Get("Content-Range")
-					if contentRange == "" {
-						err = errors.New("Content-Range not found")
-						fatal = true
-						return
-					}
-
-					re := regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+)$`)
-					slice := re.FindStringSubmatch(contentRange)
-					if slice == nil {
-						err = fmt.Errorf("Content-Range unrecognized: %v", contentRange)
-						fatal = true
-						return
-					}
-
-					shouldSync := false
-
-					contentLength, _ := strconv.ParseInt(slice[3], 10, 64)
-					switch file.FileSize() {
-					case contentLength:
-					case 0:
-						shouldSync = true
-						file.SetFileSize(contentLength)
-						fmt.Print("\033[1K\r")
-						fmt.Println("Content-Length:", contentLength)
-					default:
-						fmt.Print("\033[1K\r")
-						fmt.Println("Content-Length:", contentLength)
-						err = errors.New("Content-Length mismatched")
-						fatal = true
-						return
-					}
-
-					if contentMD5 := resp.Header.Get("Content-MD5"); contentMD5 != "" {
-						switch file.FileMD5() {
-						case contentMD5:
-						case "":
-							shouldSync = true
-							file.SetFileMD5(contentMD5)
-							fmt.Print("\033[1K\r")
-							fmt.Println("Content-MD5:", contentMD5)
-						default:
-							fmt.Print("\033[1K\r")
-							fmt.Println("Content-MD5:", contentMD5)
-							err = errors.New("Content-MD5 mismatched")
-							fatal = true
-							return
-						}
-					}
-
-					if eTag := resp.Header.Get("ETag"); eTag != "" {
-						switch file.EntityTag() {
-						case eTag:
-						case "":
-							shouldSync = true
-							file.SetEntityTag(eTag)
-						default:
-							err = errors.New("ETag mismatched")
-							fatal = true
-							return
-						}
-					} else if lastModified := resp.Header.Get("Last-Modified"); lastModified != "" {
-						switch file.LastModified() {
-						case lastModified:
-						case "":
-							shouldSync = true
-							file.SetLastModified(lastModified)
-						default:
-							err = errors.New("Last-Modified mismatched")
-							fatal = true
-							return
-						}
-					}
-
-					if shouldSync {
-						file.Sync()
-					}
-
-					if req != resp.Request {
-						_url = resp.Request.URL.String()
-					}
-
-					body := io.Reader(resp.Body)
-					if shouldLimitSize {
-						returnIncomplete(offset, size)
-						previousOffset := offset
-						offset, size = takeIncomplete()
-						if offset != previousOffset {
-							panic("offset != previousOffset")
-						}
-						body = io.LimitReader(body, size)
-					}
-
-					ob.Next(_ResponseMessage{})
-
-					go func() (err error) {
-						var (
-							readTimer        = time.AfterFunc(_readTimeout, cancel)
-							shouldResetTimer bool
-							shouldWaitWrite  bool
-						)
-
-						defer func() {
-							resp.Body.Close()
-							if shouldWaitWrite {
-								waitWriteDone()
-							}
-							returnIncomplete(offset, size)
-							ob.Next(_CompleteMessage{err, false})
-							ob.Complete()
-							cancel()
-						}()
-
-						for {
-							if shouldResetTimer {
-								readTimer.Reset(_readTimeout)
-							}
-							n, err := readAndWrite(body, offset)
-							readTimer.Stop()
-							shouldResetTimer = true
-							if n > 0 {
-								offset, size = offset+int64(n), size-int64(n)
-								shouldWaitWrite = true
-								ob.Next(_ProgressMessage{n})
-							}
-							if err != nil {
-								if err == io.EOF {
-									return nil
-								}
-								return err
-							}
-						}
-					}()
-
-					return
-				}
-
-				hasResponseMessage := false
-
-				do := func(t observable.Notification) {
-					if t.HasValue {
-						switch v := t.Value.(type) {
-						case _ProgressMessage:
-
-						case _ResponseMessage:
-							hasResponseMessage = true
-							atomic.StoreUint32(&beingPaused, 0)
-							atomic.StoreUint32(&errorCount, 0)
-
-							select {
-							case stateChanged <- struct{}{}:
-							default:
-							}
-
-						case _CompleteMessage:
-							addActiveCount(-1)
-							if !hasResponseMessage {
-								atomic.StoreUint32(&beingPaused, 0)
-								if v.Err != nil {
-									atomic.AddUint32(&errorCount, 1)
-								} else {
-									atomic.StoreUint32(&shouldDelay, 0)
-								}
-							}
-							if v.Err != nil && v.Fatal {
-								atomic.StoreUint32(&errorCount, uint32(_errorCapacity))
-							}
-
-							select {
-							case stateChanged <- struct{}{}:
-							default:
-							}
-						}
-					}
-				}
-
-				ob.Next(observable.Create(cr).Do(observable.ObserverFunc(do)))
-			}
-
-			select {
-			case <-activeDone:
-				return
-			case <-stateChanged:
-			case <-beingDelayed:
-				beingDelayed = nil
-			}
-		}
-	}
-
 	type stat struct {
 		Time time.Time
 		Size int64
@@ -531,127 +164,486 @@ func main() {
 		statCurrent   = stat{time.Now(), 0}
 		firstRecvTime time.Time
 		totalReceived int64
+		activeCount   uint32
 	)
 
-	do := func(t observable.Notification) {
-		shouldPrint := false
-		switch {
-		case t.HasValue:
-			switch v := t.Value.(type) {
-			case _ProgressMessage:
-				statCurrent.Size += int64(v.Just)
-				if totalReceived == 0 {
-					firstRecvTime = time.Now()
-				}
-				totalReceived += int64(v.Just)
+	topCtx := context.TODO()
 
-			case _PrintMessage:
-				if len(statList) == statCapacity {
-					copy(statList, statList[1:])
-					statList = statList[:statCapacity-1]
-				}
-				statList = append(statList, statCurrent)
-				statCurrent = stat{time.Now(), 0}
-				shouldPrint = true
+	queuedMessages := observable.NewSubject()
+	queuedMessagesCtx, _ := queuedMessages.AsObservable().Congest(int(_concurrent*2)).Subscribe(
+		topCtx,
+		observable.ObserverFunc(
+			func(t observable.Notification) {
+				shouldPrint := false
+				switch {
+				case t.HasValue:
+					switch v := t.Value.(type) {
+					case _ProgressMessage:
+						statCurrent.Size += int64(v.Just)
+						if totalReceived == 0 {
+							firstRecvTime = time.Now()
+						}
+						totalReceived += int64(v.Just)
 
-			case _CompleteMessage:
-				unwrappedErr := v.Err
-				switch e := unwrappedErr.(type) {
-				case *net.OpError:
-					unwrappedErr = e.Err
-				case *url.Error:
-					unwrappedErr = e.Err
-				}
-				switch unwrappedErr {
-				case nil, io.ErrUnexpectedEOF, context.Canceled:
+					case _PrintMessage:
+						if len(statList) == statCapacity {
+							copy(statList, statList[1:])
+							statList = statList[:statCapacity-1]
+						}
+						statList = append(statList, statCurrent)
+						statCurrent = stat{time.Now(), 0}
+						shouldPrint = true
+
+					case _CompleteMessage:
+						unwrappedErr := v.Err
+						switch e := unwrappedErr.(type) {
+						case *net.OpError:
+							unwrappedErr = e.Err
+						case *url.Error:
+							unwrappedErr = e.Err
+						}
+						switch unwrappedErr {
+						case nil, io.EOF, io.ErrUnexpectedEOF, context.Canceled:
+						default:
+							fmt.Print("\033[1K\r")
+							log.Println(unwrappedErr)
+							shouldPrint = true
+						}
+					}
 				default:
-					fmt.Print("\033[1K\r")
-					log.Println(unwrappedErr)
 					shouldPrint = true
 				}
+				if shouldPrint {
+					fmt.Print("\033[1K\r")
+
+					if file.FileSize() > 0 {
+						const length = 20
+						n := int(float64(file.CompleteSize()) / float64(file.FileSize()) * 100)
+						s := strings.Repeat("=", length*n/100)
+						if len(s) < length {
+							s += ">"
+						}
+						if len(s) < length {
+							s += strings.Repeat("-", length-len(s))
+						}
+						fmt.Printf("%v%% [%v] ", n, s)
+					}
+
+					fmt.Printf("DL:%v", atomic.LoadUint32(&activeCount))
+
+					{
+						stat := statCurrent
+						statList := statList
+						if len(statList) >= instantCount {
+							statList = statList[len(statList)-instantCount:]
+						}
+						if len(statList) > 0 {
+							stat.Time = statList[0].Time
+						}
+						for _, s := range statList {
+							stat.Size += s.Size
+						}
+						speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
+						fmt.Printf(" %vB/s", _formatBytes(int64(speed)))
+					}
+
+					if file.FileSize() > 0 {
+						stat := statCurrent
+						if len(statList) > 0 {
+							stat.Time = statList[0].Time
+						}
+						for _, s := range statList {
+							stat.Size += s.Size
+						}
+						if stat.Size > 0 {
+							speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
+							remaining := float64(file.FileSize() - file.CompleteSize())
+							fmt.Printf(" %v", time.Duration(remaining/speed)*time.Second)
+						}
+					}
+
+					if !t.HasValue {
+						// about to exit, keep this status line
+						fmt.Println()
+					}
+				}
+				if !t.HasValue && totalReceived > 0 {
+					timeUsed := time.Since(firstRecvTime)
+					log.Printf(
+						"recv %vB in %v, %vB/s\n",
+						_formatBytes(totalReceived),
+						timeUsed.Truncate(time.Second),
+						_formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
+					)
+				}
+			},
+		),
+	)
+	defer func() {
+		queuedMessages.Complete()
+		<-queuedMessagesCtx.Done()
+	}()
+
+	queuedWrites := observable.NewSubject()
+	queuedWritesCtx, _ := queuedWrites.AsObservable().Congest(int(_concurrent*2)).Subscribe(
+		topCtx,
+		observable.ObserverFunc(
+			func(t observable.Notification) {
+				if t.HasValue {
+					t.Value.(func())()
+				}
+			},
+		),
+	)
+	defer func() {
+		queuedWrites.Complete()
+		<-queuedWritesCtx.Done()
+	}()
+
+	bufferPool := sync.Pool{
+		New: func() interface{} { return make([]byte, _readBufferSize) },
+	}
+
+	readAndWrite := func(body io.Reader, offset int64) (n int, err error) {
+		buf := bufferPool.Get().([]byte)
+		n, err = body.Read(buf)
+		if n > 0 {
+			queuedWrites.Next(func() {
+				file.WriteAt(buf[:n], offset)
+				bufferPool.Put(buf)
+			})
+		}
+		return
+	}
+
+	waitWriteDone := func() {
+		q := make(chan struct{})
+		queuedWrites.Next(func() { close(q) })
+		<-q
+	}
+
+	activeCtx, activeCancel := context.WithCancel(topCtx)
+	activeDone := activeCtx.Done()
+	defer activeCancel()
+
+	observable.Interval(time.Second).TakeUntil(observable.Create(
+		func(ctx context.Context, ob observable.Observer) (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(ctx)
+			go func() {
+				defer cancel()
+				<-activeDone
+				ob.Complete()
+			}()
+			return ctx, cancel
+		},
+	)).MapTo(_PrintMessage{}).Subscribe(topCtx, queuedMessages)
+
+	takeIncomplete := func() (offset, size int64) {
+		splitSize := int64(_splitSize) * 1024 * 1024
+		if file.FileSize() > 0 {
+			size := (file.FileSize() - file.CompleteSize()) / int64(_concurrent)
+			if size < splitSize {
+				splitSize = size
 			}
+		}
+		return file.TakeIncomplete(splitSize)
+	}
+
+	returnIncomplete := func(offset, size int64) {
+		file.ReturnIncomplete(offset, size)
+	}
+
+	activeTasks := observable.NewSubject()
+	activeTasksCtx, _ := activeTasks.AsObservable().MergeAll().Subscribe(topCtx, queuedMessages)
+	defer func() {
+		activeTasks.Complete()
+		<-activeTasksCtx.Done()
+	}()
+
+	waitSignal := make(chan os.Signal, 1)
+	signal.Notify(waitSignal, syscall.SIGINT, syscall.SIGTERM)
+
+	var (
+		errorCount   uint32
+		beingPaused  uint32
+		shouldDelay  uint32
+		beingDelayed <-chan time.Time
+		stateChanged = make(chan struct{}, 1)
+	)
+
+	for {
+		switch {
+		case atomic.LoadUint32(&errorCount) >= uint32(_errorCapacity):
+			return
+		case atomic.LoadUint32(&activeCount) >= uint32(_concurrent):
+		case atomic.LoadUint32(&beingPaused) != 0:
+		case atomic.LoadUint32(&shouldDelay) != 0:
+			atomic.StoreUint32(&shouldDelay, 0)
+			beingDelayed = time.After(_requestInterval)
+		case beingDelayed != nil:
 		default:
-			shouldPrint = true
+			offset, size := takeIncomplete()
+			if size == 0 {
+				if atomic.LoadUint32(&activeCount) == 0 {
+					return
+				}
+				break
+			}
+
+			atomic.AddUint32(&activeCount, 1)
+			atomic.StoreUint32(&beingPaused, 1)
+			atomic.StoreUint32(&shouldDelay, 1)
+
+			cr := func(parent context.Context, ob observable.Observer) (ctx context.Context, cancel context.CancelFunc) {
+				ctx, cancel = context.WithCancel(activeCtx)
+
+				var (
+					err   error
+					fatal bool
+				)
+				defer func() {
+					if err != nil {
+						returnIncomplete(offset, size)
+						ob.Next(_CompleteMessage{err, fatal})
+						ob.Complete()
+						cancel()
+					}
+				}()
+
+				req, err := http.NewRequest(http.MethodGet, _url, nil)
+				if err != nil {
+					return
+				}
+
+				shouldLimitSize := false
+				if file.FileSize() > 0 {
+					req.Header.Set("Range", fmt.Sprintf("bytes=%v-%v", offset, offset+size-1))
+				} else {
+					req.Header.Set("Range", fmt.Sprintf("bytes=%v-", offset))
+					shouldLimitSize = true
+				}
+
+				if _referer != "" {
+					req.Header.Set("Referer", _referer)
+				}
+				if _userAgent != "" {
+					req.Header.Set("User-Agent", _userAgent)
+				}
+
+				req = req.WithContext(ctx)
+
+				resp, err := client.Do(req)
+				if err != nil {
+					return
+				}
+
+				defer func() {
+					if err != nil {
+						resp.Body.Close()
+					}
+				}()
+
+				if resp.StatusCode == 200 {
+					err = errors.New("this server does not support partial requests")
+					fatal = true
+					return
+				}
+
+				if resp.StatusCode != 206 {
+					err = errors.New(resp.Status)
+					return
+				}
+
+				contentRange := resp.Header.Get("Content-Range")
+				if contentRange == "" {
+					err = errors.New("Content-Range not found")
+					fatal = true
+					return
+				}
+
+				re := regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+)$`)
+				slice := re.FindStringSubmatch(contentRange)
+				if slice == nil {
+					err = fmt.Errorf("Content-Range unrecognized: %v", contentRange)
+					fatal = true
+					return
+				}
+
+				shouldSync := false
+
+				contentLength, _ := strconv.ParseInt(slice[3], 10, 64)
+				switch file.FileSize() {
+				case contentLength:
+				case 0:
+					shouldSync = true
+					file.SetFileSize(contentLength)
+					fmt.Print("\033[1K\r")
+					fmt.Println("Content-Length:", contentLength)
+				default:
+					fmt.Print("\033[1K\r")
+					fmt.Println("Content-Length:", contentLength)
+					err = errors.New("Content-Length mismatched")
+					fatal = true
+					return
+				}
+
+				contentMD5 := resp.Header.Get("Content-MD5")
+				switch file.FileMD5() {
+				case contentMD5:
+				case "":
+					shouldSync = true
+					file.SetFileMD5(contentMD5)
+					fmt.Print("\033[1K\r")
+					fmt.Println("Content-MD5:", contentMD5)
+				default:
+					fmt.Print("\033[1K\r")
+					fmt.Println("Content-MD5:", contentMD5)
+					err = errors.New("Content-MD5 mismatched")
+					fatal = true
+					return
+				}
+
+				eTag := resp.Header.Get("ETag")
+				switch file.EntityTag() {
+				case eTag:
+				case "":
+					shouldSync = true
+					file.SetEntityTag(eTag)
+				default:
+					err = errors.New("ETag mismatched")
+					fatal = true
+					return
+				}
+
+				if eTag == "" {
+					lastModified := resp.Header.Get("Last-Modified")
+					switch file.LastModified() {
+					case lastModified:
+					case "":
+						shouldSync = true
+						file.SetLastModified(lastModified)
+					default:
+						err = errors.New("Last-Modified mismatched")
+						fatal = true
+						return
+					}
+				}
+
+				if shouldSync {
+					file.Sync()
+				}
+
+				if req != resp.Request {
+					_url = resp.Request.URL.String()
+				}
+
+				body := io.Reader(resp.Body)
+				if shouldLimitSize {
+					returnIncomplete(offset, size)
+					previousOffset := offset
+					offset, size = takeIncomplete()
+					if offset != previousOffset {
+						panic("offset != previousOffset")
+					}
+					body = io.LimitReader(body, size)
+				}
+
+				ob.Next(_ResponseMessage{})
+
+				go func() (err error) {
+					var (
+						readTimer        = time.AfterFunc(_readTimeout, cancel)
+						shouldResetTimer bool
+						shouldWaitWrite  bool
+					)
+
+					defer func() {
+						resp.Body.Close()
+						if shouldWaitWrite {
+							waitWriteDone()
+						}
+						returnIncomplete(offset, size)
+						ob.Next(_CompleteMessage{err, false})
+						ob.Complete()
+						cancel()
+					}()
+
+					for {
+						if shouldResetTimer {
+							readTimer.Reset(_readTimeout)
+						}
+						n, err := readAndWrite(body, offset)
+						readTimer.Stop()
+						shouldResetTimer = true
+						if n > 0 {
+							offset, size = offset+int64(n), size-int64(n)
+							shouldWaitWrite = true
+							ob.Next(_ProgressMessage{n})
+						}
+						if err != nil {
+							if err == io.EOF {
+								return nil
+							}
+							return err
+						}
+					}
+				}()
+
+				return
+			}
+
+			hasResponseMessage := false
+
+			do := func(t observable.Notification) {
+				if t.HasValue {
+					switch v := t.Value.(type) {
+					case _ProgressMessage:
+
+					case _ResponseMessage:
+						hasResponseMessage = true
+						atomic.StoreUint32(&beingPaused, 0)
+						atomic.StoreUint32(&errorCount, 0)
+
+						select {
+						case stateChanged <- struct{}{}:
+						default:
+						}
+
+					case _CompleteMessage:
+						atomic.AddUint32(&activeCount, math.MaxUint32)
+						if !hasResponseMessage {
+							atomic.StoreUint32(&beingPaused, 0)
+							if v.Err != nil {
+								atomic.AddUint32(&errorCount, 1)
+							} else {
+								atomic.StoreUint32(&shouldDelay, 0)
+							}
+						}
+						if v.Err != nil && v.Fatal {
+							atomic.StoreUint32(&errorCount, uint32(_errorCapacity))
+						}
+
+						select {
+						case stateChanged <- struct{}{}:
+						default:
+						}
+					}
+				}
+			}
+
+			activeTasks.Next(observable.Create(cr).Do(observable.ObserverFunc(do)))
 		}
-		if shouldPrint {
-			fmt.Print("\033[1K\r")
 
-			if file.FileSize() > 0 {
-				const length = 20
-				n := int(float64(file.CompleteSize()) / float64(file.FileSize()) * 100)
-				s := strings.Repeat("=", length*n/100)
-				if len(s) < length {
-					s += ">"
-				}
-				if len(s) < length {
-					s += strings.Repeat("-", length-len(s))
-				}
-				fmt.Printf("%v%% [%v] ", n, s)
-			}
-
-			fmt.Printf("DL:%v", atomic.LoadUint32(&activeCount))
-
-			{
-				stat := statCurrent
-				statList := statList
-				if len(statList) >= instantCount {
-					statList = statList[len(statList)-instantCount:]
-				}
-				if len(statList) > 0 {
-					stat.Time = statList[0].Time
-				}
-				for _, s := range statList {
-					stat.Size += s.Size
-				}
-				speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
-				fmt.Printf(" %vB/s", _formatBytes(int64(speed)))
-			}
-
-			if file.FileSize() > 0 {
-				stat := statCurrent
-				if len(statList) > 0 {
-					stat.Time = statList[0].Time
-				}
-				for _, s := range statList {
-					stat.Size += s.Size
-				}
-				if stat.Size > 0 {
-					speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
-					remaining := float64(file.FileSize() - file.CompleteSize())
-					fmt.Printf(" %v", time.Duration(remaining/speed)*time.Second)
-				}
-			}
-
-			if !t.HasValue {
-				// about to exit, keep this status line
-				fmt.Println()
-			}
-		}
-		if !t.HasValue && totalReceived > 0 {
-			timeUsed := time.Since(firstRecvTime)
-			log.Printf(
-				"recv %vB in %v, %vB/s\n",
-				_formatBytes(totalReceived),
-				timeUsed.Truncate(time.Second),
-				_formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
-			)
+		select {
+		case <-waitSignal:
+			signal.Stop(waitSignal)
+			activeCancel()
+			return
+		case <-stateChanged:
+		case <-beingDelayed:
+			beingDelayed = nil
 		}
 	}
-
-	ctx, _ := observable.Create(cr).MergeAll().Subscribe(topCtx, observable.ObserverFunc(do))
-	done := ctx.Done()
-
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case <-c:
-		activeCancel()
-	case <-done:
-	}
-
-	signal.Stop(c)
-	<-done
 }
 
 func _formatBytes(n int64) string {
