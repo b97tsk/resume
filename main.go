@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -142,12 +144,33 @@ func main() {
 
 	fmt.Print("\033[1K\r")
 
-	if file.FileSize() > 0 {
-		fmt.Println("File Size:", file.FileSize())
-	}
-	if file.FileMD5() != "" {
-		fmt.Println("File MD5:", file.FileMD5())
-	}
+	defer func() {
+		fileSize := file.FileSize()
+		if fileSize == 0 {
+			return
+		}
+		completeSize := file.CompleteSize()
+		if completeSize != fileSize {
+			return
+		}
+		fileMD5 := strings.ToLower(file.FileMD5())
+		if len(fileMD5) != 32 {
+			return
+		}
+		fmt.Print("\033[1K\r")
+		fmt.Println("Content-MD5:", fileMD5)
+		fmt.Print("verifying...")
+		digest := md5.New()
+		if err := file.Checksum(digest); err != nil {
+			fmt.Println(err)
+			return
+		}
+		if hex.EncodeToString(digest.Sum(nil)) != fileMD5 {
+			fmt.Println("BAD")
+			return
+		}
+		fmt.Println("OK")
+	}()
 
 	type stat struct {
 		Time time.Time
@@ -311,6 +334,7 @@ func main() {
 	defer func() {
 		queuedWrites.Complete()
 		<-queuedWritesCtx.Done()
+		file.Sync()
 	}()
 
 	bufferPool := sync.Pool{
@@ -375,7 +399,9 @@ func main() {
 	for {
 		switch {
 		case atomic.LoadUint32(&errorCount) >= uint32(_errorCapacity):
-			return
+			if atomic.LoadUint32(&activeCount) == 0 {
+				return
+			}
 		case atomic.LoadUint32(&activeCount) >= uint32(_concurrent):
 		case atomic.LoadUint32(&beingPaused) != 0:
 		case atomic.LoadUint32(&shouldDelay) != 0:
@@ -478,11 +504,7 @@ func main() {
 				case 0:
 					shouldSync = true
 					file.SetFileSize(contentLength)
-					fmt.Print("\033[1K\r")
-					fmt.Println("Content-Length:", contentLength)
 				default:
-					fmt.Print("\033[1K\r")
-					fmt.Println("Content-Length:", contentLength)
 					err = errors.New("Content-Length mismatched")
 					fatal = true
 					return
@@ -494,11 +516,7 @@ func main() {
 				case "":
 					shouldSync = true
 					file.SetFileMD5(contentMD5)
-					fmt.Print("\033[1K\r")
-					fmt.Println("Content-MD5:", contentMD5)
 				default:
-					fmt.Print("\033[1K\r")
-					fmt.Println("Content-MD5:", contentMD5)
 					err = errors.New("Content-MD5 mismatched")
 					fatal = true
 					return
@@ -531,7 +549,7 @@ func main() {
 				}
 
 				if shouldSync {
-					file.Sync()
+					file.SyncNow()
 				}
 
 				if req != resp.Request {

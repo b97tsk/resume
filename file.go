@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/gob"
+	"hash"
 	"hash/crc32"
 	"io"
 	"math"
@@ -261,7 +262,25 @@ func (f *_DataFile) WriteAt(b []byte, offset int64) {
 	}
 }
 
+func (f *_DataFile) Checksum(digest hash.Hash) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.file.Seek(0, io.SeekStart)
+	_, err := io.Copy(digest, f.file)
+	return err
+}
+
 func (f *_DataFile) Sync() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.recentIncrement > 0 {
+		f.recentIncrement = 0
+		return f.syncLocked()
+	}
+	return nil
+}
+
+func (f *_DataFile) SyncNow() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.syncLocked()
