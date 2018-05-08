@@ -313,12 +313,14 @@ func main() {
 		<-queuedMessagesCtx.Done()
 	}()
 
-	intervalCtx, intervalCancel := observable.Interval(time.Second).
-		MapTo(_PrintMessage{}).Subscribe(topCtx, queuedMessages)
-	defer func() {
-		intervalCancel()
-		<-intervalCtx.Done()
-	}()
+	{
+		ctx, cancel := observable.Interval(time.Second).
+			MapTo(_PrintMessage{}).Subscribe(topCtx, queuedMessages)
+		defer func() {
+			cancel()
+			<-ctx.Done()
+		}()
+	}
 
 	queuedWrites := observable.NewSubject()
 	queuedWritesCtx, _ := queuedWrites.Congest(int(_concurrent*2)).Subscribe(
@@ -394,20 +396,27 @@ func main() {
 		shouldDelay  uint32
 		beingDelayed <-chan time.Time
 		stateChanged = make(chan struct{}, 1)
+		primaryURL   = _url
 	)
 
 	for {
 		switch {
-		case atomic.LoadUint32(&errorCount) >= uint32(_errorCapacity):
-			if atomic.LoadUint32(&activeCount) == 0 {
-				return
-			}
 		case atomic.LoadUint32(&activeCount) >= uint32(_concurrent):
 		case atomic.LoadUint32(&beingPaused) != 0:
 		case atomic.LoadUint32(&shouldDelay) != 0:
 			atomic.StoreUint32(&shouldDelay, 0)
 			beingDelayed = time.After(_requestInterval)
 		case beingDelayed != nil:
+		case atomic.LoadUint32(&errorCount) >= uint32(_errorCapacity):
+			if atomic.LoadUint32(&activeCount) == 0 {
+				return
+			}
+			if _url == primaryURL {
+				break
+			}
+			_url = primaryURL
+			errorCount = 0
+			fallthrough
 		default:
 			offset, size := takeIncomplete()
 			if size == 0 {
