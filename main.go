@@ -54,42 +54,39 @@ type (
 	}
 )
 
-var (
-	_url             string
-	_referer         string
-	_userAgent       string
-	_splitSize       uint
-	_concurrent      uint
-	_errorCapacity   uint
-	_requestInterval time.Duration
-)
-
 func main() {
-	flag.UintVar(&_splitSize, "s", _defaultSplitSize, "split size (MiB)")
-	flag.UintVar(&_concurrent, "c", _defaultConcurrent, "maximum number of parallel downloads")
-	flag.UintVar(&_errorCapacity, "e", _defaultErrorCapacity, "maximum number of errors")
-	flag.DurationVar(&_requestInterval, "i", _defaultRequestInterval, "request interval")
+	var (
+		splitSize       uint
+		concurrent      uint
+		errorCapacity   uint
+		requestInterval time.Duration
+	)
+	flag.UintVar(&splitSize, "s", _defaultSplitSize, "split size (MiB)")
+	flag.UintVar(&concurrent, "c", _defaultConcurrent, "maximum number of parallel downloads")
+	flag.UintVar(&errorCapacity, "e", _defaultErrorCapacity, "maximum number of errors")
+	flag.DurationVar(&requestInterval, "i", _defaultRequestInterval, "request interval")
 	flag.Parse()
-
-	var err error
 
 	fmt.Print("\033[1K\r")
 	fmt.Print("loading URL...")
-	_url, err = _loadURL(filepath.Join(".", "URL"))
+	primaryURL, err := _loadURL(filepath.Join(".", "URL"))
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
+	var referer string
 	if err == nil || os.IsNotExist(err) {
 		fmt.Print("\033[1K\r")
 		fmt.Print("loading Referer...")
-		_referer, err = _loadURL(filepath.Join(".", "Referer"))
+		referer, err = _loadURL(filepath.Join(".", "Referer"))
 	}
+
+	var userAgent string
 	if err == nil || os.IsNotExist(err) {
 		fmt.Print("\033[1K\r")
 		fmt.Print("loading UserAgent...")
-		_userAgent, err = _loadSingleLine(filepath.Join(".", "UserAgent"), 1024)
+		userAgent, err = _loadSingleLine(filepath.Join(".", "UserAgent"), 1024)
 	}
 
 	client := http.DefaultClient
@@ -193,7 +190,7 @@ func main() {
 	topCtx := context.TODO()
 
 	queuedMessages := observable.NewSubject()
-	queuedMessagesCtx, _ := queuedMessages.Congest(int(_concurrent*2)).Subscribe(
+	queuedMessagesCtx, _ := queuedMessages.Congest(int(concurrent*2)).Subscribe(
 		topCtx,
 		observable.ObserverFunc(
 			func(t observable.Notification) {
@@ -323,7 +320,7 @@ func main() {
 	}
 
 	queuedWrites := observable.NewSubject()
-	queuedWritesCtx, _ := queuedWrites.Congest(int(_concurrent*2)).Subscribe(
+	queuedWritesCtx, _ := queuedWrites.Congest(int(concurrent*2)).Subscribe(
 		topCtx,
 		observable.ObserverFunc(
 			func(t observable.Notification) {
@@ -362,9 +359,9 @@ func main() {
 	}
 
 	takeIncomplete := func() (offset, size int64) {
-		splitSize := int64(_splitSize) * 1024 * 1024
+		splitSize := int64(splitSize) * 1024 * 1024
 		if file.FileSize() > 0 {
-			size := (file.FileSize() - file.CompleteSize()) / int64(_concurrent)
+			size := (file.FileSize() - file.CompleteSize()) / int64(concurrent)
 			if size < splitSize {
 				splitSize = size
 			}
@@ -391,30 +388,32 @@ func main() {
 	defer signal.Stop(waitSignal)
 
 	var (
-		errorCount   uint32
-		beingPaused  uint32
-		shouldDelay  uint32
-		beingDelayed <-chan time.Time
-		stateChanged = make(chan struct{}, 1)
-		primaryURL   = _url
+		beingPaused    uint32
+		shouldDelay    uint32
+		beingDelayed   <-chan time.Time
+		errorCount     uint32
+		hasFatalErrors uint32
+		stateChanged   = make(chan struct{}, 1)
+		currentURL     = primaryURL
 	)
 
 	for {
 		switch {
-		case atomic.LoadUint32(&activeCount) >= uint32(_concurrent):
+		case atomic.LoadUint32(&activeCount) >= uint32(concurrent):
 		case atomic.LoadUint32(&beingPaused) != 0:
 		case atomic.LoadUint32(&shouldDelay) != 0:
 			atomic.StoreUint32(&shouldDelay, 0)
-			beingDelayed = time.After(_requestInterval)
+			beingDelayed = time.After(requestInterval)
 		case beingDelayed != nil:
-		case atomic.LoadUint32(&errorCount) >= uint32(_errorCapacity):
+		case atomic.LoadUint32(&hasFatalErrors) != 0:
+		case atomic.LoadUint32(&errorCount) >= uint32(errorCapacity):
 			if atomic.LoadUint32(&activeCount) == 0 {
 				return
 			}
-			if _url == primaryURL {
+			if currentURL == primaryURL {
 				break
 			}
-			_url = primaryURL
+			currentURL = primaryURL
 			errorCount = 0
 			fallthrough
 		default:
@@ -446,7 +445,7 @@ func main() {
 					}
 				}()
 
-				req, err := http.NewRequest(http.MethodGet, _url, nil)
+				req, err := http.NewRequest(http.MethodGet, currentURL, nil)
 				if err != nil {
 					return
 				}
@@ -459,11 +458,11 @@ func main() {
 					shouldLimitSize = true
 				}
 
-				if _referer != "" {
-					req.Header.Set("Referer", _referer)
+				if referer != "" {
+					req.Header.Set("Referer", referer)
 				}
-				if _userAgent != "" {
-					req.Header.Set("User-Agent", _userAgent)
+				if userAgent != "" {
+					req.Header.Set("User-Agent", userAgent)
 				}
 
 				req = req.WithContext(ctx)
@@ -562,7 +561,7 @@ func main() {
 				}
 
 				if req != resp.Request {
-					_url = resp.Request.URL.String()
+					currentURL = resp.Request.URL.String()
 				}
 
 				body := io.Reader(resp.Body)
@@ -648,7 +647,7 @@ func main() {
 							}
 						}
 						if v.Err != nil && v.Fatal {
-							atomic.StoreUint32(&errorCount, uint32(_errorCapacity))
+							atomic.StoreUint32(&hasFatalErrors, 1)
 						}
 
 						select {
