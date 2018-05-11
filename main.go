@@ -49,8 +49,9 @@ type (
 	}
 
 	_CompleteMessage struct {
-		Err   error
-		Fatal bool
+		Err       error
+		Fatal     bool
+		Responsed bool
 	}
 )
 
@@ -184,7 +185,7 @@ func main() {
 		statCurrent   = stat{time.Now(), 0}
 		firstRecvTime time.Time
 		totalReceived int64
-		activeCount   uint32
+		responseCount int
 	)
 
 	topCtx := context.TODO()
@@ -202,6 +203,7 @@ func main() {
 						statCurrent.Size += int64(v.Just)
 						if totalReceived == 0 {
 							firstRecvTime = time.Now()
+							log.Println("first arrival")
 						}
 						totalReceived += int64(v.Just)
 
@@ -212,9 +214,15 @@ func main() {
 						}
 						statList = append(statList, statCurrent)
 						statCurrent = stat{time.Now(), 0}
-						shouldPrint = true
+						shouldPrint = totalReceived > 0
+
+					case _ResponseMessage:
+						responseCount++
 
 					case _CompleteMessage:
+						if v.Responsed {
+							responseCount--
+						}
 						unwrappedErr := v.Err
 						switch e := unwrappedErr.(type) {
 						case *net.OpError:
@@ -227,11 +235,11 @@ func main() {
 						default:
 							fmt.Print("\033[1K\r")
 							log.Println(unwrappedErr)
-							shouldPrint = true
+							shouldPrint = totalReceived > 0
 						}
 					}
 				default:
-					shouldPrint = true
+					shouldPrint = totalReceived > 0
 				}
 				if shouldPrint {
 					fmt.Print("\033[1K\r")
@@ -255,7 +263,7 @@ func main() {
 						fmt.Printf("%v%% [%v] ", progress, s)
 					}
 
-					fmt.Printf("DL:%v", atomic.LoadUint32(&activeCount))
+					fmt.Printf("DL:%v", responseCount)
 
 					{
 						stat := statCurrent
@@ -284,7 +292,7 @@ func main() {
 						if stat.Size > 0 {
 							speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
 							remaining := float64(fileSize - completeSize)
-							fmt.Printf(" %v", time.Duration(remaining/speed)*time.Second)
+							fmt.Printf(" %v", _formatDuration(time.Duration(remaining/speed)*time.Second))
 						}
 					}
 
@@ -298,7 +306,7 @@ func main() {
 					log.Printf(
 						"recv %vB in %v, %vB/s\n",
 						_formatBytes(totalReceived),
-						timeUsed.Truncate(time.Second),
+						timeUsed.Round(time.Second),
 						_formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
 					)
 				}
@@ -337,16 +345,19 @@ func main() {
 	}()
 
 	bufferPool := sync.Pool{
-		New: func() interface{} { return make([]byte, _readBufferSize) },
+		New: func() interface{} {
+			buf := make([]byte, _readBufferSize)
+			return &buf
+		},
 	}
 
 	readAndWrite := func(body io.Reader, offset int64) (n int, err error) {
-		buf := bufferPool.Get().([]byte)
+		buf := *bufferPool.Get().(*[]byte)
 		n, err = body.Read(buf)
 		if n > 0 {
 			queuedWrites.Next(func() {
 				file.WriteAt(buf[:n], offset)
-				bufferPool.Put(buf)
+				bufferPool.Put(&buf)
 			})
 		}
 		return
@@ -388,6 +399,7 @@ func main() {
 	defer signal.Stop(waitSignal)
 
 	var (
+		activeCount    uint32
 		beingPaused    uint32
 		shouldDelay    uint32
 		beingDelayed   <-chan time.Time
@@ -439,7 +451,7 @@ func main() {
 				defer func() {
 					if err != nil {
 						returnIncomplete(offset, size)
-						ob.Next(_CompleteMessage{err, fatal})
+						ob.Next(_CompleteMessage{err, fatal, false})
 						ob.Complete()
 						cancel()
 					}
@@ -590,7 +602,7 @@ func main() {
 							waitWriteDone()
 						}
 						returnIncomplete(offset, size)
-						ob.Next(_CompleteMessage{err, false})
+						ob.Next(_CompleteMessage{err, false, true})
 						ob.Complete()
 						cancel()
 					}()
@@ -619,15 +631,12 @@ func main() {
 				return
 			}
 
-			hasResponseMessage := false
-
 			do := func(t observable.Notification) {
 				if t.HasValue {
 					switch v := t.Value.(type) {
 					case _ProgressMessage:
 
 					case _ResponseMessage:
-						hasResponseMessage = true
 						atomic.StoreUint32(&beingPaused, 0)
 						atomic.StoreUint32(&errorCount, 0)
 
@@ -638,7 +647,7 @@ func main() {
 
 					case _CompleteMessage:
 						atomic.AddUint32(&activeCount, math.MaxUint32)
-						if !hasResponseMessage {
+						if !v.Responsed {
 							atomic.StoreUint32(&beingPaused, 0)
 							if v.Err != nil {
 								atomic.AddUint32(&errorCount, 1)
@@ -684,6 +693,24 @@ func _formatBytes(n int64) string {
 	}
 	megabytes := int64(math.Ceil(float64(n) / (1024 * 1024)))
 	return strconv.FormatInt(megabytes, 10) + "M"
+}
+
+func _formatDuration(d time.Duration) (s string) {
+	switch {
+	case d < time.Minute:
+		s = d.Round(time.Second).String()
+	case d < time.Hour:
+		s = d.Round(time.Minute).String()
+	default:
+		s = d.Round(time.Hour).String()
+	}
+	if strings.HasSuffix(s, "m0s") {
+		s = s[:len(s)-2]
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = s[:len(s)-2]
+	}
+	return
 }
 
 func _loadSingleLine(name string, max int) (line string, err error) {
