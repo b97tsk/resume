@@ -52,12 +52,7 @@ func (f *_DataFile) LoadHashFile() (err error) {
 	defer f.mu.Unlock()
 
 	name := filepath.Join(filepath.Dir(f.name), "Hash")
-	file, err := os.Open(name + "New")
-	if err != nil {
-		file, err = os.Open(name)
-	} else {
-		os.Rename(name+"New", name)
-	}
+	file, err := os.Open(name)
 	if err != nil {
 		return
 	}
