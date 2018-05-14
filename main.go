@@ -191,7 +191,7 @@ func main() {
 	topCtx := context.TODO()
 
 	queuedMessages := observable.NewSubject()
-	queuedMessagesCtx, _ := queuedMessages.Congest(int(concurrent*2)).Subscribe(
+	queuedMessagesCtx, _ := queuedMessages.Congest(int(concurrent*3)).Subscribe(
 		topCtx,
 		observable.ObserverFunc(
 			func(t observable.Notification) {
@@ -328,7 +328,7 @@ func main() {
 	}
 
 	queuedWrites := observable.NewSubject()
-	queuedWritesCtx, _ := queuedWrites.Congest(int(concurrent*2)).Subscribe(
+	queuedWritesCtx, _ := queuedWrites.Congest(int(concurrent*3)).Subscribe(
 		topCtx,
 		observable.ObserverFunc(
 			func(t observable.Notification) {

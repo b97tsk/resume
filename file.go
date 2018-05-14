@@ -13,24 +13,26 @@ import (
 
 const (
 	_pieceSize = 1024 * 1024
+	_syncSize  = 20 * 1024 * 1024
 	_filePerm  = 0644
-	_syncSize  = 16 * 1024 * 1024
 )
 
 type _DataFile struct {
-	mu   sync.Mutex
-	name string
-	file *os.File
-	hash struct {
-		Pieces       []_PieceInfo
-		FileSize     int64
-		FileMD5      string
-		EntityTag    string
-		LastModified string
-	}
+	mu              sync.Mutex
+	name            string
+	file            *os.File
+	hash            _HashInfo
 	incomplete      _RangeSet
 	completeSize    int64
 	recentIncrement int
+}
+
+type _HashInfo struct {
+	Pieces       []_PieceInfo
+	FileSize     int64
+	FileMD5      string
+	EntityTag    string
+	LastModified string
 }
 
 type _PieceInfo struct {
@@ -58,7 +60,7 @@ func (f *_DataFile) LoadHashFile() (err error) {
 	}
 	defer file.Close()
 
-	hash := f.hash
+	var hash _HashInfo
 	err = gob.NewDecoder(file).Decode(&hash)
 	if err != nil {
 		return
