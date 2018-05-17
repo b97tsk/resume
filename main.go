@@ -193,125 +193,123 @@ func main() {
 	queuedMessages := observable.NewSubject()
 	queuedMessagesCtx, _ := queuedMessages.Congest(int(concurrent*3)).Subscribe(
 		topCtx,
-		observable.ObserverFunc(
-			func(t observable.Notification) {
-				shouldPrint := false
-				switch {
-				case t.HasValue:
-					switch v := t.Value.(type) {
-					case _ProgressMessage:
-						statCurrent.Size += int64(v.Just)
-						if totalReceived == 0 {
-							firstRecvTime = time.Now()
-							log.Println("first arrival")
-						}
-						totalReceived += int64(v.Just)
-
-					case _PrintMessage:
-						if len(statList) == statCapacity {
-							copy(statList, statList[1:])
-							statList = statList[:statCapacity-1]
-						}
-						statList = append(statList, statCurrent)
-						statCurrent = stat{time.Now(), 0}
-						shouldPrint = totalReceived > 0
-
-					case _ResponseMessage:
-						responseCount++
-
-					case _CompleteMessage:
-						if v.Responsed {
-							responseCount--
-						}
-						unwrappedErr := v.Err
-						switch e := unwrappedErr.(type) {
-						case *net.OpError:
-							unwrappedErr = e.Err
-						case *url.Error:
-							unwrappedErr = e.Err
-						}
-						switch unwrappedErr {
-						case nil, io.EOF, io.ErrUnexpectedEOF, context.Canceled:
-						default:
-							fmt.Print("\033[1K\r")
-							log.Println(unwrappedErr)
-							shouldPrint = totalReceived > 0
-						}
+		func(t observable.Notification) {
+			shouldPrint := false
+			switch {
+			case t.HasValue:
+				switch v := t.Value.(type) {
+				case _ProgressMessage:
+					statCurrent.Size += int64(v.Just)
+					if totalReceived == 0 {
+						firstRecvTime = time.Now()
+						log.Println("first arrival")
 					}
-				default:
+					totalReceived += int64(v.Just)
+
+				case _PrintMessage:
+					if len(statList) == statCapacity {
+						copy(statList, statList[1:])
+						statList = statList[:statCapacity-1]
+					}
+					statList = append(statList, statCurrent)
+					statCurrent = stat{time.Now(), 0}
 					shouldPrint = totalReceived > 0
+
+				case _ResponseMessage:
+					responseCount++
+
+				case _CompleteMessage:
+					if v.Responsed {
+						responseCount--
+					}
+					unwrappedErr := v.Err
+					switch e := unwrappedErr.(type) {
+					case *net.OpError:
+						unwrappedErr = e.Err
+					case *url.Error:
+						unwrappedErr = e.Err
+					}
+					switch unwrappedErr {
+					case nil, io.EOF, io.ErrUnexpectedEOF, context.Canceled:
+					default:
+						fmt.Print("\033[1K\r")
+						log.Println(unwrappedErr)
+						shouldPrint = totalReceived > 0
+					}
 				}
-				if shouldPrint {
-					fmt.Print("\033[1K\r")
+			default:
+				shouldPrint = totalReceived > 0
+			}
+			if shouldPrint {
+				fmt.Print("\033[1K\r")
 
-					fileSize := file.FileSize()
-					completeSize := file.CompleteSize()
+				fileSize := file.FileSize()
+				completeSize := file.CompleteSize()
 
-					{
-						const length = 20
-						progress := 0
-						if fileSize > 0 {
-							progress = int(float64(completeSize) / float64(fileSize) * 100)
-						}
-						s := strings.Repeat("=", length*progress/100)
-						if len(s) < length && completeSize > 0 {
-							s += ">"
-						}
-						if len(s) < length {
-							s += strings.Repeat("-", length-len(s))
-						}
-						fmt.Printf("%v%% [%v] ", progress, s)
-					}
-
-					fmt.Printf("DL:%v", responseCount)
-
-					{
-						stat := statCurrent
-						statList := statList
-						if len(statList) >= instantCount {
-							statList = statList[len(statList)-instantCount:]
-						}
-						if len(statList) > 0 {
-							stat.Time = statList[0].Time
-						}
-						for _, s := range statList {
-							stat.Size += s.Size
-						}
-						speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
-						fmt.Printf(" %vB/s", _formatBytes(int64(speed)))
-					}
-
+				{
+					const length = 20
+					progress := 0
 					if fileSize > 0 {
-						stat := statCurrent
-						if len(statList) > 0 {
-							stat.Time = statList[0].Time
-						}
-						for _, s := range statList {
-							stat.Size += s.Size
-						}
-						if stat.Size > 0 {
-							speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
-							remaining := float64(fileSize - completeSize)
-							fmt.Printf(" %v", _formatDuration(time.Duration(remaining/speed)*time.Second))
-						}
+						progress = int(float64(completeSize) / float64(fileSize) * 100)
 					}
+					s := strings.Repeat("=", length*progress/100)
+					if len(s) < length && completeSize > 0 {
+						s += ">"
+					}
+					if len(s) < length {
+						s += strings.Repeat("-", length-len(s))
+					}
+					fmt.Printf("%v%% [%v] ", progress, s)
+				}
 
-					if !t.HasValue {
-						// about to exit, keep this status line
-						fmt.Println()
+				fmt.Printf("DL:%v", responseCount)
+
+				{
+					stat := statCurrent
+					statList := statList
+					if len(statList) >= instantCount {
+						statList = statList[len(statList)-instantCount:]
+					}
+					if len(statList) > 0 {
+						stat.Time = statList[0].Time
+					}
+					for _, s := range statList {
+						stat.Size += s.Size
+					}
+					speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
+					fmt.Printf(" %vB/s", _formatBytes(int64(speed)))
+				}
+
+				if fileSize > 0 {
+					stat := statCurrent
+					if len(statList) > 0 {
+						stat.Time = statList[0].Time
+					}
+					for _, s := range statList {
+						stat.Size += s.Size
+					}
+					if stat.Size > 0 {
+						speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
+						remaining := float64(fileSize - completeSize)
+						fmt.Printf(" %v", _formatDuration(time.Duration(remaining/speed)*time.Second))
 					}
 				}
-				if !t.HasValue && totalReceived > 0 {
-					timeUsed := time.Since(firstRecvTime)
-					log.Printf(
-						"recv %vB in %v, %vB/s\n",
-						_formatBytes(totalReceived),
-						timeUsed.Round(time.Second),
-						_formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
-					)
+
+				if !t.HasValue {
+					// about to exit, keep this status line
+					fmt.Println()
 				}
-			},
-		),
+			}
+			if !t.HasValue && totalReceived > 0 {
+				timeUsed := time.Since(firstRecvTime)
+				log.Printf(
+					"recv %vB in %v, %vB/s\n",
+					_formatBytes(totalReceived),
+					timeUsed.Round(time.Second),
+					_formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
+				)
+			}
+		},
 	)
 	defer func() {
 		queuedMessages.Complete()
@@ -320,7 +318,7 @@ func main() {
 
 	{
 		ctx, cancel := observable.Interval(time.Second).
-			MapTo(_PrintMessage{}).Subscribe(topCtx, queuedMessages)
+			MapTo(_PrintMessage{}).Subscribe(topCtx, queuedMessages.Observer)
 		defer func() {
 			cancel()
 			<-ctx.Done()
@@ -330,13 +328,11 @@ func main() {
 	queuedWrites := observable.NewSubject()
 	queuedWritesCtx, _ := queuedWrites.Congest(int(concurrent*3)).Subscribe(
 		topCtx,
-		observable.ObserverFunc(
-			func(t observable.Notification) {
-				if t.HasValue {
-					t.Value.(func())()
-				}
-			},
-		),
+		func(t observable.Notification) {
+			if t.HasValue {
+				t.Value.(func())()
+			}
+		},
 	)
 	defer func() {
 		queuedWrites.Complete()
@@ -385,7 +381,7 @@ func main() {
 	}
 
 	activeTasks := observable.NewSubject()
-	activeTasksCtx, _ := activeTasks.MergeAll().Subscribe(topCtx, queuedMessages)
+	activeTasksCtx, _ := activeTasks.MergeAll().Subscribe(topCtx, queuedMessages.Observer)
 	defer func() {
 		activeTasks.Complete()
 		<-activeTasksCtx.Done()
@@ -667,7 +663,7 @@ func main() {
 				}
 			}
 
-			activeTasks.Next(observable.Create(cr).Do(observable.ObserverFunc(do)))
+			activeTasks.Next(observable.Create(cr).Do(do))
 		}
 
 		select {
