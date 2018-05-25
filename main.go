@@ -68,20 +68,28 @@ func main() {
 	flag.DurationVar(&requestInterval, "i", _defaultRequestInterval, "request interval")
 	flag.Parse()
 
-	fmt.Print("\033[1K\r")
-	fmt.Print("loading URL...")
-	primaryURL, err := _loadURL(filepath.Join(".", "URL"))
-	if err != nil {
-		fmt.Println(err)
-		return
+	var primaryURL string
+	if flag.NArg() > 0 {
+		u, err := url.Parse(flag.Arg(0))
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		primaryURL = u.String()
+	} else {
+		fmt.Print("\033[1K\r")
+		fmt.Print("loading URL...")
+		url, err := _loadURL(filepath.Join(".", "URL"))
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		primaryURL = url
 	}
 
-	var referer string
-	if err == nil || os.IsNotExist(err) {
-		fmt.Print("\033[1K\r")
-		fmt.Print("loading Referer...")
-		referer, err = _loadURL(filepath.Join(".", "Referer"))
-	}
+	fmt.Print("\033[1K\r")
+	fmt.Print("loading Referer...")
+	referer, err := _loadURL(filepath.Join(".", "Referer"))
 
 	var userAgent string
 	if err == nil || os.IsNotExist(err) {

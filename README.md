@@ -22,11 +22,12 @@ $ cd .. && rm -rf work
 
 # Files
 ### Input Files
-- **URL** (mandatory) contains the URL you want to download.
+- **URL** (optional) contains the URL you want to download.
 - **Referer** (optional) contains the referer.
 - **UserAgent** (optional) contains the user agent.
 - **Cookies** (optional) contains the cookies. The file format is [Netscape format](https://unix.stackexchange.com/a/210282).
+> Argument #1 is considered the URL, if provided, the **URL** file will be ignored.
 ### Output Files
-- **File** contains all the data downloaded from the **URL**.
+- **File** contains all the data downloaded from the URL.
 - **Hash** contains hash information of the **File**.
 > If **File** or **Hash** is missing, download will start from the beginning.
