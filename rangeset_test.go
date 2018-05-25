@@ -6,7 +6,7 @@ import (
 )
 
 func TestRangeSet(t *testing.T) {
-	var s _RangeSet
+	var s RangeSet
 
 	expect := func(title, expected string) {
 		if fmt.Sprint(s) != expected {

@@ -17,39 +17,39 @@ const (
 	_filePerm  = 0644
 )
 
-type _DataFile struct {
+type DataFile struct {
 	mu              sync.Mutex
 	name            string
 	file            *os.File
-	hash            _HashInfo
-	incomplete      _RangeSet
+	hash            HashInfo
+	incomplete      RangeSet
 	completeSize    int64
 	recentIncrement int
 }
 
-type _HashInfo struct {
-	Pieces       []_PieceInfo
+type HashInfo struct {
+	Pieces       []PieceInfo
 	FileSize     int64
 	FileMD5      string
 	EntityTag    string
 	LastModified string
 }
 
-type _PieceInfo struct {
+type PieceInfo struct {
 	Size     uint32
 	HashCode uint32
 }
 
-func _openDataFile(name string) (f *_DataFile, err error) {
+func _openDataFile(name string) (f *DataFile, err error) {
 	file, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE, _filePerm)
 	if err == nil {
-		f = &_DataFile{name: name, file: file}
+		f = &DataFile{name: name, file: file}
 		f.incomplete.AddRange(0, math.MaxInt64)
 	}
 	return
 }
 
-func (f *_DataFile) LoadHashFile() (err error) {
+func (f *DataFile) LoadHashFile() (err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -60,13 +60,13 @@ func (f *_DataFile) LoadHashFile() (err error) {
 	}
 	defer file.Close()
 
-	var hash _HashInfo
+	var hash HashInfo
 	err = gob.NewDecoder(file).Decode(&hash)
 	if err != nil {
 		return
 	}
 
-	var incomplete _RangeSet
+	var incomplete RangeSet
 	var completeSize int64
 	incomplete.AddRange(0, math.MaxInt64)
 
@@ -97,25 +97,25 @@ func (f *_DataFile) LoadHashFile() (err error) {
 	return
 }
 
-func (f *_DataFile) CompleteSize() int64 {
+func (f *DataFile) CompleteSize() int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.completeSize
 }
 
-func (f *_DataFile) SetFileSize(size int64) error {
+func (f *DataFile) SetFileSize(size int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.setFileSizeLocked(size)
 }
 
-func (f *_DataFile) setFileSizeLocked(size int64) error {
+func (f *DataFile) setFileSizeLocked(size int64) error {
 	f.hash.FileSize = size
 
 	pieceCount := int(math.Ceil(float64(size) / _pieceSize))
 	if len(f.hash.Pieces) != pieceCount {
 		pieces := f.hash.Pieces
-		f.hash.Pieces = make([]_PieceInfo, pieceCount)
+		f.hash.Pieces = make([]PieceInfo, pieceCount)
 		copy(f.hash.Pieces, pieces)
 	}
 
@@ -128,49 +128,49 @@ func (f *_DataFile) setFileSizeLocked(size int64) error {
 	return f.file.Truncate(size)
 }
 
-func (f *_DataFile) FileSize() int64 {
+func (f *DataFile) FileSize() int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.hash.FileSize
 }
 
-func (f *_DataFile) SetFileMD5(fileMD5 string) {
+func (f *DataFile) SetFileMD5(fileMD5 string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.hash.FileMD5 = fileMD5
 }
 
-func (f *_DataFile) FileMD5() string {
+func (f *DataFile) FileMD5() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.hash.FileMD5
 }
 
-func (f *_DataFile) SetEntityTag(entityTag string) {
+func (f *DataFile) SetEntityTag(entityTag string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.hash.EntityTag = entityTag
 }
 
-func (f *_DataFile) EntityTag() string {
+func (f *DataFile) EntityTag() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.hash.EntityTag
 }
 
-func (f *_DataFile) SetLastModified(lastModified string) {
+func (f *DataFile) SetLastModified(lastModified string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.hash.LastModified = lastModified
 }
 
-func (f *_DataFile) LastModified() string {
+func (f *DataFile) LastModified() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.hash.LastModified
 }
 
-func (f *_DataFile) TakeIncomplete(max int64) (offset, size int64) {
+func (f *DataFile) TakeIncomplete(max int64) (offset, size int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.incomplete) == 0 {
@@ -191,7 +191,7 @@ func (f *_DataFile) TakeIncomplete(max int64) (offset, size int64) {
 	return low, high - low
 }
 
-func (f *_DataFile) ReturnIncomplete(offset, size int64) {
+func (f *DataFile) ReturnIncomplete(offset, size int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.incomplete.AddRange(offset, offset+size)
@@ -200,7 +200,7 @@ func (f *_DataFile) ReturnIncomplete(offset, size int64) {
 	}
 }
 
-func (f *_DataFile) WriteAt(b []byte, offset int64) {
+func (f *DataFile) WriteAt(b []byte, offset int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -259,7 +259,7 @@ func (f *_DataFile) WriteAt(b []byte, offset int64) {
 	}
 }
 
-func (f *_DataFile) Checksum(digest hash.Hash) error {
+func (f *DataFile) Checksum(digest hash.Hash) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.file.Seek(0, io.SeekStart)
@@ -267,7 +267,7 @@ func (f *_DataFile) Checksum(digest hash.Hash) error {
 	return err
 }
 
-func (f *_DataFile) Sync() error {
+func (f *DataFile) Sync() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.recentIncrement > 0 {
@@ -277,13 +277,13 @@ func (f *_DataFile) Sync() error {
 	return nil
 }
 
-func (f *_DataFile) SyncNow() error {
+func (f *DataFile) SyncNow() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.syncLocked()
 }
 
-func (f *_DataFile) syncLocked() error {
+func (f *DataFile) syncLocked() error {
 	name := filepath.Join(filepath.Dir(f.name), "Hash")
 	file, err := os.OpenFile(name+"New", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, _filePerm)
 	if err != nil {
@@ -311,7 +311,7 @@ func (f *_DataFile) syncLocked() error {
 	return err4
 }
 
-func (f *_DataFile) Close() error {
+func (f *DataFile) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 

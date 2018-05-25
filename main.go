@@ -40,15 +40,15 @@ const (
 )
 
 type (
-	_PrintMessage struct{}
+	PrintMessage struct{}
 
-	_ResponseMessage struct{}
+	ResponseMessage struct{}
 
-	_ProgressMessage struct {
+	ProgressMessage struct {
 		Just int
 	}
 
-	_CompleteMessage struct {
+	CompleteMessage struct {
 		Err       error
 		Fatal     bool
 		Responsed bool
@@ -198,7 +198,7 @@ func main() {
 			switch {
 			case t.HasValue:
 				switch v := t.Value.(type) {
-				case _ProgressMessage:
+				case ProgressMessage:
 					statCurrent.Size += int64(v.Just)
 					if totalReceived == 0 {
 						firstRecvTime = time.Now()
@@ -206,7 +206,7 @@ func main() {
 					}
 					totalReceived += int64(v.Just)
 
-				case _PrintMessage:
+				case PrintMessage:
 					if len(statList) == statCapacity {
 						copy(statList, statList[1:])
 						statList = statList[:statCapacity-1]
@@ -215,10 +215,10 @@ func main() {
 					statCurrent = stat{time.Now(), 0}
 					shouldPrint = totalReceived > 0
 
-				case _ResponseMessage:
+				case ResponseMessage:
 					responseCount++
 
-				case _CompleteMessage:
+				case CompleteMessage:
 					if v.Responsed {
 						responseCount--
 					}
@@ -318,7 +318,7 @@ func main() {
 
 	{
 		ctx, cancel := observable.Interval(time.Second).
-			MapTo(_PrintMessage{}).Subscribe(topCtx, queuedMessages.Observer)
+			MapTo(PrintMessage{}).Subscribe(topCtx, queuedMessages.Observer)
 		defer func() {
 			cancel()
 			<-ctx.Done()
@@ -447,7 +447,7 @@ func main() {
 				defer func() {
 					if err != nil {
 						returnIncomplete(offset, size)
-						ob.Next(_CompleteMessage{err, fatal, false})
+						ob.Next(CompleteMessage{err, fatal, false})
 						ob.Complete()
 						cancel()
 					}
@@ -583,7 +583,7 @@ func main() {
 					body = io.LimitReader(body, size)
 				}
 
-				ob.Next(_ResponseMessage{})
+				ob.Next(ResponseMessage{})
 
 				go func() (err error) {
 					var (
@@ -598,7 +598,7 @@ func main() {
 							waitWriteDone()
 						}
 						returnIncomplete(offset, size)
-						ob.Next(_CompleteMessage{err, false, true})
+						ob.Next(CompleteMessage{err, false, true})
 						ob.Complete()
 						cancel()
 					}()
@@ -613,7 +613,7 @@ func main() {
 						if n > 0 {
 							offset, size = offset+int64(n), size-int64(n)
 							shouldWaitWrite = true
-							ob.Next(_ProgressMessage{n})
+							ob.Next(ProgressMessage{n})
 						}
 						if err != nil {
 							if err == io.EOF {
@@ -630,9 +630,9 @@ func main() {
 			do := func(t observable.Notification) {
 				if t.HasValue {
 					switch v := t.Value.(type) {
-					case _ProgressMessage:
+					case ProgressMessage:
 
-					case _ResponseMessage:
+					case ResponseMessage:
 						atomic.StoreUint32(&beingPaused, 0)
 						atomic.StoreUint32(&errorCount, 0)
 
@@ -641,7 +641,7 @@ func main() {
 						default:
 						}
 
-					case _CompleteMessage:
+					case CompleteMessage:
 						atomic.AddUint32(&activeCount, math.MaxUint32)
 						if !v.Responsed {
 							atomic.StoreUint32(&beingPaused, 0)

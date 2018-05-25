@@ -4,17 +4,17 @@ import (
 	"sort"
 )
 
-type _Range struct {
+type Range struct {
 	Low, High int64
 }
 
-type _RangeSet []_Range
+type RangeSet []Range
 
-func (s *_RangeSet) Add(single int64) {
+func (s *RangeSet) Add(single int64) {
 	s.AddRange(single, single+1)
 }
 
-func (s *_RangeSet) AddRange(low, high int64) {
+func (s *RangeSet) AddRange(low, high int64) {
 	if low >= high {
 		return
 	}
@@ -25,7 +25,7 @@ func (s *_RangeSet) AddRange(low, high int64) {
 		return
 	}
 
-	var r _Range
+	var r Range
 	if i >= 0 && low <= (*s)[i].High {
 		r.Low = (*s)[i].Low
 	} else {
@@ -42,7 +42,7 @@ func (s *_RangeSet) AddRange(low, high int64) {
 	if i < j {
 		(*s)[i] = r
 	} else {
-		*s = append(*s, _Range{})
+		*s = append(*s, Range{})
 		copy((*s)[i+1:], (*s)[i:])
 		(*s)[i] = r
 	}
@@ -53,11 +53,11 @@ func (s *_RangeSet) AddRange(low, high int64) {
 	}
 }
 
-func (s *_RangeSet) Delete(single int64) {
+func (s *RangeSet) Delete(single int64) {
 	s.DeleteRange(single, single+1)
 }
 
-func (s *_RangeSet) DeleteRange(low, high int64) {
+func (s *RangeSet) DeleteRange(low, high int64) {
 	if low >= high {
 		return
 	}
@@ -65,7 +65,7 @@ func (s *_RangeSet) DeleteRange(low, high int64) {
 	i := sort.Search(len(*s), func(i int) bool { return (*s)[i].Low > low }) - 1
 	j := sort.Search(len(*s), func(i int) bool { return (*s)[i].High > high })
 
-	var r1, r2 _Range
+	var r1, r2 Range
 	if i >= 0 && low <= (*s)[i].High {
 		r1.Low, r1.High = (*s)[i].Low, low
 	} else {
@@ -84,7 +84,7 @@ func (s *_RangeSet) DeleteRange(low, high int64) {
 		if i < j {
 			(*s)[i] = r2
 		} else {
-			*s = append(*s, _Range{})
+			*s = append(*s, Range{})
 			copy((*s)[i+1:], (*s)[i:])
 			(*s)[i] = r2
 		}
@@ -96,6 +96,6 @@ func (s *_RangeSet) DeleteRange(low, high int64) {
 	}
 }
 
-func (s *_RangeSet) Reset() {
+func (s *RangeSet) Reset() {
 	*s = nil
 }
