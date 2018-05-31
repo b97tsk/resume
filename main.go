@@ -299,7 +299,12 @@ func main() {
 					if stat.Size > 0 {
 						speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
 						remaining := float64(fileSize - completeSize)
-						fmt.Printf(" %v", _formatDuration(time.Duration(remaining/speed)*time.Second))
+						seconds := int64(math.Ceil(remaining / speed))
+						fmt.Printf(" %v", _formatDuration(time.Duration(seconds)*time.Second))
+						if seconds < int64(len(statList)) {
+							// about to complete, keep only most recent stats
+							statList = append(statList[:0], statList[len(statList)-int(seconds):]...)
+						}
 					}
 				}
 
