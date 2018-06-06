@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/gob"
-	"hash"
 	"hash/crc32"
 	"io"
 	"math"
@@ -40,6 +39,11 @@ type PieceInfo struct {
 	HashCode uint32
 }
 
+func (p *PieceInfo) Reset() {
+	p.Size = 0
+	p.HashCode = 0
+}
+
 func _openDataFile(name string) (f *DataFile, err error) {
 	file, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE, _filePerm)
 	if err == nil {
@@ -70,21 +74,15 @@ func (f *DataFile) LoadHashFile() (err error) {
 	var completeSize int64
 	incomplete.AddRange(0, math.MaxInt64)
 
-	var buf [_pieceSize]byte
 	for i := range hash.Pieces {
 		p := &hash.Pieces[i]
 		if p.Size > 0 && p.Size <= _pieceSize && p.HashCode > 0 {
 			offset := _pieceSize * int64(i)
-			f.file.Seek(offset, io.SeekStart)
-			_, err := io.ReadFull(f.file, buf[:p.Size])
-			if err == nil && crc32.ChecksumIEEE(buf[:p.Size]) == p.HashCode {
-				incomplete.DeleteRange(offset, offset+int64(p.Size))
-				completeSize += int64(p.Size)
-				continue
-			}
+			incomplete.DeleteRange(offset, offset+int64(p.Size))
+			completeSize += int64(p.Size)
+			continue
 		}
-		p.Size = 0
-		p.HashCode = 0
+		p.Reset()
 	}
 
 	f.hash = hash
@@ -259,11 +257,74 @@ func (f *DataFile) WriteAt(b []byte, offset int64) {
 	}
 }
 
-func (f *DataFile) Checksum(digest hash.Hash) error {
+func (f *DataFile) Verify(digest io.Writer) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	var (
+		offset   int64
+		hashCode uint32
+	)
+
+	w := func(b []byte) (n int, err error) {
+		if digest != nil {
+			n, err = digest.Write(b)
+		} else {
+			n, err = len(b), nil
+		}
+		if err != nil {
+			return
+		}
+
+		i := int(offset / _pieceSize)
+		pieceSizeRequired := int(_pieceSize*int64(i+1) - offset)
+		if n < pieceSizeRequired {
+			offset += int64(n)
+			hashCode = crc32.Update(hashCode, crc32.IEEETable, b)
+			return
+		}
+
+		p := &f.hash.Pieces[i]
+		hashCode = crc32.Update(hashCode, crc32.IEEETable, b[:pieceSizeRequired])
+		if hashCode != p.HashCode {
+			offset := _pieceSize * int64(i)
+			f.incomplete.AddRange(offset, offset+int64(p.Size))
+			f.completeSize -= int64(p.Size)
+			p.Reset()
+		}
+		b, i = b[pieceSizeRequired:], i+1
+
+		for len(b) >= _pieceSize {
+			p := &f.hash.Pieces[i]
+			hashCode = crc32.ChecksumIEEE(b[:_pieceSize])
+			if hashCode != p.HashCode {
+				offset := _pieceSize * int64(i)
+				f.incomplete.AddRange(offset, offset+int64(p.Size))
+				f.completeSize -= int64(p.Size)
+				p.Reset()
+			}
+			b, i = b[_pieceSize:], i+1
+		}
+
+		offset += int64(n)
+		hashCode = crc32.ChecksumIEEE(b)
+		return
+	}
+
 	f.file.Seek(0, io.SeekStart)
-	_, err := io.Copy(digest, f.file)
+	_, err := io.Copy(WriterFunc(w), f.file)
+
+	if err == nil && hashCode > 0 {
+		i := int(offset / _pieceSize)
+		p := &f.hash.Pieces[i]
+		if hashCode != p.HashCode {
+			offset := _pieceSize * int64(i)
+			f.incomplete.AddRange(offset, offset+int64(p.Size))
+			f.completeSize -= int64(p.Size)
+			p.Reset()
+		}
+	}
+
 	return err
 }
 
@@ -327,4 +388,10 @@ func (f *DataFile) Close() error {
 		return err1
 	}
 	return err2
+}
+
+type WriterFunc func(p []byte) (n int, err error)
+
+func (f WriterFunc) Write(p []byte) (n int, err error) {
+	return f(p)
 }

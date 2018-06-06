@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash"
 	"io"
 	"log"
 	"math"
@@ -39,63 +40,55 @@ const (
 	_readTimeout            = 30 * time.Second
 )
 
-type (
-	PrintMessage struct{}
-
-	ResponseMessage struct{}
-
-	ProgressMessage struct {
-		Just int
-	}
-
-	CompleteMessage struct {
-		Err       error
-		Fatal     bool
-		Responsed bool
-	}
-)
+type App struct {
+	splitSize       uint
+	concurrent      uint
+	errorCapacity   uint
+	requestInterval time.Duration
+	primaryURL      string
+	userAgent       string
+	referer         string
+}
 
 func main() {
-	var (
-		splitSize       uint
-		concurrent      uint
-		errorCapacity   uint
-		requestInterval time.Duration
-	)
-	flag.UintVar(&splitSize, "s", _defaultSplitSize, "split size (MiB)")
-	flag.UintVar(&concurrent, "c", _defaultConcurrent, "maximum number of parallel downloads")
-	flag.UintVar(&errorCapacity, "e", _defaultErrorCapacity, "maximum number of errors")
-	flag.DurationVar(&requestInterval, "i", _defaultRequestInterval, "request interval")
+	var app App
+	app.Main()
+}
+
+func (app *App) Main() {
+	flag.UintVar(&app.splitSize, "s", _defaultSplitSize, "split size (MiB)")
+	flag.UintVar(&app.concurrent, "c", _defaultConcurrent, "maximum number of parallel downloads")
+	flag.UintVar(&app.errorCapacity, "e", _defaultErrorCapacity, "maximum number of errors")
+	flag.DurationVar(&app.requestInterval, "i", _defaultRequestInterval, "request interval")
 	flag.Parse()
 
-	var primaryURL string
 	if flag.NArg() > 0 {
+		fmt.Print("parsing URL...")
 		u, err := url.Parse(flag.Arg(0))
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
-		primaryURL = u.String()
+		app.primaryURL = u.String()
 	} else {
-		fmt.Print("\033[1K\r")
 		fmt.Print("loading URL...")
 		url, err := _loadURL(filepath.Join(".", "URL"))
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
-		primaryURL = url
+		app.primaryURL = url
 	}
 
 	fmt.Print("\033[1K\r")
 	fmt.Print("loading Referer...")
 	referer, err := _loadURL(filepath.Join(".", "Referer"))
+	app.referer = referer
 
-	var userAgent string
 	if err == nil || os.IsNotExist(err) {
 		fmt.Print("\033[1K\r")
 		fmt.Print("loading UserAgent...")
-		userAgent, err = _loadSingleLine(filepath.Join(".", "UserAgent"), 1024)
+		app.userAgent, err = _loadSingleLine(filepath.Join(".", "UserAgent"), 1024)
 	}
 
 	client := http.DefaultClient
@@ -150,38 +143,72 @@ func main() {
 
 	fmt.Print("\033[1K\r")
 
-	defer func() {
+	for i := 0; i < 2; i++ {
 		fileSize := file.FileSize()
-		if fileSize == 0 {
-			return
-		}
 		completeSize := file.CompleteSize()
-		if completeSize != fileSize {
-			return
+		if fileSize == 0 || completeSize != fileSize {
+			app.dl(file, client)
+			fileSize = file.FileSize()
+			completeSize = file.CompleteSize()
+			if fileSize == 0 || completeSize != fileSize {
+				return
+			}
 		}
+
+		var digest hash.Hash
+
 		fileMD5 := strings.ToLower(file.FileMD5())
-		if len(fileMD5) != 32 {
+		if len(fileMD5) == 32 {
+			digest = md5.New()
+			fmt.Println("Content-MD5:", fileMD5)
+		}
+
+		shouldVerify := i == 0 || digest != nil
+		if !shouldVerify {
 			return
 		}
-		fmt.Print("\033[1K\r")
-		fmt.Println("Content-MD5:", fileMD5)
+
 		fmt.Print("verifying...")
-		digest := md5.New()
-		if err := file.Checksum(digest); err != nil {
+		if err := file.Verify(digest); err != nil {
 			fmt.Println(err)
 			return
 		}
-		if hex.EncodeToString(digest.Sum(nil)) != fileMD5 {
-			fmt.Println("BAD")
-			return
-		}
-		fmt.Println("OK")
-	}()
 
-	type stat struct {
-		Time time.Time
-		Size int64
+		if file.CompleteSize() != fileSize {
+			fmt.Println("BAD")
+			continue
+		}
+
+		if digest != nil && hex.EncodeToString(digest.Sum(nil)) != fileMD5 {
+			fmt.Println("BAD")
+		} else {
+			fmt.Println("OK")
+		}
+		return
 	}
+}
+
+func (app *App) dl(file *DataFile, client *http.Client) {
+	type (
+		PrintMessage struct{}
+
+		ResponseMessage struct{}
+
+		ProgressMessage struct {
+			Just int
+		}
+
+		CompleteMessage struct {
+			Err       error
+			Fatal     bool
+			Responsed bool
+		}
+
+		StatInfo struct {
+			Time time.Time
+			Size int64
+		}
+	)
 
 	const (
 		statCapacity = 30
@@ -189,8 +216,8 @@ func main() {
 	)
 
 	var (
-		statList      = make([]stat, 0, statCapacity)
-		statCurrent   = stat{time.Now(), 0}
+		statList      = make([]StatInfo, 0, statCapacity)
+		statCurrent   = StatInfo{time.Now(), 0}
 		firstRecvTime time.Time
 		totalReceived int64
 		responseCount int
@@ -199,7 +226,7 @@ func main() {
 	topCtx := context.TODO()
 
 	queuedMessages := observable.NewSubject()
-	queuedMessagesCtx, _ := queuedMessages.Congest(int(concurrent*3)).Subscribe(
+	queuedMessagesCtx, _ := queuedMessages.Congest(int(app.concurrent*3)).Subscribe(
 		topCtx,
 		func(t observable.Notification) {
 			shouldPrint := false
@@ -220,7 +247,7 @@ func main() {
 						statList = statList[:statCapacity-1]
 					}
 					statList = append(statList, statCurrent)
-					statCurrent = stat{time.Now(), 0}
+					statCurrent = StatInfo{time.Now(), 0}
 					shouldPrint = totalReceived > 0
 
 				case ResponseMessage:
@@ -339,7 +366,7 @@ func main() {
 	}
 
 	queuedWrites := observable.NewSubject()
-	queuedWritesCtx, _ := queuedWrites.Congest(int(concurrent*3)).Subscribe(
+	queuedWritesCtx, _ := queuedWrites.Congest(int(app.concurrent*3)).Subscribe(
 		topCtx,
 		func(t observable.Notification) {
 			if t.HasValue {
@@ -379,9 +406,9 @@ func main() {
 	}
 
 	takeIncomplete := func() (offset, size int64) {
-		splitSize := int64(splitSize) * 1024 * 1024
+		splitSize := int64(app.splitSize) * 1024 * 1024
 		if file.FileSize() > 0 {
-			size := (file.FileSize() - file.CompleteSize()) / int64(concurrent)
+			size := (file.FileSize() - file.CompleteSize()) / int64(app.concurrent)
 			if size < splitSize {
 				splitSize = size
 			}
@@ -415,26 +442,26 @@ func main() {
 		errorCount     uint32
 		hasFatalErrors uint32
 		stateChanged   = make(chan struct{}, 1)
-		currentURL     = primaryURL
+		currentURL     = app.primaryURL
 	)
 
 	for {
 		switch {
-		case atomic.LoadUint32(&activeCount) >= uint32(concurrent):
+		case atomic.LoadUint32(&activeCount) >= uint32(app.concurrent):
 		case atomic.LoadUint32(&beingPaused) != 0:
 		case atomic.LoadUint32(&shouldDelay) != 0:
 			atomic.StoreUint32(&shouldDelay, 0)
-			beingDelayed = time.After(requestInterval)
+			beingDelayed = time.After(app.requestInterval)
 		case beingDelayed != nil:
 		case atomic.LoadUint32(&hasFatalErrors) != 0:
-		case atomic.LoadUint32(&errorCount) >= uint32(errorCapacity):
+		case atomic.LoadUint32(&errorCount) >= uint32(app.errorCapacity):
 			if atomic.LoadUint32(&activeCount) == 0 {
 				return
 			}
-			if currentURL == primaryURL {
+			if currentURL == app.primaryURL {
 				break
 			}
-			currentURL = primaryURL
+			currentURL = app.primaryURL
 			errorCount = 0
 			fallthrough
 		default:
@@ -479,11 +506,11 @@ func main() {
 					shouldLimitSize = true
 				}
 
-				if referer != "" {
-					req.Header.Set("Referer", referer)
+				if app.referer != "" {
+					req.Header.Set("Referer", app.referer)
 				}
-				if userAgent != "" {
-					req.Header.Set("User-Agent", userAgent)
+				if app.userAgent != "" {
+					req.Header.Set("User-Agent", app.userAgent)
 				}
 
 				req = req.WithContext(ctx)
