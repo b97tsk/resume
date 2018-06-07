@@ -52,10 +52,10 @@ type App struct {
 
 func main() {
 	var app App
-	app.Main()
+	os.Exit(app.Main())
 }
 
-func (app *App) Main() {
+func (app *App) Main() int {
 	flag.UintVar(&app.splitSize, "s", _defaultSplitSize, "split size (MiB)")
 	flag.UintVar(&app.concurrent, "c", _defaultConcurrent, "maximum number of parallel downloads")
 	flag.UintVar(&app.errorCapacity, "e", _defaultErrorCapacity, "maximum number of errors")
@@ -63,39 +63,39 @@ func (app *App) Main() {
 	flag.Parse()
 
 	if flag.NArg() > 0 {
-		fmt.Print("parsing URL...")
+		app.Print("parsing URL...")
 		u, err := url.Parse(flag.Arg(0))
 		if err != nil {
-			fmt.Println(err)
-			return
+			app.Println(err)
+			return 1
 		}
 		app.primaryURL = u.String()
 	} else {
-		fmt.Print("loading URL...")
+		app.Print("loading URL...")
 		url, err := _loadURL(filepath.Join(".", "URL"))
 		if err != nil {
-			fmt.Println(err)
-			return
+			app.Println(err)
+			return 1
 		}
 		app.primaryURL = url
 	}
 
-	fmt.Print("\033[1K\r")
-	fmt.Print("loading Referer...")
+	app.Print("\033[1K\r")
+	app.Print("loading Referer...")
 	referer, err := _loadURL(filepath.Join(".", "Referer"))
 	app.referer = referer
 
 	if err == nil || os.IsNotExist(err) {
-		fmt.Print("\033[1K\r")
-		fmt.Print("loading UserAgent...")
+		app.Print("\033[1K\r")
+		app.Print("loading UserAgent...")
 		app.userAgent, err = _loadSingleLine(filepath.Join(".", "UserAgent"), 1024)
 	}
 
 	client := http.DefaultClient
 	if err == nil || os.IsNotExist(err) {
 		var jar http.CookieJar
-		fmt.Print("\033[1K\r")
-		fmt.Print("loading Cookies...")
+		app.Print("\033[1K\r")
+		app.Print("loading Cookies...")
 		jar, err = _loadCookies(filepath.Join(".", "Cookies"))
 		if err == nil {
 			client = &http.Client{Jar: jar}
@@ -113,35 +113,35 @@ func (app *App) Main() {
 	}
 
 	if err != nil && !os.IsNotExist(err) {
-		fmt.Println(err)
-		return
+		app.Println(err)
+		return 1
 	}
 
-	fmt.Print("\033[1K\r")
-	fmt.Print("opening File...")
+	app.Print("\033[1K\r")
+	app.Print("opening File...")
 	file, err := _openDataFile(fileName)
 	if err != nil {
-		fmt.Println(err)
-		return
+		app.Println(err)
+		return 1
 	}
 	defer func() {
 		err := file.Close()
 		if err != nil {
-			fmt.Println(err)
+			app.Println(err)
 		}
 	}()
 
 	if fileSize > 0 {
-		fmt.Print("\033[1K\r")
-		fmt.Print("loading Hash...")
+		app.Print("\033[1K\r")
+		app.Print("loading Hash...")
 		err := file.LoadHashFile()
 		if err != nil && !os.IsNotExist(err) {
-			fmt.Println(err)
-			return
+			app.Println(err)
+			return 1
 		}
 	}
 
-	fmt.Print("\033[1K\r")
+	app.Print("\033[1K\r")
 
 	for i := 0; i < 2; i++ {
 		fileSize := file.FileSize()
@@ -151,7 +151,7 @@ func (app *App) Main() {
 			fileSize = file.FileSize()
 			completeSize = file.CompleteSize()
 			if fileSize == 0 || completeSize != fileSize {
-				return
+				return 1
 			}
 		}
 
@@ -160,32 +160,35 @@ func (app *App) Main() {
 		fileMD5 := strings.ToLower(file.FileMD5())
 		if len(fileMD5) == 32 {
 			digest = md5.New()
-			fmt.Println("Content-MD5:", fileMD5)
+			app.Println("Content-MD5:", fileMD5)
 		}
 
 		shouldVerify := i == 0 || digest != nil
 		if !shouldVerify {
-			return
+			return 0
 		}
 
-		fmt.Print("verifying...")
+		app.Print("verifying...")
 		if err := file.Verify(digest); err != nil {
-			fmt.Println(err)
-			return
+			app.Println(err)
+			return 1
 		}
 
 		if file.CompleteSize() != fileSize {
-			fmt.Println("BAD")
+			app.Println("BAD")
 			continue
 		}
 
 		if digest != nil && hex.EncodeToString(digest.Sum(nil)) != fileMD5 {
-			fmt.Println("BAD")
-		} else {
-			fmt.Println("OK")
+			app.Println("BAD")
+			return 1
 		}
-		return
+
+		app.Println("OK")
+		return 0
 	}
+
+	return 1
 }
 
 func (app *App) dl(file *DataFile, client *http.Client) {
@@ -267,7 +270,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					switch unwrappedErr {
 					case nil, io.EOF, io.ErrUnexpectedEOF, context.Canceled:
 					default:
-						fmt.Print("\033[1K\r")
+						app.Print("\033[1K\r")
 						log.Println(unwrappedErr)
 						shouldPrint = totalReceived > 0
 					}
@@ -276,7 +279,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 				shouldPrint = totalReceived > 0
 			}
 			if shouldPrint {
-				fmt.Print("\033[1K\r")
+				app.Print("\033[1K\r")
 
 				fileSize := file.FileSize()
 				completeSize := file.CompleteSize()
@@ -294,10 +297,10 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					if len(s) < length {
 						s += strings.Repeat("-", length-len(s))
 					}
-					fmt.Printf("%v%% [%v] ", progress, s)
+					app.Printf("%v%% [%v] ", progress, s)
 				}
 
-				fmt.Printf("DL:%v", responseCount)
+				app.Printf("DL:%v", responseCount)
 
 				{
 					stat := statCurrent
@@ -312,7 +315,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 						stat.Size += s.Size
 					}
 					speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
-					fmt.Printf(" %vB/s", _formatBytes(int64(speed)))
+					app.Printf(" %vB/s", _formatBytes(int64(speed)))
 				}
 
 				if fileSize > 0 {
@@ -327,7 +330,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 						speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
 						remaining := float64(fileSize - completeSize)
 						seconds := int64(math.Ceil(remaining / speed))
-						fmt.Printf(" %v", _formatDuration(time.Duration(seconds)*time.Second))
+						app.Printf(" %v", _formatDuration(time.Duration(seconds)*time.Second))
 						if seconds < int64(len(statList)) {
 							// about to complete, keep only most recent stats
 							statList = append(statList[:0], statList[len(statList)-int(seconds):]...)
@@ -337,7 +340,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 
 				if !t.HasValue {
 					// about to exit, keep this status line
-					fmt.Println()
+					app.Println()
 				}
 			}
 			if !t.HasValue && totalReceived > 0 {
@@ -714,6 +717,18 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 			beingDelayed = nil
 		}
 	}
+}
+
+func (*App) Print(a ...interface{}) {
+	fmt.Fprint(os.Stderr, a...)
+}
+
+func (*App) Printf(format string, a ...interface{}) {
+	fmt.Fprintf(os.Stderr, format, a...)
+}
+
+func (*App) Println(a ...interface{}) {
+	fmt.Fprintln(os.Stderr, a...)
 }
 
 func _formatBytes(n int64) string {
