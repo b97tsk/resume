@@ -438,14 +438,14 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	defer signal.Stop(waitSignal)
 
 	var (
-		activeCount    uint32
-		beingPaused    uint32
-		shouldDelay    uint32
-		beingDelayed   <-chan time.Time
-		errorCount     uint32
-		hasFatalErrors uint32
-		stateChanged   = make(chan struct{}, 1)
-		currentURL     = app.primaryURL
+		activeCount  uint32
+		beingPaused  uint32
+		shouldDelay  uint32
+		beingDelayed <-chan time.Time
+		errorCount   uint32
+		fatalErrors  uint32
+		stateChanged = make(chan struct{}, 1)
+		currentURL   = app.primaryURL
 	)
 
 	for {
@@ -456,7 +456,10 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 			atomic.StoreUint32(&shouldDelay, 0)
 			beingDelayed = time.After(app.requestInterval)
 		case beingDelayed != nil:
-		case atomic.LoadUint32(&hasFatalErrors) != 0:
+		case atomic.LoadUint32(&fatalErrors) != 0:
+			if atomic.LoadUint32(&activeCount) == 0 {
+				return
+			}
 		case atomic.LoadUint32(&errorCount) >= uint32(app.errorCapacity):
 			if atomic.LoadUint32(&activeCount) == 0 {
 				return
@@ -695,7 +698,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 							}
 						}
 						if v.Err != nil && v.Fatal {
-							atomic.StoreUint32(&hasFatalErrors, 1)
+							atomic.StoreUint32(&fatalErrors, 1)
 						}
 
 						select {
