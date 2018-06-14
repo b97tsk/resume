@@ -95,6 +95,12 @@ func (f *DataFile) LoadHashFile() (err error) {
 	return
 }
 
+func (f *DataFile) Incomplete() RangeSet {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append(RangeSet(nil), f.incomplete...)
+}
+
 func (f *DataFile) CompleteSize() int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -166,6 +172,17 @@ func (f *DataFile) LastModified() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.hash.LastModified
+}
+
+func (f *DataFile) SetRange(s RangeSet) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	low := int64(math.MinInt64)
+	for _, r := range s {
+		f.incomplete.DeleteRange(low, r.Low)
+		low = r.High
+	}
+	f.incomplete.DeleteRange(low, math.MaxInt64)
 }
 
 func (f *DataFile) TakeIncomplete(max int64) (offset, size int64) {

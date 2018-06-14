@@ -44,10 +44,11 @@ type App struct {
 	splitSize       uint
 	concurrent      uint
 	errorCapacity   uint
+	requestRange    string
 	requestInterval time.Duration
-	primaryURL      string
-	userAgent       string
 	referer         string
+	userAgent       string
+	primaryURL      string
 }
 
 func main() {
@@ -59,6 +60,7 @@ func (app *App) Main() int {
 	flag.UintVar(&app.splitSize, "s", _defaultSplitSize, "split size (MiB)")
 	flag.UintVar(&app.concurrent, "c", _defaultConcurrent, "maximum number of parallel downloads")
 	flag.UintVar(&app.errorCapacity, "e", _defaultErrorCapacity, "maximum number of errors")
+	flag.StringVar(&app.requestRange, "r", "", "request range (MiB), e.g., 0-1023")
 	flag.DurationVar(&app.requestInterval, "i", _defaultRequestInterval, "request interval")
 	flag.Parse()
 
@@ -142,6 +144,39 @@ func (app *App) Main() int {
 	}
 
 	app.Print("\033[1K\r")
+
+	if app.requestRange != "" {
+		var requestRange RangeSet
+		for _, r := range strings.Split(app.requestRange, ",") {
+			r := strings.Split(r, "-")
+			if len(r) > 2 {
+				app.Println("request range is invalid")
+				return 1
+			}
+			i, err := strconv.ParseInt(r[0], 10, 32)
+			if err != nil {
+				app.Println("request range is invalid")
+				return 1
+			}
+			if len(r) == 1 {
+				requestRange.AddRange(i*1024*1024, (i+1)*1024*1024)
+				continue
+			}
+			if r[1] == "" {
+				requestRange.AddRange(i*1024*1024, math.MaxInt64)
+				continue
+			}
+			j, err := strconv.ParseInt(r[1], 10, 32)
+			if err != nil || j < i {
+				app.Println("request range is invalid")
+				return 1
+			}
+			requestRange.AddRange(i*1024*1024, (j+1)*1024*1024)
+		}
+		if len(requestRange) > 0 {
+			file.SetRange(requestRange)
+		}
+	}
 
 	for i := 0; i < 2; i++ {
 		fileSize := file.FileSize()
