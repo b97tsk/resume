@@ -57,50 +57,36 @@ func main() {
 }
 
 func (app *App) Main() int {
+	var showStatus bool
 	flag.UintVar(&app.splitSize, "s", _defaultSplitSize, "split size (MiB)")
 	flag.UintVar(&app.concurrent, "c", _defaultConcurrent, "maximum number of parallel downloads")
 	flag.UintVar(&app.errorCapacity, "e", _defaultErrorCapacity, "maximum number of errors")
 	flag.StringVar(&app.requestRange, "r", "", "request range (MiB), e.g., 0-1023")
 	flag.DurationVar(&app.requestInterval, "i", _defaultRequestInterval, "request interval")
+	flag.BoolVar(&showStatus, "status", false, "show status, then exit")
 	flag.Parse()
 
-	if flag.NArg() > 0 {
-		app.Print("parsing URL...")
-		u, err := url.Parse(flag.Arg(0))
-		if err != nil {
-			app.Println(err)
-			return 1
+	var err error
+	var client = http.DefaultClient
+
+	if !showStatus {
+		app.Print("loading Referer...")
+		app.referer, err = _loadURL(filepath.Join(".", "Referer"))
+
+		if err == nil || os.IsNotExist(err) {
+			app.Print("\033[1K\r")
+			app.Print("loading UserAgent...")
+			app.userAgent, err = _loadSingleLine(filepath.Join(".", "UserAgent"), 1024)
 		}
-		app.primaryURL = u.String()
-	} else {
-		app.Print("loading URL...")
-		url, err := _loadURL(filepath.Join(".", "URL"))
-		if err != nil {
-			app.Println(err)
-			return 1
-		}
-		app.primaryURL = url
-	}
 
-	app.Print("\033[1K\r")
-	app.Print("loading Referer...")
-	referer, err := _loadURL(filepath.Join(".", "Referer"))
-	app.referer = referer
-
-	if err == nil || os.IsNotExist(err) {
-		app.Print("\033[1K\r")
-		app.Print("loading UserAgent...")
-		app.userAgent, err = _loadSingleLine(filepath.Join(".", "UserAgent"), 1024)
-	}
-
-	client := http.DefaultClient
-	if err == nil || os.IsNotExist(err) {
-		var jar http.CookieJar
-		app.Print("\033[1K\r")
-		app.Print("loading Cookies...")
-		jar, err = _loadCookies(filepath.Join(".", "Cookies"))
-		if err == nil {
-			client = &http.Client{Jar: jar}
+		if err == nil || os.IsNotExist(err) {
+			var jar http.CookieJar
+			app.Print("\033[1K\r")
+			app.Print("loading Cookies...")
+			jar, err = _loadCookies(filepath.Join(".", "Cookies"))
+			if err == nil {
+				client = &http.Client{Jar: jar}
+			}
 		}
 	}
 
@@ -141,6 +127,31 @@ func (app *App) Main() int {
 			app.Println(err)
 			return 1
 		}
+	}
+
+	app.Print("\033[1K\r")
+
+	if showStatus {
+		app.status(file)
+		return 2
+	}
+
+	if flag.NArg() > 0 {
+		app.Print("parsing URL...")
+		u, err := url.Parse(flag.Arg(0))
+		if err != nil {
+			app.Println(err)
+			return 1
+		}
+		app.primaryURL = u.String()
+	} else {
+		app.Print("loading URL...")
+		url, err := _loadURL(filepath.Join(".", "URL"))
+		if err != nil {
+			app.Println(err)
+			return 1
+		}
+		app.primaryURL = url
 	}
 
 	app.Print("\033[1K\r")
@@ -754,6 +765,41 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 		case <-beingDelayed:
 			beingDelayed = nil
 		}
+	}
+}
+
+func (app *App) status(file *DataFile) {
+	var (
+		fileSize     = file.FileSize()
+		completeSize = file.CompleteSize()
+		fileMD5      = file.FileMD5()
+	)
+	if fileSize > 0 {
+		progress := int(float64(completeSize) / float64(fileSize) * 100)
+		fmt.Println("Size:", fileSize)
+		fmt.Println("Complete:", completeSize, fmt.Sprintf("(%v%%)", progress))
+	} else {
+		fmt.Println("Complete:", completeSize)
+	}
+	if fileMD5 != "" {
+		fmt.Println("Content-MD5:", fileMD5)
+	}
+	var items []string
+	for _, r := range file.Incomplete() {
+		i := int(r.Low / (1024 * 1024))
+		if r.High == math.MaxInt64 {
+			items = append(items, fmt.Sprintf("%v-", i))
+			break
+		}
+		j := int(r.High / (1024 * 1024))
+		if i+1 == j {
+			items = append(items, fmt.Sprint(i))
+			continue
+		}
+		items = append(items, fmt.Sprintf("%v-%v", i, j-1))
+	}
+	if len(items) > 0 {
+		fmt.Println("Incomplete(MiB):", strings.Join(items, ","))
 	}
 }
 
