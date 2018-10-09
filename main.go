@@ -883,7 +883,7 @@ func _loadCookies(name string) (jar http.CookieJar, err error) {
 	for s.Scan() {
 		line := s.Text()
 
-		if line == "" || line[0] == '#' {
+		if line == "" || strings.HasPrefix(line, "# ") {
 			continue
 		}
 
@@ -904,6 +904,11 @@ func _loadCookies(name string) (jar http.CookieJar, err error) {
 			Domain:  fields[0],
 			Expires: time.Unix(expires, 0),
 			Secure:  fields[3] == "TRUE",
+		}
+
+		if strings.HasPrefix(cookie.Domain, "#HttpOnly_") {
+			cookie.Domain = cookie.Domain[10:]
+			cookie.HttpOnly = true
 		}
 
 		scheme := "http"
