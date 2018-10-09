@@ -23,7 +23,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -484,30 +483,30 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	defer signal.Stop(waitSignal)
 
 	var (
-		activeCount  uint32
-		beingPaused  uint32
-		shouldDelay  uint32
+		activeCount  uint
+		beingPaused  bool
+		shouldDelay  bool
 		beingDelayed <-chan time.Time
-		errorCount   uint32
-		fatalErrors  uint32
-		stateChanged = make(chan struct{}, 1)
+		errorCount   uint
+		fatalErrors  bool
 		currentURL   = app.primaryURL
+		onMessage    = make(chan interface{}, app.concurrent)
 	)
 
 	for {
 		switch {
-		case atomic.LoadUint32(&activeCount) >= uint32(app.concurrent):
-		case atomic.LoadUint32(&beingPaused) != 0:
-		case atomic.LoadUint32(&shouldDelay) != 0:
-			atomic.StoreUint32(&shouldDelay, 0)
+		case activeCount >= app.concurrent:
+		case beingPaused:
+		case shouldDelay:
+			shouldDelay = false
 			beingDelayed = time.After(app.requestInterval)
 		case beingDelayed != nil:
-		case atomic.LoadUint32(&fatalErrors) != 0:
-			if atomic.LoadUint32(&activeCount) == 0 {
+		case fatalErrors:
+			if activeCount == 0 {
 				return
 			}
-		case atomic.LoadUint32(&errorCount) >= uint32(app.errorCapacity):
-			if atomic.LoadUint32(&activeCount) == 0 {
+		case errorCount >= app.errorCapacity:
+			if activeCount == 0 {
 				return
 			}
 			if currentURL == app.primaryURL {
@@ -519,15 +518,11 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 		default:
 			offset, size := takeIncomplete()
 			if size == 0 {
-				if atomic.LoadUint32(&activeCount) == 0 {
+				if activeCount == 0 {
 					return
 				}
 				break
 			}
-
-			atomic.AddUint32(&activeCount, 1)
-			atomic.StoreUint32(&beingPaused, 1)
-			atomic.StoreUint32(&shouldDelay, 1)
 
 			cr := func(parent context.Context, ob observable.Observer) (ctx context.Context, cancel context.CancelFunc) {
 				ctx, cancel = context.WithCancel(activeCtx)
@@ -721,39 +716,21 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 
 			do := func(t observable.Notification) {
 				if t.HasValue {
-					switch v := t.Value.(type) {
+					switch t.Value.(type) {
 					case ProgressMessage:
 
 					case ResponseMessage:
-						atomic.StoreUint32(&beingPaused, 0)
-						atomic.StoreUint32(&errorCount, 0)
-
-						select {
-						case stateChanged <- struct{}{}:
-						default:
-						}
+						onMessage <- t.Value
 
 					case CompleteMessage:
-						atomic.AddUint32(&activeCount, math.MaxUint32)
-						if !v.Responsed {
-							atomic.StoreUint32(&beingPaused, 0)
-							if v.Err != nil {
-								atomic.AddUint32(&errorCount, 1)
-							} else {
-								atomic.StoreUint32(&shouldDelay, 0)
-							}
-						}
-						if v.Err != nil && v.Fatal {
-							atomic.StoreUint32(&fatalErrors, 1)
-						}
-
-						select {
-						case stateChanged <- struct{}{}:
-						default:
-						}
+						onMessage <- t.Value
 					}
 				}
 			}
+
+			activeCount++
+			beingPaused = true
+			shouldDelay = true
 
 			activeTasks.Next(observable.Create(cr).Do(do))
 		}
@@ -761,9 +738,27 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 		select {
 		case <-waitSignal:
 			return
-		case <-stateChanged:
 		case <-beingDelayed:
 			beingDelayed = nil
+		case e := <-onMessage:
+			switch e := e.(type) {
+			case ResponseMessage:
+				beingPaused = false
+				errorCount = 0
+			case CompleteMessage:
+				activeCount--
+				if !e.Responsed {
+					beingPaused = false
+					if e.Err != nil {
+						errorCount++
+					} else {
+						shouldDelay = false
+					}
+				}
+				if e.Err != nil && e.Fatal {
+					fatalErrors = true
+				}
+			}
 		}
 	}
 }
