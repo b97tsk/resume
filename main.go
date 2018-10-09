@@ -264,11 +264,11 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	)
 
 	var (
-		statList      = make([]StatInfo, 0, statCapacity)
-		statCurrent   = StatInfo{time.Now(), 0}
-		firstRecvTime time.Time
-		totalReceived int64
-		responseCount int
+		statList            = make([]StatInfo, 0, statCapacity)
+		statCurrent         = StatInfo{time.Now(), 0}
+		firstRecvTime       time.Time
+		totalReceived       int64
+		activeResponseCount int
 	)
 
 	topCtx := context.TODO()
@@ -299,11 +299,11 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					shouldPrint = totalReceived > 0
 
 				case ResponseMessage:
-					responseCount++
+					activeResponseCount++
 
 				case CompleteMessage:
 					if v.Responsed {
-						responseCount--
+						activeResponseCount--
 					}
 					unwrappedErr := v.Err
 					switch e := unwrappedErr.(type) {
@@ -345,7 +345,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					app.Printf("%v%% [%v] ", progress, s)
 				}
 
-				app.Printf("CN:%v", responseCount)
+				app.Printf("CN:%v", activeResponseCount)
 
 				{
 					stat := statCurrent
@@ -483,19 +483,21 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	defer signal.Stop(waitSignal)
 
 	var (
-		activeCount  uint
-		beingPaused  bool
-		shouldDelay  bool
-		beingDelayed <-chan time.Time
-		errorCount   uint
-		fatalErrors  bool
-		currentURL   = app.primaryURL
-		onMessage    = make(chan interface{}, app.concurrent)
+		activeCount   uint
+		beingPaused   bool
+		shouldDelay   bool
+		beingDelayed  <-chan time.Time
+		errorCount    uint
+		fatalErrors   bool
+		responseCount int
+		maxDownloads  = app.concurrent
+		currentURL    = app.primaryURL
+		onMessage     = make(chan interface{}, app.concurrent)
 	)
 
 	for {
 		switch {
-		case activeCount >= app.concurrent:
+		case activeCount >= maxDownloads:
 		case beingPaused:
 		case shouldDelay:
 			shouldDelay = false
@@ -510,10 +512,20 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 				return
 			}
 			if currentURL == app.primaryURL {
+				// reduce the number of parallel downloads
+				maxDownloads = activeCount
+				errorCount = 0
+				break
+			}
+			if responseCount == 0 {
+				// no successful response after url redirects
+				fatalErrors = true
 				break
 			}
 			currentURL = app.primaryURL
+			maxDownloads = app.concurrent
 			errorCount = 0
+			responseCount = 0
 			fallthrough
 		default:
 			offset, size := takeIncomplete()
@@ -745,6 +757,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 			case ResponseMessage:
 				beingPaused = false
 				errorCount = 0
+				responseCount++
 			case CompleteMessage:
 				activeCount--
 				if !e.Responsed {
