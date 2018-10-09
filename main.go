@@ -346,7 +346,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					app.Printf("%v%% [%v] ", progress, s)
 				}
 
-				app.Printf("DL:%v", responseCount)
+				app.Printf("CN:%v", responseCount)
 
 				{
 					stat := statCurrent
@@ -361,7 +361,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 						stat.Size += s.Size
 					}
 					speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
-					app.Printf(" %vB/s", _formatBytes(int64(speed)))
+					app.Printf(" DL:%vB/s", _formatBytes(int64(speed)))
 				}
 
 				if fileSize > 0 {
@@ -376,7 +376,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 						speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
 						remaining := float64(fileSize - completeSize)
 						seconds := int64(math.Ceil(remaining / speed))
-						app.Printf(" %v", _formatDuration(time.Duration(seconds)*time.Second))
+						app.Printf(" ETA:%v", _formatDuration(time.Duration(seconds)*time.Second))
 						if seconds < int64(len(statList)) {
 							// about to complete, keep only most recent stats
 							statList = append(statList[:0], statList[len(statList)-int(seconds):]...)
