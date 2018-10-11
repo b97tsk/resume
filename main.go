@@ -189,23 +189,28 @@ func (app *App) Main() int {
 	}
 
 	for i := 0; i < 2; i++ {
-		fileSize := file.FileSize()
+		contentSize := file.ContentSize()
 		completeSize := file.CompleteSize()
-		if fileSize == 0 || completeSize != fileSize {
+		if contentSize == 0 || completeSize != contentSize {
 			app.dl(file, client)
-			fileSize = file.FileSize()
+			contentSize = file.ContentSize()
 			completeSize = file.CompleteSize()
-			if fileSize == 0 || completeSize != fileSize {
+			if contentSize == 0 || completeSize != contentSize {
 				return 1
 			}
 		}
 
 		var digest hash.Hash
 
-		fileMD5 := strings.ToLower(file.FileMD5())
-		if len(fileMD5) == 32 {
+		contentMD5 := strings.ToLower(file.ContentMD5())
+		if len(contentMD5) == 32 {
 			digest = md5.New()
-			app.Println("Content-MD5:", fileMD5)
+			app.Println("Content-MD5:", contentMD5)
+		}
+
+		contentDisposition := file.ContentDisposition()
+		if contentDisposition != "" {
+			app.Println("Content-Disposition:", contentDisposition)
 		}
 
 		shouldVerify := i == 0 || digest != nil
@@ -219,12 +224,12 @@ func (app *App) Main() int {
 			return 1
 		}
 
-		if file.CompleteSize() != fileSize {
+		if file.CompleteSize() != contentSize {
 			app.Println("BAD")
 			continue
 		}
 
-		if digest != nil && hex.EncodeToString(digest.Sum(nil)) != fileMD5 {
+		if digest != nil && hex.EncodeToString(digest.Sum(nil)) != contentMD5 {
 			app.Println("BAD")
 			return 1
 		}
@@ -326,14 +331,14 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 			if shouldPrint {
 				app.Print("\033[1K\r")
 
-				fileSize := file.FileSize()
+				contentSize := file.ContentSize()
 				completeSize := file.CompleteSize()
 
 				{
 					const length = 20
 					progress := 0
-					if fileSize > 0 {
-						progress = int(float64(completeSize) / float64(fileSize) * 100)
+					if contentSize > 0 {
+						progress = int(float64(completeSize) / float64(contentSize) * 100)
 					}
 					s := strings.Repeat("=", length*progress/100)
 					if len(s) < length && completeSize > 0 {
@@ -363,7 +368,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					app.Printf(" DL:%vB/s", _formatBytes(int64(speed)))
 				}
 
-				if fileSize > 0 {
+				if contentSize > 0 {
 					stat := statCurrent
 					if len(statList) > 0 {
 						stat.Time = statList[0].Time
@@ -373,7 +378,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					}
 					if stat.Size > 0 {
 						speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
-						remaining := float64(fileSize - completeSize)
+						remaining := float64(contentSize - completeSize)
 						seconds := int64(math.Ceil(remaining / speed))
 						app.Printf(" ETA:%v", _formatDuration(time.Duration(seconds)*time.Second))
 						if seconds < int64(len(statList)) {
@@ -455,8 +460,8 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 
 	takeIncomplete := func() (offset, size int64) {
 		splitSize := int64(app.splitSize) * 1024 * 1024
-		if file.FileSize() > 0 {
-			size := (file.FileSize() - file.CompleteSize()) / int64(app.concurrent)
+		if file.ContentSize() > 0 {
+			size := (file.ContentSize() - file.CompleteSize()) / int64(app.concurrent)
 			if size < splitSize {
 				splitSize = size
 			}
@@ -558,7 +563,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 				}
 
 				shouldLimitSize := false
-				if file.FileSize() > 0 {
+				if file.ContentSize() > 0 {
 					req.Header.Set("Range", fmt.Sprintf("bytes=%v-%v", offset, offset+size-1))
 				} else {
 					req.Header.Set("Range", fmt.Sprintf("bytes=%v-", offset))
@@ -614,11 +619,11 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 				shouldSync := false
 
 				contentLength, _ := strconv.ParseInt(slice[3], 10, 64)
-				switch file.FileSize() {
+				switch file.ContentSize() {
 				case contentLength:
 				case 0:
 					shouldSync = true
-					file.SetFileSize(contentLength)
+					file.SetContentSize(contentLength)
 				default:
 					err = errors.New("Content-Length mismatched")
 					fatal = true
@@ -626,15 +631,23 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 				}
 
 				contentMD5 := resp.Header.Get("Content-MD5")
-				switch file.FileMD5() {
+				switch file.ContentMD5() {
 				case contentMD5:
 				case "":
 					shouldSync = true
-					file.SetFileMD5(contentMD5)
+					file.SetContentMD5(contentMD5)
 				default:
 					err = errors.New("Content-MD5 mismatched")
 					fatal = true
 					return
+				}
+
+				contentDisposition := resp.Header.Get("Content-Disposition")
+				switch file.ContentDisposition() {
+				case contentDisposition:
+				default:
+					shouldSync = true
+					file.SetContentDisposition(contentDisposition)
 				}
 
 				eTag := resp.Header.Get("ETag")
@@ -778,19 +791,17 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 
 func (app *App) status(file *DataFile) {
 	var (
-		fileSize     = file.FileSize()
-		completeSize = file.CompleteSize()
-		fileMD5      = file.FileMD5()
+		contentSize        = file.ContentSize()
+		completeSize       = file.CompleteSize()
+		contentMD5         = file.ContentMD5()
+		contentDisposition = file.ContentDisposition()
 	)
-	if fileSize > 0 {
-		progress := int(float64(completeSize) / float64(fileSize) * 100)
-		fmt.Println("Size:", fileSize)
+	if contentSize > 0 {
+		progress := int(float64(completeSize) / float64(contentSize) * 100)
+		fmt.Println("Size:", contentSize)
 		fmt.Println("Complete:", completeSize, fmt.Sprintf("(%v%%)", progress))
 	} else {
 		fmt.Println("Complete:", completeSize)
-	}
-	if fileMD5 != "" {
-		fmt.Println("Content-MD5:", fileMD5)
 	}
 	var items []string
 	for _, r := range file.Incomplete() {
@@ -808,6 +819,12 @@ func (app *App) status(file *DataFile) {
 	}
 	if len(items) > 0 {
 		fmt.Println("Incomplete(MiB):", strings.Join(items, ","))
+	}
+	if contentMD5 != "" {
+		fmt.Println("Content-MD5:", contentMD5)
+	}
+	if contentDisposition != "" {
+		fmt.Println("Content-Disposition:", contentDisposition)
 	}
 }
 

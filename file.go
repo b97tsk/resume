@@ -27,11 +27,12 @@ type DataFile struct {
 }
 
 type HashInfo struct {
-	Pieces       []PieceInfo
-	FileSize     int64
-	FileMD5      string
-	EntityTag    string
-	LastModified string
+	Pieces             []PieceInfo
+	ContentSize        int64
+	ContentMD5         string
+	ContentDisposition string
+	EntityTag          string
+	LastModified       string
 }
 
 type PieceInfo struct {
@@ -89,8 +90,8 @@ func (f *DataFile) LoadHashFile() (err error) {
 	f.incomplete = incomplete
 	f.completeSize = completeSize
 
-	if hash.FileSize > 0 {
-		f.setFileSizeLocked(hash.FileSize)
+	if hash.ContentSize > 0 {
+		f.setContentSizeLocked(hash.ContentSize)
 	}
 	return
 }
@@ -107,14 +108,14 @@ func (f *DataFile) CompleteSize() int64 {
 	return f.completeSize
 }
 
-func (f *DataFile) SetFileSize(size int64) error {
+func (f *DataFile) SetContentSize(size int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.setFileSizeLocked(size)
+	return f.setContentSizeLocked(size)
 }
 
-func (f *DataFile) setFileSizeLocked(size int64) error {
-	f.hash.FileSize = size
+func (f *DataFile) setContentSizeLocked(size int64) error {
+	f.hash.ContentSize = size
 
 	pieceCount := int(math.Ceil(float64(size) / _pieceSize))
 	if len(f.hash.Pieces) != pieceCount {
@@ -132,22 +133,34 @@ func (f *DataFile) setFileSizeLocked(size int64) error {
 	return f.file.Truncate(size)
 }
 
-func (f *DataFile) FileSize() int64 {
+func (f *DataFile) ContentSize() int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.hash.FileSize
+	return f.hash.ContentSize
 }
 
-func (f *DataFile) SetFileMD5(fileMD5 string) {
+func (f *DataFile) SetContentMD5(contentMD5 string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.hash.FileMD5 = fileMD5
+	f.hash.ContentMD5 = contentMD5
 }
 
-func (f *DataFile) FileMD5() string {
+func (f *DataFile) ContentMD5() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.hash.FileMD5
+	return f.hash.ContentMD5
+}
+
+func (f *DataFile) SetContentDisposition(contentDisposition string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hash.ContentDisposition = contentDisposition
+}
+
+func (f *DataFile) ContentDisposition() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hash.ContentDisposition
 }
 
 func (f *DataFile) SetEntityTag(entityTag string) {
@@ -210,8 +223,8 @@ func (f *DataFile) ReturnIncomplete(offset, size int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.incomplete.AddRange(offset, offset+size)
-	if f.hash.FileSize > 0 {
-		f.incomplete.DeleteRange(f.hash.FileSize, math.MaxInt64)
+	if f.hash.ContentSize > 0 {
+		f.incomplete.DeleteRange(f.hash.ContentSize, math.MaxInt64)
 	}
 }
 
