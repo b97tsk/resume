@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	_defaultSplitSize       = 80 // MiB
+	_defaultSplitSize       = 0 // MiB
 	_defaultConcurrent      = 4
 	_defaultErrorCapacity   = 4
 	_defaultRequestInterval = 2 * time.Second
@@ -57,7 +57,7 @@ func main() {
 
 func (app *App) Main() int {
 	var showStatus bool
-	flag.UintVar(&app.splitSize, "s", _defaultSplitSize, "split size (MiB)")
+	flag.UintVar(&app.splitSize, "s", _defaultSplitSize, "split size (MiB), 0 means use maximum possible")
 	flag.UintVar(&app.concurrent, "c", _defaultConcurrent, "maximum number of parallel downloads")
 	flag.UintVar(&app.errorCapacity, "e", _defaultErrorCapacity, "maximum number of errors")
 	flag.StringVar(&app.requestRange, "r", "", "request range (MiB), e.g., 0-1023")
@@ -462,7 +462,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 		splitSize := int64(app.splitSize) * 1024 * 1024
 		if file.ContentSize() > 0 {
 			size := (file.ContentSize() - file.CompleteSize()) / int64(app.concurrent)
-			if size < splitSize {
+			if size < splitSize || splitSize == 0 {
 				splitSize = size
 			}
 		}
