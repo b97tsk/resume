@@ -26,7 +26,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/b97tsk/observable"
+	"github.com/b97tsk/rxgo/observable"
 	"golang.org/x/net/publicsuffix"
 )
 
@@ -49,6 +49,8 @@ type App struct {
 	userAgent       string
 	primaryURL      string
 }
+
+var operators observable.Operators
 
 func main() {
 	var app App
@@ -279,9 +281,9 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	topCtx := context.TODO()
 
 	queuedMessages := observable.NewSubject()
-	queuedMessagesCtx, _ := queuedMessages.Congest(int(app.concurrent*3)).Subscribe(
-		topCtx,
-		func(t observable.Notification) {
+	queuedMessagesCtx, _ := queuedMessages.
+		Pipe(operators.Congest(int(app.concurrent*3))).
+		Subscribe(topCtx, func(t observable.Notification) {
 			shouldPrint := false
 			switch {
 			case t.HasValue:
@@ -402,8 +404,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					_formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
 				)
 			}
-		},
-	)
+		})
 	defer func() {
 		queuedMessages.Complete()
 		<-queuedMessagesCtx.Done()
@@ -411,7 +412,8 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 
 	{
 		ctx, cancel := observable.Interval(time.Second).
-			MapTo(PrintMessage{}).Subscribe(topCtx, queuedMessages.Observer)
+			Pipe(operators.MapTo(PrintMessage{})).
+			Subscribe(topCtx, queuedMessages.Observer)
 		defer func() {
 			cancel()
 			<-ctx.Done()
@@ -419,14 +421,13 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	}
 
 	queuedWrites := observable.NewSubject()
-	queuedWritesCtx, _ := queuedWrites.Congest(int(app.concurrent*3)).Subscribe(
-		topCtx,
-		func(t observable.Notification) {
+	queuedWritesCtx, _ := queuedWrites.
+		Pipe(operators.Congest(int(app.concurrent*3))).
+		Subscribe(topCtx, func(t observable.Notification) {
 			if t.HasValue {
 				t.Value.(func())()
 			}
-		},
-	)
+		})
 	defer func() {
 		queuedWrites.Complete()
 		<-queuedWritesCtx.Done()
@@ -474,7 +475,9 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	}
 
 	activeTasks := observable.NewSubject()
-	activeTasksCtx, _ := activeTasks.MergeAll().Subscribe(topCtx, queuedMessages.Observer)
+	activeTasksCtx, _ := activeTasks.
+		Pipe(operators.MergeAll()).
+		Subscribe(topCtx, queuedMessages.Observer)
 	defer func() {
 		activeTasks.Complete()
 		<-activeTasksCtx.Done()
@@ -757,7 +760,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 			beingPaused = true
 			shouldDelay = true
 
-			activeTasks.Next(observable.Create(cr).Do(do))
+			activeTasks.Next(observable.Create(cr).Pipe(operators.Do(do)))
 		}
 
 		select {
