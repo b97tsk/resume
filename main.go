@@ -101,7 +101,7 @@ func (app *App) Main() int {
 		}
 	}
 
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && (!os.IsNotExist(err) || showStatus) {
 		app.Println(err)
 		return 1
 	}
@@ -411,13 +411,10 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	}()
 
 	{
-		ctx, cancel := observable.Interval(time.Second).
+		_, cancel := observable.Interval(time.Second).
 			Pipe(operators.MapTo(PrintMessage{})).
 			Subscribe(topCtx, queuedMessages.Observer)
-		defer func() {
-			cancel()
-			<-ctx.Done()
-		}()
+		defer cancel()
 	}
 
 	queuedWrites := observable.NewSubject()
@@ -442,12 +439,12 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	}
 
 	readAndWrite := func(body io.Reader, offset int64) (n int, err error) {
-		buf := *bufferPool.Get().(*[]byte)
-		n, err = body.Read(buf)
+		b := bufferPool.Get().(*[]byte)
+		n, err = body.Read(*b)
 		if n > 0 {
 			queuedWrites.Next(func() {
-				file.WriteAt(buf[:n], offset)
-				bufferPool.Put(&buf)
+				file.WriteAt((*b)[:n], offset)
+				bufferPool.Put(b)
 			})
 		}
 		return
@@ -544,8 +541,10 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 				break
 			}
 
-			cr := func(parent context.Context, ob observable.Observer) (ctx context.Context, cancel context.CancelFunc) {
+			cr := func(parent context.Context, sink observable.Observer) (ctx context.Context, cancel context.CancelFunc) {
 				ctx, cancel = context.WithCancel(activeCtx)
+
+				sink = observable.Finally(sink, cancel)
 
 				var (
 					err   error
@@ -554,9 +553,8 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 				defer func() {
 					if err != nil {
 						returnIncomplete(offset, size)
-						ob.Next(CompleteMessage{err, fatal, false})
-						ob.Complete()
-						cancel()
+						sink.Next(CompleteMessage{err, fatal, false})
+						sink.Complete()
 					}
 				}()
 
@@ -698,7 +696,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					body = io.LimitReader(body, size)
 				}
 
-				ob.Next(ResponseMessage{})
+				sink.Next(ResponseMessage{})
 
 				go func() (err error) {
 					var (
@@ -713,9 +711,8 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 							waitWriteDone()
 						}
 						returnIncomplete(offset, size)
-						ob.Next(CompleteMessage{err, false, true})
-						ob.Complete()
-						cancel()
+						sink.Next(CompleteMessage{err, false, true})
+						sink.Complete()
 					}()
 
 					for {
@@ -728,7 +725,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 						if n > 0 {
 							offset, size = offset+int64(n), size-int64(n)
 							shouldWaitWrite = true
-							ob.Next(ProgressMessage{n})
+							sink.Next(ProgressMessage{n})
 						}
 						if err != nil {
 							if err == io.EOF {
