@@ -37,6 +37,7 @@ const (
 	_defaultRequestInterval = 2 * time.Second
 	_readBufferSize         = 4096
 	_readTimeout            = 30 * time.Second
+	_reportInterval         = 10 * time.Minute
 )
 
 type App struct {
@@ -274,9 +275,21 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 		statList            = make([]StatInfo, 0, statCapacity)
 		statCurrent         = StatInfo{time.Now(), 0}
 		firstRecvTime       time.Time
+		nextReportTime      time.Time
 		totalReceived       int64
 		activeResponseCount int
 	)
+
+	reportStatus := func() {
+		timeUsed := time.Since(firstRecvTime)
+		app.Print("\033[1K\r")
+		log.Printf(
+			"recv %vB in %v, %vB/s\n",
+			_formatBytes(totalReceived),
+			timeUsed.Round(time.Second),
+			_formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
+		)
+	}
 
 	topCtx := context.TODO()
 
@@ -292,6 +305,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					statCurrent.Size += int64(v.Just)
 					if totalReceived == 0 {
 						firstRecvTime = time.Now()
+						nextReportTime = firstRecvTime.Add(_reportInterval)
 						log.Println("first arrival")
 					}
 					totalReceived += int64(v.Just)
@@ -395,14 +409,9 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					app.Println()
 				}
 			}
-			if !t.HasValue && totalReceived > 0 {
-				timeUsed := time.Since(firstRecvTime)
-				log.Printf(
-					"recv %vB in %v, %vB/s\n",
-					_formatBytes(totalReceived),
-					timeUsed.Round(time.Second),
-					_formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
-				)
+			if totalReceived > 0 && (!t.HasValue || time.Now().After(nextReportTime)) {
+				nextReportTime = nextReportTime.Add(_reportInterval)
+				reportStatus()
 			}
 		})
 	defer func() {
