@@ -31,13 +31,13 @@ import (
 )
 
 const (
-	_defaultSplitSize       = 0 // MiB
-	_defaultConcurrent      = 4
-	_defaultErrorCapacity   = 4
-	_defaultRequestInterval = 2 * time.Second
-	_readBufferSize         = 4096
-	_readTimeout            = 30 * time.Second
-	_reportInterval         = 10 * time.Minute
+	defaultSplitSize       = 0 // MiB
+	defaultConcurrent      = 4
+	defaultErrorCapacity   = 4
+	defaultRequestInterval = 2 * time.Second
+	readBufferSize         = 4096
+	readTimeout            = 30 * time.Second
+	reportInterval         = 10 * time.Minute
 )
 
 type App struct {
@@ -60,11 +60,11 @@ func main() {
 
 func (app *App) Main() int {
 	var showStatus bool
-	flag.UintVar(&app.splitSize, "s", _defaultSplitSize, "split size (MiB), 0 means use maximum possible")
-	flag.UintVar(&app.concurrent, "c", _defaultConcurrent, "maximum number of parallel downloads")
-	flag.UintVar(&app.errorCapacity, "e", _defaultErrorCapacity, "maximum number of errors")
+	flag.UintVar(&app.splitSize, "s", defaultSplitSize, "split size (MiB), 0 means use maximum possible")
+	flag.UintVar(&app.concurrent, "c", defaultConcurrent, "maximum number of parallel downloads")
+	flag.UintVar(&app.errorCapacity, "e", defaultErrorCapacity, "maximum number of errors")
 	flag.StringVar(&app.requestRange, "r", "", "request range (MiB), e.g., 0-1023")
-	flag.DurationVar(&app.requestInterval, "i", _defaultRequestInterval, "request interval")
+	flag.DurationVar(&app.requestInterval, "i", defaultRequestInterval, "request interval")
 	flag.BoolVar(&showStatus, "status", false, "show status, then exit")
 	flag.Parse()
 
@@ -73,19 +73,19 @@ func (app *App) Main() int {
 
 	if !showStatus {
 		app.Print("loading Referer...")
-		app.referer, err = _loadURL(filepath.Join(".", "Referer"))
+		app.referer, err = loadURL(filepath.Join(".", "Referer"))
 
 		if err == nil || os.IsNotExist(err) {
 			app.Print("\033[1K\r")
 			app.Print("loading UserAgent...")
-			app.userAgent, err = _loadSingleLine(filepath.Join(".", "UserAgent"), 1024)
+			app.userAgent, err = loadSingleLine(filepath.Join(".", "UserAgent"), 1024)
 		}
 
 		if err == nil || os.IsNotExist(err) {
 			var jar http.CookieJar
 			app.Print("\033[1K\r")
 			app.Print("loading Cookies...")
-			jar, err = _loadCookies(filepath.Join(".", "Cookies"))
+			jar, err = loadCookies(filepath.Join(".", "Cookies"))
 			if err == nil {
 				client = &http.Client{Jar: jar}
 			}
@@ -109,7 +109,7 @@ func (app *App) Main() int {
 
 	app.Print("\033[1K\r")
 	app.Print("opening File...")
-	file, err := _openDataFile(fileName)
+	file, err := openDataFile(fileName)
 	if err != nil {
 		app.Println(err)
 		return 1
@@ -148,7 +148,7 @@ func (app *App) Main() int {
 		app.primaryURL = u.String()
 	} else {
 		app.Print("loading URL...")
-		url, err := _loadURL(filepath.Join(".", "URL"))
+		url, err := loadURL(filepath.Join(".", "URL"))
 		if err != nil {
 			app.Println(err)
 			return 1
@@ -285,9 +285,9 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 		app.Print("\033[1K\r")
 		log.Printf(
 			"recv %vB in %v, %vB/s\n",
-			_formatBytes(totalReceived),
+			formatBytes(totalReceived),
 			timeUsed.Round(time.Second),
-			_formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
+			formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
 		)
 	}
 
@@ -305,7 +305,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					statCurrent.Size += int64(v.Just)
 					if totalReceived == 0 {
 						firstRecvTime = time.Now()
-						nextReportTime = firstRecvTime.Add(_reportInterval)
+						nextReportTime = firstRecvTime.Add(reportInterval)
 						log.Println("first arrival")
 					}
 					totalReceived += int64(v.Just)
@@ -381,7 +381,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 						stat.Size += s.Size
 					}
 					speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
-					app.Printf(" DL:%vB/s", _formatBytes(int64(speed)))
+					app.Printf(" DL:%vB/s", formatBytes(int64(speed)))
 				}
 
 				if contentSize > 0 {
@@ -396,7 +396,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 						speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
 						remaining := float64(contentSize - completeSize)
 						seconds := int64(math.Ceil(remaining / speed))
-						app.Printf(" ETA:%v", _formatDuration(time.Duration(seconds)*time.Second))
+						app.Printf(" ETA:%v", formatDuration(time.Duration(seconds)*time.Second))
 						if seconds < int64(len(statList)) {
 							// about to complete, keep only most recent stats
 							statList = append(statList[:0], statList[len(statList)-int(seconds):]...)
@@ -410,7 +410,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 				}
 			}
 			if totalReceived > 0 && (!t.HasValue || time.Now().After(nextReportTime)) {
-				nextReportTime = nextReportTime.Add(_reportInterval)
+				nextReportTime = nextReportTime.Add(reportInterval)
 				reportStatus()
 			}
 		})
@@ -442,7 +442,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 
 	bufferPool := sync.Pool{
 		New: func() interface{} {
-			buf := make([]byte, _readBufferSize)
+			buf := make([]byte, readBufferSize)
 			return &buf
 		},
 	}
@@ -709,7 +709,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 
 				go func() (err error) {
 					var (
-						readTimer        = time.AfterFunc(_readTimeout, cancel)
+						readTimer        = time.AfterFunc(readTimeout, cancel)
 						shouldResetTimer bool
 						shouldWaitWrite  bool
 					)
@@ -726,7 +726,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 
 					for {
 						if shouldResetTimer {
-							readTimer.Reset(_readTimeout)
+							readTimer.Reset(readTimeout)
 						}
 						n, err := readAndWrite(body, offset)
 						readTimer.Stop()
@@ -849,7 +849,7 @@ func (*App) Println(a ...interface{}) {
 	fmt.Fprintln(os.Stderr, a...)
 }
 
-func _formatBytes(n int64) string {
+func formatBytes(n int64) string {
 	if n < 1024 {
 		return strconv.FormatInt(n, 10)
 	}
@@ -864,7 +864,7 @@ func _formatBytes(n int64) string {
 	return strconv.FormatInt(megabytes, 10) + "M"
 }
 
-func _formatDuration(d time.Duration) (s string) {
+func formatDuration(d time.Duration) (s string) {
 	switch {
 	case d < time.Minute:
 		s = d.Round(time.Second).String()
@@ -882,7 +882,7 @@ func _formatDuration(d time.Duration) (s string) {
 	return
 }
 
-func _loadSingleLine(name string, max int) (line string, err error) {
+func loadSingleLine(name string, max int) (line string, err error) {
 	file, err := os.Open(name)
 	if err != nil {
 		return
@@ -897,8 +897,8 @@ func _loadSingleLine(name string, max int) (line string, err error) {
 	return
 }
 
-func _loadURL(name string) (rawurl string, err error) {
-	rawurl, err = _loadSingleLine(name, 2048)
+func loadURL(name string) (rawurl string, err error) {
+	rawurl, err = loadSingleLine(name, 2048)
 	if err != nil {
 		return
 	}
@@ -906,7 +906,7 @@ func _loadURL(name string) (rawurl string, err error) {
 	return
 }
 
-func _loadCookies(name string) (jar http.CookieJar, err error) {
+func loadCookies(name string) (jar http.CookieJar, err error) {
 	file, err := os.Open(name)
 	if err != nil {
 		return

@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	_pieceSize = 1024 * 1024
-	_syncSize  = 20 * 1024 * 1024
-	_filePerm  = 0644
+	pieceSize = 1024 * 1024
+	syncSize  = 20 * 1024 * 1024
+	filePerm  = 0644
 )
 
 type DataFile struct {
@@ -45,8 +45,8 @@ func (p *PieceInfo) Reset() {
 	p.HashCode = 0
 }
 
-func _openDataFile(name string) (f *DataFile, err error) {
-	file, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE, _filePerm)
+func openDataFile(name string) (f *DataFile, err error) {
+	file, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE, filePerm)
 	if err == nil {
 		f = &DataFile{name: name, file: file}
 		f.incomplete.AddRange(0, math.MaxInt64)
@@ -77,8 +77,8 @@ func (f *DataFile) LoadHashFile() (err error) {
 
 	for i := range hash.Pieces {
 		p := &hash.Pieces[i]
-		if p.Size > 0 && p.Size <= _pieceSize && p.HashCode > 0 {
-			offset := _pieceSize * int64(i)
+		if p.Size > 0 && p.Size <= pieceSize && p.HashCode > 0 {
+			offset := pieceSize * int64(i)
 			incomplete.DeleteRange(offset, offset+int64(p.Size))
 			completeSize += int64(p.Size)
 			continue
@@ -117,7 +117,7 @@ func (f *DataFile) SetContentSize(size int64) error {
 func (f *DataFile) setContentSizeLocked(size int64) error {
 	f.hash.ContentSize = size
 
-	pieceCount := int(math.Ceil(float64(size) / _pieceSize))
+	pieceCount := int(math.Ceil(float64(size) / pieceSize))
 	if len(f.hash.Pieces) != pieceCount {
 		pieces := f.hash.Pieces
 		f.hash.Pieces = make([]PieceInfo, pieceCount)
@@ -204,11 +204,11 @@ func (f *DataFile) TakeIncomplete(max int64) (offset, size int64) {
 	if len(f.incomplete) == 0 {
 		return
 	}
-	if max < _pieceSize {
-		max = _pieceSize
+	if max < pieceSize {
+		max = pieceSize
 	}
 	r := f.incomplete[0]
-	low, high := r.Low, (r.Low+max)/_pieceSize*_pieceSize
+	low, high := r.Low, (r.Low+max)/pieceSize*pieceSize
 	if low >= high {
 		return
 	}
@@ -237,9 +237,9 @@ func (f *DataFile) WriteAt(b []byte, offset int64) {
 		panic(err)
 	}
 
-	i := int(offset / _pieceSize)
+	i := int(offset / pieceSize)
 	p := &f.hash.Pieces[i]
-	if offset != _pieceSize*int64(i)+int64(p.Size) {
+	if offset != pieceSize*int64(i)+int64(p.Size) {
 		panic("WriteAt failed")
 	}
 
@@ -248,13 +248,13 @@ func (f *DataFile) WriteAt(b []byte, offset int64) {
 	completeSize := f.completeSize
 	defer func() {
 		f.recentIncrement += int(f.completeSize - completeSize)
-		if f.recentIncrement >= _syncSize {
+		if f.recentIncrement >= syncSize {
 			f.recentIncrement = 0
 			f.syncLocked()
 		}
 	}()
 
-	pieceSizeRequired := _pieceSize - int(p.Size)
+	pieceSizeRequired := pieceSize - int(p.Size)
 	if n < pieceSizeRequired {
 		f.completeSize += int64(n)
 		p.HashCode = crc32.Update(p.HashCode, crc32.IEEETable, b)
@@ -264,17 +264,17 @@ func (f *DataFile) WriteAt(b []byte, offset int64) {
 
 	f.completeSize += int64(pieceSizeRequired)
 	p.HashCode = crc32.Update(p.HashCode, crc32.IEEETable, b[:pieceSizeRequired])
-	p.Size = _pieceSize
+	p.Size = pieceSize
 	b, i = b[pieceSizeRequired:], i+1
 
-	for len(b) >= _pieceSize {
+	for len(b) >= pieceSize {
 		p := &f.hash.Pieces[i]
-		if p.Size < _pieceSize {
-			f.completeSize += _pieceSize - int64(p.Size)
-			p.HashCode = crc32.ChecksumIEEE(b[:_pieceSize])
-			p.Size = _pieceSize
+		if p.Size < pieceSize {
+			f.completeSize += pieceSize - int64(p.Size)
+			p.HashCode = crc32.ChecksumIEEE(b[:pieceSize])
+			p.Size = pieceSize
 		}
-		b, i = b[_pieceSize:], i+1
+		b, i = b[pieceSize:], i+1
 	}
 
 	if len(b) > 0 {
@@ -306,8 +306,8 @@ func (f *DataFile) Verify(digest io.Writer) error {
 			return
 		}
 
-		i := int(offset / _pieceSize)
-		pieceSizeRequired := int(_pieceSize*int64(i+1) - offset)
+		i := int(offset / pieceSize)
+		pieceSizeRequired := int(pieceSize*int64(i+1) - offset)
 		if n < pieceSizeRequired {
 			offset += int64(n)
 			hashCode = crc32.Update(hashCode, crc32.IEEETable, b)
@@ -317,23 +317,23 @@ func (f *DataFile) Verify(digest io.Writer) error {
 		p := &f.hash.Pieces[i]
 		hashCode = crc32.Update(hashCode, crc32.IEEETable, b[:pieceSizeRequired])
 		if hashCode != p.HashCode {
-			offset := _pieceSize * int64(i)
+			offset := pieceSize * int64(i)
 			f.incomplete.AddRange(offset, offset+int64(p.Size))
 			f.completeSize -= int64(p.Size)
 			p.Reset()
 		}
 		b, i = b[pieceSizeRequired:], i+1
 
-		for len(b) >= _pieceSize {
+		for len(b) >= pieceSize {
 			p := &f.hash.Pieces[i]
-			hashCode = crc32.ChecksumIEEE(b[:_pieceSize])
+			hashCode = crc32.ChecksumIEEE(b[:pieceSize])
 			if hashCode != p.HashCode {
-				offset := _pieceSize * int64(i)
+				offset := pieceSize * int64(i)
 				f.incomplete.AddRange(offset, offset+int64(p.Size))
 				f.completeSize -= int64(p.Size)
 				p.Reset()
 			}
-			b, i = b[_pieceSize:], i+1
+			b, i = b[pieceSize:], i+1
 		}
 
 		offset += int64(n)
@@ -345,10 +345,10 @@ func (f *DataFile) Verify(digest io.Writer) error {
 	_, err := io.Copy(WriterFunc(w), f.file)
 
 	if err == nil && hashCode > 0 {
-		i := int(offset / _pieceSize)
+		i := int(offset / pieceSize)
 		p := &f.hash.Pieces[i]
 		if hashCode != p.HashCode {
-			offset := _pieceSize * int64(i)
+			offset := pieceSize * int64(i)
 			f.incomplete.AddRange(offset, offset+int64(p.Size))
 			f.completeSize -= int64(p.Size)
 			p.Reset()
@@ -376,7 +376,7 @@ func (f *DataFile) SyncNow() error {
 
 func (f *DataFile) syncLocked() error {
 	name := filepath.Join(filepath.Dir(f.name), "Hash")
-	file, err := os.OpenFile(name+"New", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, _filePerm)
+	file, err := os.OpenFile(name+"New", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePerm)
 	if err != nil {
 		return err
 	}
