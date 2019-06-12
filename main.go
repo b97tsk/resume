@@ -778,6 +778,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 			switch e := e.(type) {
 			case ResponseMessage:
 				beingPaused = false
+				maxDownloads = app.concurrent
 				errorCount = 0
 				responseCount++
 			case CompleteMessage:
