@@ -72,19 +72,19 @@ func (app *App) Main() int {
 	var client = http.DefaultClient
 
 	if !showStatus {
-		app.Print("loading Referer...")
+		print("loading Referer...")
 		app.referer, err = loadURL(filepath.Join(".", "Referer"))
 
 		if err == nil || os.IsNotExist(err) {
-			app.Print("\033[1K\r")
-			app.Print("loading UserAgent...")
+			print("\033[1K\r")
+			print("loading UserAgent...")
 			app.userAgent, err = loadSingleLine(filepath.Join(".", "UserAgent"), 1024)
 		}
 
 		if err == nil || os.IsNotExist(err) {
 			var jar http.CookieJar
-			app.Print("\033[1K\r")
-			app.Print("loading Cookies...")
+			print("\033[1K\r")
+			print("loading Cookies...")
 			jar, err = loadCookies(filepath.Join(".", "Cookies"))
 			if err == nil {
 				client = &http.Client{Jar: jar}
@@ -103,35 +103,35 @@ func (app *App) Main() int {
 	}
 
 	if err != nil && (!os.IsNotExist(err) || showStatus) {
-		app.Println(err)
+		println(err)
 		return 1
 	}
 
-	app.Print("\033[1K\r")
-	app.Print("opening File...")
+	print("\033[1K\r")
+	print("opening File...")
 	file, err := openDataFile(fileName)
 	if err != nil {
-		app.Println(err)
+		println(err)
 		return 1
 	}
 	defer func() {
 		err := file.Close()
 		if err != nil {
-			app.Println(err)
+			println(err)
 		}
 	}()
 
 	if fileSize > 0 {
-		app.Print("\033[1K\r")
-		app.Print("loading Hash...")
+		print("\033[1K\r")
+		print("loading Hash...")
 		err := file.LoadHashFile()
 		if err != nil && !os.IsNotExist(err) {
-			app.Println(err)
+			println(err)
 			return 1
 		}
 	}
 
-	app.Print("\033[1K\r")
+	print("\033[1K\r")
 
 	if showStatus {
 		app.status(file)
@@ -139,36 +139,36 @@ func (app *App) Main() int {
 	}
 
 	if flag.NArg() > 0 {
-		app.Print("parsing URL...")
+		print("parsing URL...")
 		u, err := url.Parse(flag.Arg(0))
 		if err != nil {
-			app.Println(err)
+			println(err)
 			return 1
 		}
 		app.primaryURL = u.String()
 	} else {
-		app.Print("loading URL...")
+		print("loading URL...")
 		url, err := loadURL(filepath.Join(".", "URL"))
 		if err != nil {
-			app.Println(err)
+			println(err)
 			return 1
 		}
 		app.primaryURL = url
 	}
 
-	app.Print("\033[1K\r")
+	print("\033[1K\r")
 
 	if app.requestRange != "" {
 		var requestRange RangeSet
 		for _, r := range strings.Split(app.requestRange, ",") {
 			r := strings.Split(r, "-")
 			if len(r) > 2 {
-				app.Println("request range is invalid")
+				println("request range is invalid")
 				return 1
 			}
 			i, err := strconv.ParseInt(r[0], 10, 32)
 			if err != nil {
-				app.Println("request range is invalid")
+				println("request range is invalid")
 				return 1
 			}
 			if len(r) == 1 {
@@ -181,7 +181,7 @@ func (app *App) Main() int {
 			}
 			j, err := strconv.ParseInt(r[1], 10, 32)
 			if err != nil || j < i {
-				app.Println("request range is invalid")
+				println("request range is invalid")
 				return 1
 			}
 			requestRange.AddRange(i*1024*1024, (j+1)*1024*1024)
@@ -208,12 +208,12 @@ func (app *App) Main() int {
 		contentMD5 := strings.ToLower(file.ContentMD5())
 		if len(contentMD5) == 32 {
 			digest = md5.New()
-			app.Println("Content-MD5:", contentMD5)
+			println("Content-MD5:", contentMD5)
 		}
 
 		contentDisposition := file.ContentDisposition()
 		if contentDisposition != "" {
-			app.Println("Content-Disposition:", contentDisposition)
+			println("Content-Disposition:", contentDisposition)
 		}
 
 		shouldVerify := i == 0 || digest != nil
@@ -221,23 +221,23 @@ func (app *App) Main() int {
 			return 0
 		}
 
-		app.Print("verifying...")
+		print("verifying...")
 		if err := file.Verify(digest); err != nil {
-			app.Println(err)
+			println(err)
 			return 1
 		}
 
 		if file.CompleteSize() != contentSize {
-			app.Println("BAD")
+			println("BAD")
 			continue
 		}
 
 		if digest != nil && hex.EncodeToString(digest.Sum(nil)) != contentMD5 {
-			app.Println("BAD")
+			println("BAD")
 			return 1
 		}
 
-		app.Println("OK")
+		println("OK")
 		return 0
 	}
 
@@ -282,7 +282,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 
 	reportStatus := func() {
 		timeUsed := time.Since(firstRecvTime)
-		app.Print("\033[1K\r")
+		print("\033[1K\r")
 		log.Printf(
 			"recv %vB in %v, %vB/s\n",
 			formatBytes(totalReceived),
@@ -336,7 +336,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					switch unwrappedErr {
 					case nil, io.EOF, io.ErrUnexpectedEOF, context.Canceled:
 					default:
-						app.Print("\033[1K\r")
+						print("\033[1K\r")
 						log.Println(unwrappedErr)
 						shouldPrint = totalReceived > 0
 					}
@@ -345,7 +345,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 				shouldPrint = totalReceived > 0
 			}
 			if shouldPrint {
-				app.Print("\033[1K\r")
+				print("\033[1K\r")
 
 				contentSize := file.ContentSize()
 				completeSize := file.CompleteSize()
@@ -363,10 +363,10 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					if len(s) < length {
 						s += strings.Repeat("-", length-len(s))
 					}
-					app.Printf("%v%% [%v] ", progress, s)
+					printf("%v%% [%v] ", progress, s)
 				}
 
-				app.Printf("CN:%v", activeResponseCount)
+				printf("CN:%v", activeResponseCount)
 
 				{
 					stat := statCurrent
@@ -381,7 +381,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 						stat.Size += s.Size
 					}
 					speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
-					app.Printf(" DL:%vB/s", formatBytes(int64(speed)))
+					printf(" DL:%vB/s", formatBytes(int64(speed)))
 				}
 
 				if contentSize > 0 {
@@ -396,7 +396,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 						speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
 						remaining := float64(contentSize - completeSize)
 						seconds := int64(math.Ceil(remaining / speed))
-						app.Printf(" ETA:%v", formatDuration(time.Duration(seconds)*time.Second))
+						printf(" ETA:%v", formatDuration(time.Duration(seconds)*time.Second))
 						if seconds < int64(len(statList)) {
 							// about to complete, keep only most recent stats
 							statList = append(statList[:0], statList[len(statList)-int(seconds):]...)
@@ -406,7 +406,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 
 				if !t.HasValue {
 					// about to exit, keep this status line
-					app.Println()
+					println()
 				}
 			}
 			if totalReceived > 0 && (!t.HasValue || time.Now().After(nextReportTime)) {
@@ -838,15 +838,15 @@ func (app *App) status(file *DataFile) {
 	}
 }
 
-func (*App) Print(a ...interface{}) {
+func print(a ...interface{}) {
 	fmt.Fprint(os.Stderr, a...)
 }
 
-func (*App) Printf(format string, a ...interface{}) {
+func printf(format string, a ...interface{}) {
 	fmt.Fprintf(os.Stderr, format, a...)
 }
 
-func (*App) Println(a ...interface{}) {
+func println(a ...interface{}) {
 	fmt.Fprintln(os.Stderr, a...)
 }
 
