@@ -498,9 +498,8 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 
 	var (
 		activeCount   uint
-		beingPaused   bool
-		shouldDelay   bool
-		beingDelayed  <-chan time.Time
+		pauseNewTask  bool
+		delayNewTask  <-chan time.Time
 		errorCount    uint
 		fatalErrors   bool
 		responseCount int
@@ -512,11 +511,8 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	for {
 		switch {
 		case activeCount >= maxDownloads:
-		case beingPaused:
-		case shouldDelay:
-			shouldDelay = false
-			beingDelayed = time.After(app.requestInterval)
-		case beingDelayed != nil:
+		case pauseNewTask:
+		case delayNewTask != nil:
 		case fatalErrors:
 			if activeCount == 0 {
 				return
@@ -763,8 +759,8 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 			}
 
 			activeCount++
-			beingPaused = true
-			shouldDelay = true
+			pauseNewTask = true
+			delayNewTask = time.After(app.requestInterval)
 
 			activeTasks.Next(observable.Create(cr).Pipe(operators.Do(do)))
 		}
@@ -772,19 +768,19 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 		select {
 		case <-waitSignal:
 			return
-		case <-beingDelayed:
-			beingDelayed = nil
+		case <-delayNewTask:
+			delayNewTask = nil
 		case e := <-onMessage:
 			switch e := e.(type) {
 			case ResponseMessage:
-				beingPaused = false
+				pauseNewTask = false
 				maxDownloads = app.concurrent
 				errorCount = 0
 				responseCount++
 			case CompleteMessage:
 				activeCount--
 				if !e.Responsed {
-					beingPaused = false
+					pauseNewTask = false
 					if e.Err != nil {
 						errorCount++
 					} else {
