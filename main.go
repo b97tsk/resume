@@ -47,7 +47,7 @@ type App struct {
 	requestRange    string
 	requestInterval time.Duration
 	referer         string
-	userAgent       string
+	userAgents      []string
 	primaryURL      string
 }
 
@@ -78,7 +78,7 @@ func (app *App) Main() int {
 		if err == nil || os.IsNotExist(err) {
 			print("\033[1K\r")
 			print("loading UserAgent...")
-			app.userAgent, err = loadSingleLine(filepath.Join(".", "UserAgent"), 1024)
+			app.userAgents, err = loadLines(filepath.Join(".", "UserAgent"), 1024)
 		}
 
 		if err == nil || os.IsNotExist(err) {
@@ -340,6 +340,11 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 						log.Println(unwrappedErr)
 						shouldPrint = totalReceived > 0
 					}
+
+				case string:
+					print("\033[1K\r")
+					log.Println(v)
+					shouldPrint = totalReceived > 0
 				}
 			default:
 				shouldPrint = totalReceived > 0
@@ -497,16 +502,19 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	defer signal.Stop(waitSignal)
 
 	var (
-		activeCount   uint
-		pauseNewTask  bool
-		delayNewTask  <-chan time.Time
-		errorCount    uint
-		fatalErrors   bool
-		responseCount int
-		maxDownloads  = app.concurrent
-		currentURL    = app.primaryURL
-		onMessage     = make(chan interface{}, app.concurrent)
+		activeCount    uint
+		pauseNewTask   bool
+		delayNewTask   <-chan time.Time
+		errorCount     uint
+		fatalErrors    bool
+		maxDownloads   = app.concurrent
+		currentURL     = app.primaryURL
+		userAgents     = app.userAgents
+		userAgentIndex = 0
+		onMessage      = make(chan interface{}, app.concurrent)
 	)
+
+	newUserAgents := make([]string, 0, len(app.userAgents))
 
 	for {
 		switch {
@@ -518,24 +526,36 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 				return
 			}
 		case errorCount >= app.errorCapacity:
-			if activeCount == 0 {
-				return
-			}
-			if currentURL == app.primaryURL {
-				// reduce the number of parallel downloads
-				maxDownloads = activeCount
-				errorCount = 0
-				break
-			}
-			if responseCount == 0 {
-				// no successful response after url redirects
-				fatalErrors = true
-				break
+			if len(userAgents) > 1 {
+				// If multiple user agents are provided, we are going to
+				// test all of them one by one.
+				userAgents = userAgents[1:] // Switch to next one.
+				userAgentIndex = (userAgentIndex + 1) % len(app.userAgents)
+			} else {
+				if len(app.userAgents) > 1 {
+					// We tested all user agents, now prepare to start over again.
+					userAgentIndex = (userAgentIndex + 1) % len(app.userAgents)
+					userAgents = newUserAgents
+					userAgents = append(userAgents, app.userAgents[userAgentIndex:]...)
+					userAgents = append(userAgents, app.userAgents[:userAgentIndex]...)
+				}
+				if activeCount == 0 {
+					// We tested all user agents, failed to start any download.
+					return // Give up.
+				}
+				if currentURL == app.primaryURL {
+					// We tested all user agents and successfully started
+					// some downloads, but now we are going to presume this
+					// is all we can do so far.
+					// Let's limit the number of parallel downloads.
+					maxDownloads = activeCount
+					errorCount = 0
+					break
+				}
 			}
 			currentURL = app.primaryURL
 			maxDownloads = app.concurrent
 			errorCount = 0
-			responseCount = 0
 			fallthrough
 		default:
 			offset, size := takeIncomplete()
@@ -579,9 +599,12 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 				if app.referer != "" {
 					req.Header.Set("Referer", app.referer)
 				}
-				if app.userAgent != "" {
-					req.Header.Set("User-Agent", app.userAgent)
+
+				var userAgent string
+				if len(userAgents) > 0 {
+					userAgent = userAgents[0]
 				}
+				req.Header.Set("User-Agent", userAgent)
 
 				req = req.WithContext(ctx)
 
@@ -776,19 +799,28 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 				pauseNewTask = false
 				maxDownloads = app.concurrent
 				errorCount = 0
-				responseCount++
+				if len(app.userAgents) > 1 {
+					queuedMessages.Next(
+						fmt.Sprintf(
+							"UserAgent #%v: +1 connections",
+							userAgentIndex+1,
+						),
+					)
+				}
 			case CompleteMessage:
 				activeCount--
 				if !e.Responsed {
 					pauseNewTask = false
-					if e.Err != nil {
-						errorCount++
-					} else {
-						shouldDelay = false
-					}
+					errorCount++ // There must be an error if no response.
 				}
 				if e.Err != nil && e.Fatal {
 					fatalErrors = true
+				}
+				if e.Responsed && len(app.userAgents) > 1 {
+					// Prepare to test all user agents again.
+					userAgents = newUserAgents
+					userAgents = append(userAgents, app.userAgents[userAgentIndex:]...)
+					userAgents = append(userAgents, app.userAgents[:userAgentIndex]...)
 				}
 			}
 		}
@@ -887,8 +919,29 @@ func loadSingleLine(name string, max int) (line string, err error) {
 	defer file.Close()
 	s := bufio.NewScanner(file)
 	s.Buffer(nil, max)
-	if s.Scan() {
+	for s.Scan() {
 		line = strings.TrimSpace(s.Text())
+		if line != "" && line[0] != '#' {
+			break
+		}
+	}
+	err = s.Err()
+	return
+}
+
+func loadLines(name string, max int) (lines []string, err error) {
+	file, err := os.Open(name)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	s := bufio.NewScanner(file)
+	s.Buffer(nil, max)
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		if line != "" && line[0] != '#' {
+			lines = append(lines, line)
+		}
 	}
 	err = s.Err()
 	return
