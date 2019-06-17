@@ -221,8 +221,27 @@ func (app *App) Main() int {
 			return 0
 		}
 
+		p := int64(0)
+		s := int64(0)
+		w := func(b []byte) (n int, err error) {
+			n = len(b)
+			if digest != nil {
+				n, err = digest.Write(b)
+			}
+			s += int64(n)
+			if s*100 >= (p+1)*contentSize {
+				p = s * 100 / contentSize
+				print("\033[1K\r")
+				printf("verifying...%v%%", p)
+			}
+			return
+		}
+
+		printf("verifying...%v%%", p)
+		err := file.Verify(WriterFunc(w))
+		print("\033[1K\r")
 		print("verifying...")
-		if err := file.Verify(digest); err != nil {
+		if err != nil {
 			println(err)
 			return 1
 		}
