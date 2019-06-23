@@ -278,25 +278,15 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 			Fatal     bool
 			Responsed bool
 		}
-
-		StatInfo struct {
-			Time time.Time
-			Size int64
-		}
-	)
-
-	const (
-		statCapacity = 30
-		instantCount = 5
 	)
 
 	var (
-		statList            = make([]StatInfo, 0, statCapacity)
-		statCurrent         = StatInfo{time.Now(), 0}
-		firstRecvTime       time.Time
-		nextReportTime      time.Time
-		totalReceived       int64
-		activeResponseCount int
+		firstRecvTime  time.Time
+		nextReportTime time.Time
+		totalReceived  int64
+		recentReceived int64
+		emaSpeed       int64
+		connections    int
 	)
 
 	reportStatus := func() {
@@ -310,7 +300,72 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 		)
 	}
 
-	topCtx := context.TODO()
+	topCtx, topCancel := context.WithCancel(context.Background())
+	defer topCancel()
+
+	bytesPerSecond := observable.NewSubject()
+	observable.Create(
+		func(ctx context.Context, sink observable.Observer) (context.Context, context.CancelFunc) {
+			const N = 5
+			skipZeros := bytesPerSecond.Pipe(
+				operators.SkipWhile(
+					func(val interface{}, idx int) bool {
+						return val.(int64) == 0
+					},
+				),
+			)
+			skipZeros.Pipe(
+				operators.Scan(
+					func(acc, val interface{}, idx int) interface{} {
+						return acc.(int64) + val.(int64)
+					},
+				),
+				operators.Map(
+					func(val interface{}, idx int) interface{} {
+						// For the first N seconds, we average the speed.
+						emaSpeed = val.(int64) / int64(idx+1)
+						return val
+					},
+				),
+				operators.Take(N),
+			).Subscribe(ctx, observable.NopObserver)
+			return skipZeros.Pipe(
+				observable.BufferCountConfig{N, 1}.MakeFunc(),
+				operators.Skip(1),
+				operators.Map(
+					func(val interface{}, idx int) interface{} {
+						values := val.([]interface{})
+						sum := int64(0)
+						for _, v := range values {
+							sum += v.(int64)
+						}
+						return sum / int64(len(values))
+					},
+				),
+				operators.Map(
+					func(val interface{}, idx int) interface{} {
+						// After N seconds, we calculate the speed by using
+						// exponential moving average (EMA).
+						const ia = 5 // Inverse of alpha.
+						emaSpeed = (val.(int64) + (ia-1)*emaSpeed) / ia
+						return val
+					},
+				),
+				operators.TakeWhile(
+					func(val interface{}, idx int) bool {
+						return val.(int64) > 0
+					},
+				),
+				operators.Finally(
+					func() {
+						emaSpeed = 0
+					},
+				),
+			).Subscribe(ctx, sink)
+		},
+	).Pipe(
+		operators.Repeat(-1),
+	).Subscribe(topCtx, observable.NopObserver)
 
 	queuedMessages := observable.NewSubject()
 	queuedMessagesCtx, _ := queuedMessages.
@@ -321,29 +376,25 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 			case t.HasValue:
 				switch v := t.Value.(type) {
 				case ProgressMessage:
-					statCurrent.Size += int64(v.Just)
 					if totalReceived == 0 {
 						firstRecvTime = time.Now()
 						nextReportTime = firstRecvTime.Add(reportInterval)
 						log.Println("first arrival")
 					}
 					totalReceived += int64(v.Just)
+					recentReceived += int64(v.Just)
 
 				case PrintMessage:
-					if len(statList) == statCapacity {
-						copy(statList, statList[1:])
-						statList = statList[:statCapacity-1]
-					}
-					statList = append(statList, statCurrent)
-					statCurrent = StatInfo{time.Now(), 0}
+					bytesPerSecond.Next(recentReceived)
+					recentReceived = 0
 					shouldPrint = totalReceived > 0
 
 				case ResponseMessage:
-					activeResponseCount++
+					connections++
 
 				case CompleteMessage:
 					if v.Responsed {
-						activeResponseCount--
+						connections--
 					}
 					unwrappedErr := v.Err
 					switch e := unwrappedErr.(type) {
@@ -390,42 +441,12 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					printf("%v%% [%v] ", progress, s)
 				}
 
-				printf("CN:%v", activeResponseCount)
+				printf("CN:%v DL:%vB/s", connections, formatBytes(emaSpeed))
 
-				{
-					stat := statCurrent
-					statList := statList
-					if len(statList) >= instantCount {
-						statList = statList[len(statList)-instantCount:]
-					}
-					if len(statList) > 0 {
-						stat.Time = statList[0].Time
-					}
-					for _, s := range statList {
-						stat.Size += s.Size
-					}
-					speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
-					printf(" DL:%vB/s", formatBytes(int64(speed)))
-				}
-
-				if contentSize > 0 {
-					stat := statCurrent
-					if len(statList) > 0 {
-						stat.Time = statList[0].Time
-					}
-					for _, s := range statList {
-						stat.Size += s.Size
-					}
-					if stat.Size > 0 {
-						speed := float64(stat.Size) / time.Since(stat.Time).Seconds()
-						remaining := float64(contentSize - completeSize)
-						seconds := int64(math.Ceil(remaining / speed))
-						printf(" ETA:%v", formatDuration(time.Duration(seconds)*time.Second))
-						if seconds < int64(len(statList)) {
-							// about to complete, keep only most recent stats
-							statList = append(statList[:0], statList[len(statList)-int(seconds):]...)
-						}
-					}
+				if contentSize > 0 && emaSpeed > 0 {
+					remaining := float64(contentSize - completeSize)
+					seconds := int64(math.Ceil(remaining / float64(emaSpeed)))
+					printf(" ETA:%v", formatDuration(time.Duration(seconds)*time.Second))
 				}
 
 				if !t.HasValue {
