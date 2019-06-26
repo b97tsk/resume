@@ -38,6 +38,7 @@ const (
 	readBufferSize         = 4096
 	readTimeout            = 30 * time.Second
 	reportInterval         = 10 * time.Minute
+	syncInterval           = 5 * time.Minute
 )
 
 type App struct {
@@ -556,6 +557,9 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 
 	newUserAgents := make([]string, 0, len(app.userAgents))
 
+	syncTicker := time.NewTicker(syncInterval)
+	defer syncTicker.Stop()
+
 	for {
 		switch {
 		case activeCount >= maxDownloads:
@@ -863,6 +867,8 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					userAgents = append(userAgents, app.userAgents[:userAgentIndex]...)
 				}
 			}
+		case <-syncTicker.C:
+			file.Sync()
 		}
 	}
 }

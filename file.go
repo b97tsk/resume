@@ -12,7 +12,6 @@ import (
 
 const (
 	pieceSize = 1024 * 1024
-	syncSize  = 20 * 1024 * 1024
 	filePerm  = 0644
 )
 
@@ -23,7 +22,8 @@ type DataFile struct {
 	hash            HashInfo
 	incomplete      RangeSet
 	completeSize    int64
-	recentIncrement int
+	recentIncrement int64
+	autoSyncSize    int64
 }
 
 type HashInfo struct {
@@ -247,8 +247,8 @@ func (f *DataFile) WriteAt(b []byte, offset int64) {
 
 	completeSize := f.completeSize
 	defer func() {
-		f.recentIncrement += int(f.completeSize - completeSize)
-		if f.recentIncrement >= syncSize {
+		f.recentIncrement += f.completeSize - completeSize
+		if f.autoSyncSize > 0 && f.recentIncrement >= f.autoSyncSize {
 			f.recentIncrement = 0
 			f.syncLocked()
 		}
@@ -400,6 +400,12 @@ func (f *DataFile) syncLocked() error {
 	os.Rename(name+"New", name)
 
 	return err4
+}
+
+func (f *DataFile) SetAutoSyncSize(size int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.autoSyncSize = size
 }
 
 func (f *DataFile) Close() error {
