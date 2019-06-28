@@ -31,25 +31,22 @@ import (
 )
 
 const (
-	defaultSplitSize       = 0 // MiB
-	defaultConcurrent      = 4
-	defaultErrorCapacity   = 4
-	defaultRequestInterval = 2 * time.Second
-	readBufferSize         = 4096
-	readTimeout            = 30 * time.Second
-	reportInterval         = 10 * time.Minute
-	syncInterval           = 5 * time.Minute
+	readBufferSize = 4096
+	readTimeout    = 30 * time.Second
+	reportInterval = 10 * time.Minute
+	syncInterval   = 5 * time.Minute
 )
 
 type App struct {
-	splitSize       uint
-	concurrent      uint
-	errorCapacity   uint
-	requestRange    string
-	requestInterval time.Duration
-	referer         string
-	userAgents      []string
-	primaryURL      string
+	splitSize         uint
+	concurrent        uint
+	errorCapacity     uint
+	requestRange      string
+	requestInterval   time.Duration
+	url               string
+	referer           string
+	userAgents        []string
+	perUserAgentLimit uint
 }
 
 var operators observable.Operators
@@ -61,11 +58,12 @@ func main() {
 
 func (app *App) Main() int {
 	var showStatus bool
-	flag.UintVar(&app.splitSize, "s", defaultSplitSize, "split size (MiB), 0 means use maximum possible")
-	flag.UintVar(&app.concurrent, "c", defaultConcurrent, "maximum number of parallel downloads")
-	flag.UintVar(&app.errorCapacity, "e", defaultErrorCapacity, "maximum number of errors")
+	flag.UintVar(&app.splitSize, "s", 0, "split size (MiB), 0 means use maximum possible")
+	flag.UintVar(&app.concurrent, "c", 4, "maximum number of parallel downloads")
+	flag.UintVar(&app.errorCapacity, "e", 3, "maximum number of errors")
+	flag.UintVar(&app.perUserAgentLimit, "p", 5, "limit per user agent connections")
 	flag.StringVar(&app.requestRange, "r", "", "request range (MiB), e.g., 0-1023")
-	flag.DurationVar(&app.requestInterval, "i", defaultRequestInterval, "request interval")
+	flag.DurationVar(&app.requestInterval, "i", 2*time.Second, "request interval")
 	flag.BoolVar(&showStatus, "status", false, "show status, then exit")
 	flag.Parse()
 
@@ -146,7 +144,7 @@ func (app *App) Main() int {
 			println(err)
 			return 1
 		}
-		app.primaryURL = u.String()
+		app.url = u.String()
 	} else {
 		print("loading URL...")
 		url, err := loadURL(filepath.Join(".", "URL"))
@@ -154,7 +152,7 @@ func (app *App) Main() int {
 			println(err)
 			return 1
 		}
-		app.primaryURL = url
+		app.url = url
 	}
 
 	print("\033[1K\r")
@@ -543,19 +541,22 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	defer signal.Stop(waitSignal)
 
 	var (
-		activeCount    uint
-		pauseNewTask   bool
-		delayNewTask   <-chan time.Time
-		errorCount     uint
-		fatalErrors    bool
-		maxDownloads   = app.concurrent
-		currentURL     = app.primaryURL
-		userAgents     = app.userAgents
-		userAgentIndex = 0
-		onMessage      = make(chan interface{}, app.concurrent)
+		activeCount  uint
+		pauseNewTask bool
+		delayNewTask <-chan time.Time
+		errorCount   uint
+		fatalErrors  bool
+		maxDownloads = app.concurrent
+		currentURL   = app.url
+		onMessage    = make(chan interface{}, app.concurrent)
 	)
 
-	newUserAgents := make([]string, 0, len(app.userAgents))
+	var (
+		userAgents           = app.userAgents
+		userAgentIndex       = 0
+		userAgentConnections = uint(0)
+		newUserAgents        = make([]string, 0, len(app.userAgents))
+	)
 
 	syncTicker := time.NewTicker(syncInterval)
 	defer syncTicker.Stop()
@@ -575,10 +576,12 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 				// test all of them one by one.
 				userAgents = userAgents[1:] // Switch to next one.
 				userAgentIndex = (userAgentIndex + 1) % len(app.userAgents)
+				userAgentConnections = 0
 			} else {
 				if len(app.userAgents) > 1 {
 					// We tested all user agents, now prepare to start over again.
 					userAgentIndex = (userAgentIndex + 1) % len(app.userAgents)
+					userAgentConnections = 0
 					userAgents = newUserAgents
 					userAgents = append(userAgents, app.userAgents[userAgentIndex:]...)
 					userAgents = append(userAgents, app.userAgents[:userAgentIndex]...)
@@ -587,7 +590,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					// We tested all user agents, failed to start any download.
 					return // Give up.
 				}
-				if currentURL == app.primaryURL {
+				if currentURL == app.url {
 					// We tested all user agents and successfully started
 					// some downloads, but now we are going to presume this
 					// is all we can do so far.
@@ -597,7 +600,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					break
 				}
 			}
-			currentURL = app.primaryURL
+			currentURL = app.url
 			maxDownloads = app.concurrent
 			errorCount = 0
 			fallthrough
@@ -850,6 +853,19 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 							userAgentIndex+1,
 						),
 					)
+					userAgentConnections++
+					if userAgentConnections == app.perUserAgentLimit {
+						// We successfully started some downloads with current
+						// user agent, let's try next.
+						userAgentIndex = (userAgentIndex + 1) % len(app.userAgents)
+						userAgentConnections = 0
+						userAgents = newUserAgents
+						userAgents = append(userAgents, app.userAgents[userAgentIndex:]...)
+						userAgents = append(userAgents, app.userAgents[:userAgentIndex]...)
+						// If we change the user agent, we probably need to
+						// reset the url to the original one.
+						currentURL = app.url
+					}
 				}
 			case CompleteMessage:
 				activeCount--
