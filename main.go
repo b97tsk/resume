@@ -266,7 +266,9 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	type (
 		PrintMessage struct{}
 
-		ResponseMessage struct{}
+		ResponseMessage struct {
+			URL string
+		}
 
 		ProgressMessage struct {
 			Just int
@@ -613,6 +615,11 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 				break
 			}
 
+			var userAgent string
+			if len(userAgents) > 0 {
+				userAgent = userAgents[0]
+			}
+
 			cr := func(parent context.Context, sink observable.Observer) (ctx context.Context, cancel context.CancelFunc) {
 				ctx, cancel = context.WithCancel(activeCtx)
 
@@ -647,10 +654,6 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					req.Header.Set("Referer", app.referer)
 				}
 
-				var userAgent string
-				if len(userAgents) > 0 {
-					userAgent = userAgents[0]
-				}
 				req.Header.Set("User-Agent", userAgent)
 
 				req = req.WithContext(ctx)
@@ -756,10 +759,6 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					file.SyncNow()
 				}
 
-				if req != resp.Request {
-					currentURL = resp.Request.URL.String()
-				}
-
 				body := io.Reader(resp.Body)
 				if shouldLimitSize {
 					returnIncomplete(offset, size)
@@ -771,7 +770,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					body = io.LimitReader(body, size)
 				}
 
-				sink.Next(ResponseMessage{})
+				sink.Next(ResponseMessage{resp.Request.URL.String()})
 
 				go func() (err error) {
 					var (
@@ -844,6 +843,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 			switch e := e.(type) {
 			case ResponseMessage:
 				pauseNewTask = false
+				currentURL = e.URL // Save the redirected one if redirection happens.
 				maxDownloads = app.concurrent
 				errorCount = 0
 				if len(app.userAgents) > 1 {
