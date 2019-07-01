@@ -397,20 +397,6 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					if v.Responsed {
 						connections--
 					}
-					unwrappedErr := v.Err
-					switch e := unwrappedErr.(type) {
-					case *net.OpError:
-						unwrappedErr = e.Err
-					case *url.Error:
-						unwrappedErr = e.Err
-					}
-					switch unwrappedErr {
-					case nil, io.EOF, io.ErrUnexpectedEOF, context.Canceled:
-					default:
-						print("\033[1K\r")
-						log.Println(unwrappedErr)
-						shouldPrint = totalReceived > 0
-					}
 
 				case string:
 					print("\033[1K\r")
@@ -881,6 +867,24 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					userAgents = newUserAgents
 					userAgents = append(userAgents, app.userAgents[userAgentIndex:]...)
 					userAgents = append(userAgents, app.userAgents[:userAgentIndex]...)
+				}
+				if e.Err != nil && !e.Responsed {
+					unwrappedErr := e.Err
+					switch e := unwrappedErr.(type) {
+					case *net.OpError:
+						unwrappedErr = e.Err
+					case *url.Error:
+						unwrappedErr = e.Err
+					}
+					message := unwrappedErr.Error()
+					if len(app.userAgents) > 1 {
+						message = fmt.Sprintf(
+							"UserAgent #%v: %v",
+							userAgentIndex+1,
+							message,
+						)
+					}
+					queuedMessages.Next(message)
 				}
 			}
 		case <-syncTicker.C:
