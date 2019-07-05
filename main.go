@@ -1070,11 +1070,6 @@ func loadCookies(name string) (jar http.CookieJar, err error) {
 			host = host[1:]
 		}
 
-		u, err := url.Parse(scheme + "://" + host + "/")
-		if err != nil {
-			continue
-		}
-
 		if jar == nil {
 			jar, err = cookiejar.New(&cookiejar.Options{
 				PublicSuffixList: publicsuffix.List,
@@ -1083,7 +1078,10 @@ func loadCookies(name string) (jar http.CookieJar, err error) {
 				return nil, err
 			}
 		}
-		jar.SetCookies(u, []*http.Cookie{&cookie})
+		jar.SetCookies(
+			&url.URL{Scheme: scheme, Host: host},
+			[]*http.Cookie{&cookie},
+		)
 	}
 	return
 }
