@@ -28,6 +28,7 @@ import (
 
 	"github.com/b97tsk/rxgo/observable"
 	"golang.org/x/net/publicsuffix"
+	"gopkg.in/yaml.v2"
 )
 
 const (
@@ -38,18 +39,20 @@ const (
 )
 
 type App struct {
-	splitSize         uint
-	concurrent        uint
-	errorCapacity     uint
-	requestRange      string
-	requestInterval   time.Duration
-	url               string
-	referer           string
-	userAgents        []string
-	perUserAgentLimit uint
+	Configure
 }
 
-var operators observable.Operators
+type Configure struct {
+	URL               string
+	Referer           string
+	SplitSize         uint          `yaml:"split-size"`
+	Concurrent        uint          `yaml:"concurrent"`
+	ErrorCapacity     uint          `yaml:"error-capacity"`
+	RequestInterval   time.Duration `yaml:"request-interval"`
+	RequestRange      string        `yaml:"request-range"`
+	UserAgents        []string      `yaml:"user-agents"`
+	PerUserAgentLimit uint          `yaml:"per-user-agent-limit"`
+}
 
 func main() {
 	var app App
@@ -57,57 +60,56 @@ func main() {
 }
 
 func (app *App) Main() int {
-	var showStatus bool
-	flag.UintVar(&app.splitSize, "s", 0, "split size (MiB), 0 means use maximum possible")
-	flag.UintVar(&app.concurrent, "c", 4, "maximum number of parallel downloads")
-	flag.UintVar(&app.errorCapacity, "e", 3, "maximum number of errors")
-	flag.UintVar(&app.perUserAgentLimit, "p", 5, "limit per user agent connections")
-	flag.StringVar(&app.requestRange, "r", "", "request range (MiB), e.g., 0-1023")
-	flag.DurationVar(&app.requestInterval, "i", 2*time.Second, "request interval")
+	var (
+		showStatus    bool
+		showConfigure bool
+	)
+	flag.UintVar(&app.SplitSize, "s", 0, "split size (MiB), 0 means use maximum possible")
+	flag.UintVar(&app.Concurrent, "c", 4, "maximum number of parallel downloads")
+	flag.UintVar(&app.ErrorCapacity, "e", 3, "maximum number of errors")
+	flag.UintVar(&app.PerUserAgentLimit, "p", 0, "limit per user agent connections")
+	flag.DurationVar(&app.RequestInterval, "i", 2*time.Second, "request interval")
+	flag.StringVar(&app.RequestRange, "r", "", "request range (MiB), e.g., 0-1023")
 	flag.BoolVar(&showStatus, "status", false, "show status, then exit")
+	flag.BoolVar(&showConfigure, "configure", false, "show configure, then exit")
 	flag.Parse()
 
-	var err error
-	var client = http.DefaultClient
+	client := http.DefaultClient
 
 	if !showStatus {
-		print("loading Referer...")
-		app.referer, err = loadURL(filepath.Join(".", "Referer"))
-
-		if err == nil || os.IsNotExist(err) {
-			print("\033[1K\r")
-			print("loading UserAgent...")
-			app.userAgents, err = loadLines(filepath.Join(".", "UserAgent"), 1024)
+		err := app.loadConfigure(filepath.Join(".", "Configure"))
+		if err != nil && !os.IsNotExist(err) {
+			println(err)
+			return 1
 		}
 
-		if err == nil || os.IsNotExist(err) {
-			var jar http.CookieJar
-			print("\033[1K\r")
-			print("loading Cookies...")
-			jar, err = loadCookies(filepath.Join(".", "Cookies"))
-			if err == nil {
-				client = &http.Client{Jar: jar}
-			}
+		flag.Parse() // Command line flags take precedence.
+
+		if showConfigure {
+			app.showConfigure()
+			return 2
 		}
+
+		jar, err := loadCookies(filepath.Join(".", "Cookies"))
+		if err != nil && !os.IsNotExist(err) {
+			println(err)
+			return 1
+		}
+
+		client = &http.Client{Jar: jar}
 	}
 
 	fileName := filepath.Join(".", "File")
 	fileSize := int64(0)
-	if err == nil || os.IsNotExist(err) {
-		var info os.FileInfo
-		info, err = os.Stat(fileName)
-		if err == nil {
-			fileSize = info.Size()
-		}
-	}
 
-	if err != nil && (!os.IsNotExist(err) || showStatus) {
+	switch stat, err := os.Stat(fileName); {
+	case err == nil:
+		fileSize = stat.Size()
+	case !os.IsNotExist(err) || showStatus:
 		println(err)
 		return 1
 	}
 
-	print("\033[1K\r")
-	print("opening File...")
 	file, err := openDataFile(fileName)
 	if err != nil {
 		println(err)
@@ -121,8 +123,6 @@ func (app *App) Main() int {
 	}()
 
 	if fileSize > 0 {
-		print("\033[1K\r")
-		print("loading Hash...")
 		err := file.LoadHashFile()
 		if err != nil && !os.IsNotExist(err) {
 			println(err)
@@ -130,36 +130,23 @@ func (app *App) Main() int {
 		}
 	}
 
-	print("\033[1K\r")
-
 	if showStatus {
-		app.status(file)
+		app.showStatus(file)
 		return 2
 	}
 
 	if flag.NArg() > 0 {
-		print("parsing URL...")
-		u, err := url.Parse(flag.Arg(0))
-		if err != nil {
-			println(err)
-			return 1
-		}
-		app.url = u.String()
-	} else {
-		print("loading URL...")
-		url, err := loadURL(filepath.Join(".", "URL"))
-		if err != nil {
-			println(err)
-			return 1
-		}
-		app.url = url
+		app.URL = flag.Arg(0)
 	}
 
-	print("\033[1K\r")
+	if _, err := url.Parse(app.URL); err != nil {
+		println(err)
+		return 1
+	}
 
-	if app.requestRange != "" {
+	if app.RequestRange != "" {
 		var requestRange RangeSet
-		for _, r := range strings.Split(app.requestRange, ",") {
+		for _, r := range strings.Split(app.RequestRange, ",") {
 			r := strings.Split(r, "-")
 			if len(r) > 2 {
 				println("request range is invalid")
@@ -262,6 +249,25 @@ func (app *App) Main() int {
 	return 1
 }
 
+func (app *App) loadConfigure(name string) error {
+	file, err := os.Open(name)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	dec := yaml.NewDecoder(file)
+	dec.SetStrict(true)
+
+	c := app.Configure
+	if err := dec.Decode(&c); err != nil {
+		return err
+	}
+
+	app.Configure = c
+	return nil
+}
+
 func (app *App) dl(file *DataFile, client *http.Client) {
 	type (
 		PrintMessage struct{}
@@ -300,6 +306,8 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 			formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
 		)
 	}
+
+	var operators observable.Operators
 
 	topCtx, topCancel := context.WithCancel(context.Background())
 	defer topCancel()
@@ -370,7 +378,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 
 	queuedMessages := observable.NewSubject()
 	queuedMessagesCtx, _ := queuedMessages.
-		Pipe(operators.Congest(int(app.concurrent*3))).
+		Pipe(operators.Congest(int(app.Concurrent*3))).
 		Subscribe(topCtx, func(t observable.Notification) {
 			shouldPrint := false
 			switch {
@@ -460,7 +468,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 
 	queuedWrites := observable.NewSubject()
 	queuedWritesCtx, _ := queuedWrites.
-		Pipe(operators.Congest(int(app.concurrent*3))).
+		Pipe(operators.Congest(int(app.Concurrent*3))).
 		Subscribe(topCtx, func(t observable.Notification) {
 			if t.HasValue {
 				t.Value.(func())()
@@ -498,9 +506,9 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	}
 
 	takeIncomplete := func() (offset, size int64) {
-		splitSize := int64(app.splitSize) * 1024 * 1024
+		splitSize := int64(app.SplitSize) * 1024 * 1024
 		if file.ContentSize() > 0 {
-			size := (file.ContentSize() - file.CompleteSize()) / int64(app.concurrent)
+			size := (file.ContentSize() - file.CompleteSize()) / int64(app.Concurrent)
 			if size < splitSize || splitSize == 0 {
 				splitSize = size
 			}
@@ -534,16 +542,16 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 		delayNewTask <-chan time.Time
 		errorCount   uint
 		fatalErrors  bool
-		maxDownloads = app.concurrent
-		currentURL   = app.url
-		onMessage    = make(chan interface{}, app.concurrent)
+		maxDownloads = app.Concurrent
+		currentURL   = app.URL
+		onMessage    = make(chan interface{}, app.Concurrent)
 	)
 
 	var (
-		userAgents           = app.userAgents
+		userAgents           = app.UserAgents
 		userAgentIndex       = 0
 		userAgentConnections = uint(0)
-		newUserAgents        = make([]string, 0, len(app.userAgents))
+		newUserAgents        = make([]string, 0, len(app.UserAgents))
 	)
 
 	syncTicker := time.NewTicker(syncInterval)
@@ -558,27 +566,27 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 			if activeCount == 0 {
 				return
 			}
-		case errorCount >= app.errorCapacity:
+		case errorCount >= app.ErrorCapacity:
 			if len(userAgents) > 1 {
 				// If multiple user agents are provided, we are going to
 				// test all of them one by one.
 				userAgents = userAgents[1:] // Switch to next one.
-				userAgentIndex = (userAgentIndex + 1) % len(app.userAgents)
+				userAgentIndex = (userAgentIndex + 1) % len(app.UserAgents)
 				userAgentConnections = 0
 			} else {
-				if len(app.userAgents) > 1 {
+				if len(app.UserAgents) > 1 {
 					// We tested all user agents, now prepare to start over again.
-					userAgentIndex = (userAgentIndex + 1) % len(app.userAgents)
+					userAgentIndex = (userAgentIndex + 1) % len(app.UserAgents)
 					userAgentConnections = 0
 					userAgents = newUserAgents
-					userAgents = append(userAgents, app.userAgents[userAgentIndex:]...)
-					userAgents = append(userAgents, app.userAgents[:userAgentIndex]...)
+					userAgents = append(userAgents, app.UserAgents[userAgentIndex:]...)
+					userAgents = append(userAgents, app.UserAgents[:userAgentIndex]...)
 				}
 				if activeCount == 0 {
 					// We tested all user agents, failed to start any download.
 					return // Give up.
 				}
-				if currentURL == app.url {
+				if currentURL == app.URL {
 					// We tested all user agents and successfully started
 					// some downloads, but now we are going to presume this
 					// is all we can do so far.
@@ -588,8 +596,8 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					break
 				}
 			}
-			currentURL = app.url
-			maxDownloads = app.concurrent
+			currentURL = app.URL
+			maxDownloads = app.Concurrent
 			errorCount = 0
 			fallthrough
 		default:
@@ -636,8 +644,8 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 					shouldLimitSize = true
 				}
 
-				if app.referer != "" {
-					req.Header.Set("Referer", app.referer)
+				if app.Referer != "" {
+					req.Header.Set("Referer", app.Referer)
 				}
 
 				req.Header.Set("User-Agent", userAgent)
@@ -815,7 +823,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 
 			activeCount++
 			pauseNewTask = true
-			delayNewTask = time.After(app.requestInterval)
+			delayNewTask = time.After(app.RequestInterval)
 
 			activeTasks.Next(observable.Create(cr).Pipe(operators.Do(do)))
 		}
@@ -830,9 +838,9 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 			case ResponseMessage:
 				pauseNewTask = false
 				currentURL = e.URL // Save the redirected one if redirection happens.
-				maxDownloads = app.concurrent
+				maxDownloads = app.Concurrent
 				errorCount = 0
-				if len(app.userAgents) > 1 {
+				if len(app.UserAgents) > 1 {
 					queuedMessages.Next(
 						fmt.Sprintf(
 							"UserAgent #%v: +1 connections",
@@ -840,17 +848,17 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 						),
 					)
 					userAgentConnections++
-					if userAgentConnections == app.perUserAgentLimit {
+					if userAgentConnections == app.PerUserAgentLimit {
 						// We successfully started some downloads with current
 						// user agent, let's try next.
-						userAgentIndex = (userAgentIndex + 1) % len(app.userAgents)
+						userAgentIndex = (userAgentIndex + 1) % len(app.UserAgents)
 						userAgentConnections = 0
 						userAgents = newUserAgents
-						userAgents = append(userAgents, app.userAgents[userAgentIndex:]...)
-						userAgents = append(userAgents, app.userAgents[:userAgentIndex]...)
+						userAgents = append(userAgents, app.UserAgents[userAgentIndex:]...)
+						userAgents = append(userAgents, app.UserAgents[:userAgentIndex]...)
 						// If we change the user agent, we probably need to
 						// reset the url to the original one.
-						currentURL = app.url
+						currentURL = app.URL
 					}
 				}
 			case CompleteMessage:
@@ -862,11 +870,11 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 				if e.Err != nil && e.Fatal {
 					fatalErrors = true
 				}
-				if e.Responsed && len(app.userAgents) > 1 {
+				if e.Responsed && len(app.UserAgents) > 1 {
 					// Prepare to test all user agents again.
 					userAgents = newUserAgents
-					userAgents = append(userAgents, app.userAgents[userAgentIndex:]...)
-					userAgents = append(userAgents, app.userAgents[:userAgentIndex]...)
+					userAgents = append(userAgents, app.UserAgents[userAgentIndex:]...)
+					userAgents = append(userAgents, app.UserAgents[:userAgentIndex]...)
 				}
 				if e.Err != nil && !e.Responsed {
 					unwrappedErr := e.Err
@@ -877,7 +885,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 						unwrappedErr = e.Err
 					}
 					message := unwrappedErr.Error()
-					if len(app.userAgents) > 1 {
+					if len(app.UserAgents) > 1 {
 						message = fmt.Sprintf(
 							"UserAgent #%v: %v",
 							userAgentIndex+1,
@@ -893,7 +901,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	}
 }
 
-func (app *App) status(file *DataFile) {
+func (app *App) showStatus(file *DataFile) {
 	var (
 		contentSize        = file.ContentSize()
 		completeSize       = file.CompleteSize()
@@ -905,6 +913,7 @@ func (app *App) status(file *DataFile) {
 		fmt.Println("Size:", contentSize)
 		fmt.Println("Complete:", completeSize, fmt.Sprintf("(%v%%)", progress))
 	} else {
+		fmt.Println("Size: unknown")
 		fmt.Println("Complete:", completeSize)
 	}
 	var items []string
@@ -930,6 +939,12 @@ func (app *App) status(file *DataFile) {
 	if contentDisposition != "" {
 		fmt.Println("Content-Disposition:", contentDisposition)
 	}
+}
+
+func (app *App) showConfigure() {
+	enc := yaml.NewEncoder(os.Stdout)
+	enc.Encode(&app.Configure)
+	enc.Close()
 }
 
 func print(a ...interface{}) {
@@ -974,51 +989,6 @@ func formatDuration(d time.Duration) (s string) {
 	if strings.HasSuffix(s, "h0m") {
 		s = s[:len(s)-2]
 	}
-	return
-}
-
-func loadSingleLine(name string, max int) (line string, err error) {
-	file, err := os.Open(name)
-	if err != nil {
-		return
-	}
-	defer file.Close()
-	s := bufio.NewScanner(file)
-	s.Buffer(nil, max)
-	for s.Scan() {
-		line = strings.TrimSpace(s.Text())
-		if line != "" && line[0] != '#' {
-			break
-		}
-	}
-	err = s.Err()
-	return
-}
-
-func loadLines(name string, max int) (lines []string, err error) {
-	file, err := os.Open(name)
-	if err != nil {
-		return
-	}
-	defer file.Close()
-	s := bufio.NewScanner(file)
-	s.Buffer(nil, max)
-	for s.Scan() {
-		line := strings.TrimSpace(s.Text())
-		if line != "" && line[0] != '#' {
-			lines = append(lines, line)
-		}
-	}
-	err = s.Err()
-	return
-}
-
-func loadURL(name string) (rawurl string, err error) {
-	rawurl, err = loadSingleLine(name, 2048)
-	if err != nil {
-		return
-	}
-	_, err = url.Parse(rawurl)
 	return
 }
 
