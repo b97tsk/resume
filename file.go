@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 )
 
@@ -20,6 +21,7 @@ type DataFile struct {
 	name            string
 	file            *os.File
 	hash            HashInfo
+	completed       RangeSet
 	incomplete      RangeSet
 	completeSize    int64
 	recentIncrement int64
@@ -71,14 +73,18 @@ func (f *DataFile) LoadHashFile() (err error) {
 		return
 	}
 
-	var incomplete RangeSet
-	var completeSize int64
+	var (
+		completed    RangeSet
+		incomplete   RangeSet
+		completeSize int64
+	)
 	incomplete.AddRange(0, math.MaxInt64)
 
 	for i := range hash.Pieces {
 		p := &hash.Pieces[i]
 		if p.Size > 0 && p.Size <= pieceSize && p.HashCode > 0 {
 			offset := pieceSize * int64(i)
+			completed.AddRange(offset, offset+int64(p.Size))
 			incomplete.DeleteRange(offset, offset+int64(p.Size))
 			completeSize += int64(p.Size)
 			continue
@@ -87,6 +93,7 @@ func (f *DataFile) LoadHashFile() (err error) {
 	}
 
 	f.hash = hash
+	f.completed = completed
 	f.incomplete = incomplete
 	f.completeSize = completeSize
 
@@ -228,6 +235,25 @@ func (f *DataFile) ReturnIncomplete(offset, size int64) {
 	}
 }
 
+func (f *DataFile) ReadAt(b []byte, offset int64) (n int, ok bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	i := sort.Search(len(f.completed), func(i int) bool {
+		return f.completed[i].High > offset
+	})
+	if i < len(f.completed) && f.completed[i].Low <= offset {
+		available := int(f.completed[i].High - offset)
+		if available < len(b) {
+			b = b[:available]
+		}
+		n, _ = f.file.ReadAt(b, offset)
+		if n > 0 {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
 func (f *DataFile) WriteAt(b []byte, offset int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -243,6 +269,7 @@ func (f *DataFile) WriteAt(b []byte, offset int64) {
 		panic("WriteAt failed")
 	}
 
+	f.completed.AddRange(offset, offset+int64(n))
 	f.incomplete.DeleteRange(offset, offset+int64(n))
 
 	completeSize := f.completeSize
@@ -318,6 +345,7 @@ func (f *DataFile) Verify(digest io.Writer) error {
 		hashCode = crc32.Update(hashCode, crc32.IEEETable, b[:pieceSizeRequired])
 		if hashCode != p.HashCode {
 			offset := pieceSize * int64(i)
+			f.completed.DeleteRange(offset, offset+int64(p.Size))
 			f.incomplete.AddRange(offset, offset+int64(p.Size))
 			f.completeSize -= int64(p.Size)
 			p.Reset()
@@ -329,6 +357,7 @@ func (f *DataFile) Verify(digest io.Writer) error {
 			hashCode = crc32.ChecksumIEEE(b[:pieceSize])
 			if hashCode != p.HashCode {
 				offset := pieceSize * int64(i)
+				f.completed.DeleteRange(offset, offset+int64(p.Size))
 				f.incomplete.AddRange(offset, offset+int64(p.Size))
 				f.completeSize -= int64(p.Size)
 				p.Reset()
@@ -349,6 +378,7 @@ func (f *DataFile) Verify(digest io.Writer) error {
 		p := &f.hash.Pieces[i]
 		if hashCode != p.HashCode {
 			offset := pieceSize * int64(i)
+			f.completed.DeleteRange(offset, offset+int64(p.Size))
 			f.incomplete.AddRange(offset, offset+int64(p.Size))
 			f.completeSize -= int64(p.Size)
 			p.Reset()

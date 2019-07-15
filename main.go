@@ -32,14 +32,16 @@ import (
 )
 
 const (
-	readBufferSize = 4096
-	readTimeout    = 30 * time.Second
-	reportInterval = 10 * time.Minute
-	syncInterval   = 5 * time.Minute
+	readBufferSize   = 4096
+	readTimeout      = 30 * time.Second
+	reportInterval   = 10 * time.Minute
+	syncInterval     = 5 * time.Minute
+	streamBufferSize = 1024 * 1024
 )
 
 type App struct {
 	Configure
+	streamToStdout bool
 }
 
 type Configure struct {
@@ -52,6 +54,7 @@ type Configure struct {
 	RequestRange      string        `yaml:"request-range"`
 	UserAgents        []string      `yaml:"user-agents"`
 	PerUserAgentLimit uint          `yaml:"per-user-agent-limit"`
+	StreamRate        uint          `yaml:"stream-rate"`
 }
 
 func main() {
@@ -67,11 +70,12 @@ func (app *App) Main() int {
 	flag.UintVar(&app.SplitSize, "s", 0, "split size (MiB), 0 means use maximum possible")
 	flag.UintVar(&app.Concurrent, "c", 4, "maximum number of parallel downloads")
 	flag.UintVar(&app.ErrorCapacity, "e", 3, "maximum number of errors")
-	flag.UintVar(&app.PerUserAgentLimit, "p", 0, "limit per user agent connections")
-	flag.DurationVar(&app.RequestInterval, "i", 2*time.Second, "request interval")
-	flag.StringVar(&app.RequestRange, "r", "", "request range (MiB), e.g., 0-1023")
+	flag.DurationVar(&app.RequestInterval, "interval", 2*time.Second, "request interval")
+	flag.StringVar(&app.RequestRange, "range", "", "request range (MiB), e.g., 0-1023")
 	flag.BoolVar(&showStatus, "status", false, "show status, then exit")
 	flag.BoolVar(&showConfigure, "configure", false, "show configure, then exit")
+	flag.BoolVar(&app.streamToStdout, "stream", false, "write to stdout while downloading")
+	flag.UintVar(&app.StreamRate, "stream.rate", 12, "maximum number of stream rate (MiB/s)")
 	flag.Parse()
 
 	client := http.DefaultClient
@@ -177,16 +181,95 @@ func (app *App) Main() int {
 		}
 	}
 
+	mainCtx, mainCancel := context.WithCancel(context.Background())
+	mainDone := mainCtx.Done()
+	defer mainCancel()
+	go func() {
+		waitSignal := make(chan os.Signal, 1)
+		signal.Notify(waitSignal, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(waitSignal)
+		select {
+		case <-waitSignal:
+			mainCancel()
+		case <-mainDone:
+		}
+	}()
+
+	var (
+		streamRest chan struct{}
+		streamDone chan struct{}
+	)
+	if app.streamToStdout {
+		streamRest = make(chan struct{})
+		streamDone = make(chan struct{})
+		defer func() {
+			<-streamDone
+		}()
+		go func() {
+			defer close(streamDone)
+			streamInterval := time.Second / 12
+			if app.StreamRate > 0 {
+				streamInterval = time.Second / time.Duration(app.StreamRate)
+			}
+			streamBuffer := make([]byte, streamBufferSize)
+			streamOffset := int64(0)
+			streamTicker := time.NewTicker(streamInterval)
+			defer streamTicker.Stop()
+			for {
+				select {
+				case <-mainDone:
+					return
+				case <-streamTicker.C:
+					if n, ok := file.ReadAt(streamBuffer, streamOffset); ok {
+						streamOffset += int64(n)
+						if _, err := os.Stdout.Write(streamBuffer[:n]); err != nil {
+							return
+						}
+					}
+				case <-streamRest:
+					contentSize := file.ContentSize()
+					for streamOffset < contentSize {
+						if n, ok := file.ReadAt(streamBuffer, streamOffset); ok {
+							streamOffset += int64(n)
+							if _, err := os.Stdout.Write(streamBuffer[:n]); err != nil {
+								return
+							}
+						} else {
+							break
+						}
+						select {
+						case <-mainDone:
+							return
+						default:
+						}
+					}
+					return
+				}
+			}
+		}()
+	}
+
 	for i := 0; i < 2; i++ {
 		contentSize := file.ContentSize()
 		completeSize := file.CompleteSize()
 		if contentSize == 0 || completeSize != contentSize {
-			app.dl(file, client)
+			app.dl(mainCtx, file, client)
 			contentSize = file.ContentSize()
 			completeSize = file.CompleteSize()
 			if contentSize == 0 || completeSize != contentSize {
 				return 1
 			}
+		}
+		if app.streamToStdout {
+			print("streaming...")
+			app.streamToStdout = false
+			close(streamRest)
+			select {
+			case <-mainDone:
+				return 1
+			case <-streamDone:
+			}
+			print("\033[1K\r")
 		}
 
 		var digest hash.Hash
@@ -219,6 +302,13 @@ func (app *App) Main() int {
 				p = s * 100 / contentSize
 				print("\033[1K\r")
 				printf("verifying...%v%%", p)
+			}
+			select {
+			case <-mainDone:
+				if err == nil {
+					err = context.Canceled
+				}
+			default:
 			}
 			return
 		}
@@ -268,7 +358,7 @@ func (app *App) loadConfigure(name string) error {
 	return nil
 }
 
-func (app *App) dl(file *DataFile, client *http.Client) {
+func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client) {
 	type (
 		PrintMessage struct{}
 
@@ -309,8 +399,9 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 
 	var operators observable.Operators
 
-	topCtx, topCancel := context.WithCancel(context.Background())
-	defer topCancel()
+	dlCtx, dlCancel := context.WithCancel(mainCtx)
+	dlDone := dlCtx.Done()
+	defer dlCancel()
 
 	bytesPerSecond := observable.NewSubject()
 	observable.Create(
@@ -374,12 +465,12 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 		},
 	).Pipe(
 		operators.Repeat(-1),
-	).Subscribe(topCtx, observable.NopObserver)
+	).Subscribe(dlCtx, observable.NopObserver)
 
 	queuedMessages := observable.NewSubject()
 	queuedMessagesCtx, _ := queuedMessages.
 		Pipe(operators.Congest(int(app.Concurrent*3))).
-		Subscribe(topCtx, func(t observable.Notification) {
+		Subscribe(dlCtx, func(t observable.Notification) {
 			shouldPrint := false
 			switch {
 			case t.HasValue:
@@ -462,14 +553,14 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	{
 		_, cancel := observable.Interval(time.Second).
 			Pipe(operators.MapTo(PrintMessage{})).
-			Subscribe(topCtx, queuedMessages.Observer)
+			Subscribe(dlCtx, queuedMessages.Observer)
 		defer cancel()
 	}
 
 	queuedWrites := observable.NewSubject()
 	queuedWritesCtx, _ := queuedWrites.
 		Pipe(operators.Congest(int(app.Concurrent*3))).
-		Subscribe(topCtx, func(t observable.Notification) {
+		Subscribe(dlCtx, func(t observable.Notification) {
 			if t.HasValue {
 				t.Value.(func())()
 			}
@@ -523,18 +614,16 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 	activeTasks := observable.NewSubject()
 	activeTasksCtx, _ := activeTasks.
 		Pipe(operators.MergeAll()).
-		Subscribe(topCtx, queuedMessages.Observer)
+		Subscribe(
+			// Not dlCtx here, because we want to wait
+			// for all tasks complete when dl returns.
+			context.Background(),
+			queuedMessages.Observer,
+		)
 	defer func() {
 		activeTasks.Complete()
 		<-activeTasksCtx.Done()
 	}()
-
-	activeCtx, activeCancel := context.WithCancel(topCtx)
-	defer activeCancel()
-
-	waitSignal := make(chan os.Signal, 1)
-	signal.Notify(waitSignal, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(waitSignal)
 
 	var (
 		activeCount  uint
@@ -615,7 +704,9 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 			}
 
 			cr := func(parent context.Context, sink observable.Observer) (ctx context.Context, cancel context.CancelFunc) {
-				ctx, cancel = context.WithCancel(activeCtx)
+				// Note that parent will never be canceled, because
+				// subscription to activeTasks uses context.Background().
+				ctx, cancel = context.WithCancel(dlCtx) // Not parent.
 
 				sink = observable.Finally(sink, cancel)
 
@@ -829,7 +920,7 @@ func (app *App) dl(file *DataFile, client *http.Client) {
 		}
 
 		select {
-		case <-waitSignal:
+		case <-dlDone:
 			return
 		case <-delayNewTask:
 			delayNewTask = nil
@@ -911,10 +1002,10 @@ func (app *App) showStatus(file *DataFile) {
 	if contentSize > 0 {
 		progress := int(float64(completeSize) / float64(contentSize) * 100)
 		fmt.Println("Size:", contentSize)
-		fmt.Println("Complete:", completeSize, fmt.Sprintf("(%v%%)", progress))
+		fmt.Println("Completed:", completeSize, fmt.Sprintf("(%v%%)", progress))
 	} else {
 		fmt.Println("Size: unknown")
-		fmt.Println("Complete:", completeSize)
+		fmt.Println("Completed:", completeSize)
 	}
 	var items []string
 	for _, r := range file.Incomplete() {

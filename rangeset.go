@@ -99,3 +99,23 @@ func (s *RangeSet) DeleteRange(low, high int64) {
 func (s *RangeSet) Reset() {
 	*s = nil
 }
+
+func (s RangeSet) Contains(single int64) bool {
+	return s.ContainsRange(single, single+1)
+}
+
+func (s RangeSet) ContainsRange(low, high int64) bool {
+	if low >= high {
+		return false
+	}
+	i := sort.Search(len(s), func(i int) bool { return s[i].High > low })
+	return i < len(s) && s[i].Low <= low && high <= s[i].High
+}
+
+func (s RangeSet) ContainsAny(low, high int64) bool {
+	if low >= high {
+		return false
+	}
+	i := sort.Search(len(s), func(i int) bool { return s[i].High > low })
+	return i < len(s) && i < sort.Search(len(s), func(i int) bool { return s[i].Low >= high })
+}

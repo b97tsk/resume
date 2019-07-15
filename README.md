@@ -35,6 +35,7 @@ $ cd .. && rm -rf work
   - `request-range` request range.
   - `user-agents` list of user agents.
   - `per-user-agent-limit` limit per user agent connections.
+  - `stream-rate` maximum number of stream rate.
 - `Cookies` (optional) the cookies. The file format is [Netscape format](https://unix.stackexchange.com/a/210282).
 
 > Note that command line arguments take precedence over `Configure`.
