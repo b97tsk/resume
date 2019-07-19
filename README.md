@@ -30,7 +30,7 @@ $ cd .. && rm -rf work
   - `referer` the referer.
   - `split-size` split size.
   - `connections` maximum number of parallel downloads.
-  - `error-capacity` maximum number of errors.
+  - `errors` maximum number of errors.
   - `request-interval` request interval.
   - `request-range` request range.
   - `user-agents` list of user agents.

@@ -48,7 +48,7 @@ type Configure struct {
 	Referer           string
 	SplitSize         uint          `yaml:"split-size"`
 	MaxConnections    uint          `yaml:"connections"`
-	ErrorCapacity     uint          `yaml:"error-capacity"`
+	MaxErrors         uint          `yaml:"errors"`
 	RequestInterval   time.Duration `yaml:"request-interval"`
 	RequestRange      string        `yaml:"request-range"`
 	UserAgents        []string      `yaml:"user-agents"`
@@ -69,7 +69,7 @@ func (app *App) Main() int {
 	)
 	flag.UintVar(&app.SplitSize, "s", 0, "split size (MiB), 0 means use maximum possible")
 	flag.UintVar(&app.MaxConnections, "c", 4, "maximum number of parallel downloads")
-	flag.UintVar(&app.ErrorCapacity, "e", 3, "maximum number of errors")
+	flag.UintVar(&app.MaxErrors, "e", 3, "maximum number of errors")
 	flag.DurationVar(&app.RequestInterval, "interval", 2*time.Second, "request interval")
 	flag.StringVar(&app.RequestRange, "range", "", "request range (MiB), e.g., 0-1023")
 	flag.StringVar(&workdir, "w", ".", "working directory")
@@ -665,7 +665,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			if activeCount == 0 {
 				return
 			}
-		case errorCount >= app.ErrorCapacity:
+		case errorCount >= app.MaxErrors:
 			if len(userAgents) > 1 {
 				// If multiple user agents are provided, we are going to
 				// test all of them one by one.
