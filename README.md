@@ -33,10 +33,10 @@ $ cd .. && rm -rf work
   - `errors` maximum number of errors.
   - `request-interval` request interval.
   - `request-range` request range.
+  - `cookie` cookie file. The file format is [Netscape format](https://unix.stackexchange.com/a/210282).
   - `user-agents` list of user agents.
   - `per-user-agent-limit` limit per user agent connections.
   - `stream-rate` maximum number of stream rate.
-- `Cookies` (optional) the cookies. The file format is [Netscape format](https://unix.stackexchange.com/a/210282).
 
 > Note that command line arguments take precedence over `Configure`.
 

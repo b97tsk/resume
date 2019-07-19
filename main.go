@@ -51,6 +51,7 @@ type Configure struct {
 	MaxErrors         uint          `yaml:"errors"`
 	RequestInterval   time.Duration `yaml:"request-interval"`
 	RequestRange      string        `yaml:"request-range"`
+	CookieFile        string        `yaml:"cookie"`
 	UserAgents        []string      `yaml:"user-agents"`
 	PerUserAgentLimit uint          `yaml:"per-user-agent-limit"`
 	StreamRate        uint          `yaml:"stream-rate"`
@@ -73,6 +74,7 @@ func (app *App) Main() int {
 	flag.DurationVar(&app.RequestInterval, "interval", 2*time.Second, "request interval")
 	flag.StringVar(&app.RequestRange, "range", "", "request range (MiB), e.g., 0-1023")
 	flag.StringVar(&workdir, "w", ".", "working directory")
+	flag.StringVar(&app.CookieFile, "k", "", "cookie file")
 	flag.BoolVar(&showStatus, "status", false, "show status, then exit")
 	flag.BoolVar(&showConfigure, "configure", false, "show configure, then exit")
 	flag.BoolVar(&app.streamToStdout, "stream", false, "write to stdout while downloading")
@@ -104,13 +106,15 @@ func (app *App) Main() int {
 			return 2
 		}
 
-		jar, err := loadCookies("Cookies")
-		if err != nil && !os.IsNotExist(err) && !isDir("Cookies") {
-			println(err)
-			return 1
-		}
-		if err == nil {
-			client = &http.Client{Jar: jar}
+		if app.CookieFile != "" {
+			jar, err := loadCookies(app.CookieFile)
+			if err != nil && !os.IsNotExist(err) && !isDir(app.CookieFile) {
+				println(err)
+				return 1
+			}
+			if err == nil {
+				client = &http.Client{Jar: jar}
+			}
 		}
 	}
 
