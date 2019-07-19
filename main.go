@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -66,10 +67,12 @@ func main() {
 func (app *App) Main() int {
 	var (
 		workdir       string
+		conffile      string
 		showStatus    bool
 		showConfigure bool
 	)
 	flag.StringVar(&workdir, "w", ".", "working directory")
+	flag.StringVar(&conffile, "f", "Configure", "configure file")
 	flag.StringVar(&app.OutFile, "o", "File", "output file")
 	flag.StringVar(&app.CookieFile, "k", "", "cookie file")
 	flag.UintVar(&app.SplitSize, "s", 0, "split size (MiB), 0 means use maximum possible")
@@ -91,16 +94,22 @@ func (app *App) Main() int {
 		}
 	}
 
+	os.Setenv("ConfigDir", filepath.Dir(conffile))
+
 	client := http.DefaultClient
 
 	if !showStatus {
-		err := app.loadConfigure("Configure")
-		if err != nil && !os.IsNotExist(err) && !isDir("Configure") {
-			println(err)
-			return 1
-		}
-		if err == nil {
-			flag.Parse() // Command line flags take precedence.
+		if conffile != "" {
+			err := app.loadConfigure(conffile)
+			if err != nil && !os.IsNotExist(err) {
+				if !isDir(conffile) || flag.Lookup("f") != nil {
+					println(err)
+					return 1
+				}
+			}
+			if err == nil {
+				flag.Parse() // Command line flags take precedence.
+			}
 		}
 
 		if showConfigure {
@@ -111,7 +120,7 @@ func (app *App) Main() int {
 		if app.CookieFile != "" {
 			cookiefile := os.ExpandEnv(app.CookieFile)
 			jar, err := loadCookies(cookiefile)
-			if err != nil && !os.IsNotExist(err) && !isDir(cookiefile) {
+			if err != nil && !os.IsNotExist(err) {
 				println(err)
 				return 1
 			}

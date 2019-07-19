@@ -23,9 +23,10 @@ $ cd .. && rm -rf work
 
 # Configure File
 
-A file named `Configure` is read when `resume` starts, if it exists.
+By default, a file named `Configure` is read when the program starts, if it exists.
+You can specify the path of this configure file by using command line flag `-f`.
 
-The file is an YAML document which can specify following options:
+A configure file is an YAML document which can specify following options:
 
 - `url` the URL you want to download.
 - `output` output file.
@@ -40,4 +41,4 @@ The file is an YAML document which can specify following options:
 - `per-user-agent-limit` limit per user agent connections.
 - `stream-rate` maximum number of stream rate.
 
-> Note that command line arguments take precedence over this `Configure` file.
+> Note that command line arguments take precedence over this configure file.
