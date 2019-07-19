@@ -21,28 +21,23 @@ $ cp File path/to/file
 $ cd .. && rm -rf work
 ```
 
-# Files
+# Configure File
 
-### Input Files
+A file named `Configure` is read when `resume` starts, if it exists.
 
-- `Configure` (optional) an YAML document contains any of following options:
-  - `url` the URL you want to download.
-  - `referer` the referer.
-  - `split-size` split size.
-  - `connections` maximum number of parallel downloads.
-  - `errors` maximum number of errors.
-  - `request-interval` request interval.
-  - `request-range` request range.
-  - `cookie` cookie file. The file format is [Netscape format](https://unix.stackexchange.com/a/210282).
-  - `user-agents` list of user agents.
-  - `per-user-agent-limit` limit per user agent connections.
-  - `stream-rate` maximum number of stream rate.
+The file is an YAML document which can specify following options:
 
-> Note that command line arguments take precedence over `Configure`.
+- `url` the URL you want to download.
+- `output` output file.
+- `split-size` split size.
+- `connections` maximum number of parallel downloads.
+- `errors` maximum number of errors.
+- `request-interval` request interval.
+- `request-range` request range.
+- `cookie` cookie file. The file format is [Netscape format](https://unix.stackexchange.com/a/210282).
+- `referer` the referer.
+- `user-agents` list of user agents.
+- `per-user-agent-limit` limit per user agent connections.
+- `stream-rate` maximum number of stream rate.
 
-### Output Files
-
-- `File` all the data downloaded from the URL.
-- `Hash` hash information of the `File`.
-
-> If `File` or `Hash` is missing, download will start from the beginning.
+> Note that command line arguments take precedence over this `Configure` file.

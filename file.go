@@ -6,7 +6,6 @@ import (
 	"io"
 	"math"
 	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 )
@@ -60,8 +59,7 @@ func (f *DataFile) LoadHashFile() (err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	name := filepath.Join(filepath.Dir(f.name), "Hash")
-	file, err := os.Open(name)
+	file, err := os.Open(f.name + ".hash")
 	if err != nil {
 		return
 	}
@@ -405,12 +403,11 @@ func (f *DataFile) SyncNow() error {
 }
 
 func (f *DataFile) syncLocked() error {
-	name := filepath.Join(filepath.Dir(f.name), "Hash")
-	file, err := os.OpenFile(name+"New", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePerm)
+	file, err := os.OpenFile(f.name+".hash.new", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePerm)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(name + "New")
+	defer os.Remove(f.name + ".hash.new")
 
 	err1 := gob.NewEncoder(file).Encode(&f.hash)
 	err2 := file.Sync()
@@ -427,7 +424,7 @@ func (f *DataFile) syncLocked() error {
 		return err3
 	}
 
-	os.Rename(name+"New", name)
+	os.Rename(f.name+".hash.new", f.name+".hash")
 
 	return err4
 }

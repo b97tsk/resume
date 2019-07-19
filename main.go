@@ -44,14 +44,15 @@ type App struct {
 }
 
 type Configure struct {
-	URL               string
-	Referer           string
+	URL               string        `yaml:"url"`
+	OutFile           string        `yaml:"output"`
 	SplitSize         uint          `yaml:"split-size"`
 	MaxConnections    uint          `yaml:"connections"`
 	MaxErrors         uint          `yaml:"errors"`
 	RequestInterval   time.Duration `yaml:"request-interval"`
 	RequestRange      string        `yaml:"request-range"`
 	CookieFile        string        `yaml:"cookie"`
+	Referer           string        `yaml:"referer"`
 	UserAgents        []string      `yaml:"user-agents"`
 	PerUserAgentLimit uint          `yaml:"per-user-agent-limit"`
 	StreamRate        uint          `yaml:"stream-rate"`
@@ -68,13 +69,14 @@ func (app *App) Main() int {
 		showStatus    bool
 		showConfigure bool
 	)
+	flag.StringVar(&workdir, "w", ".", "working directory")
+	flag.StringVar(&app.OutFile, "o", "File", "output file")
+	flag.StringVar(&app.CookieFile, "k", "", "cookie file")
 	flag.UintVar(&app.SplitSize, "s", 0, "split size (MiB), 0 means use maximum possible")
 	flag.UintVar(&app.MaxConnections, "c", 4, "maximum number of parallel downloads")
 	flag.UintVar(&app.MaxErrors, "e", 3, "maximum number of errors")
 	flag.DurationVar(&app.RequestInterval, "interval", 2*time.Second, "request interval")
 	flag.StringVar(&app.RequestRange, "range", "", "request range (MiB), e.g., 0-1023")
-	flag.StringVar(&workdir, "w", ".", "working directory")
-	flag.StringVar(&app.CookieFile, "k", "", "cookie file")
 	flag.BoolVar(&showStatus, "status", false, "show status, then exit")
 	flag.BoolVar(&showConfigure, "configure", false, "show configure, then exit")
 	flag.BoolVar(&app.streamToStdout, "stream", false, "write to stdout while downloading")
@@ -120,7 +122,7 @@ func (app *App) Main() int {
 
 	fileSize := int64(0)
 
-	switch stat, err := os.Stat("File"); {
+	switch stat, err := os.Stat(app.OutFile); {
 	case err == nil:
 		fileSize = stat.Size()
 	case !os.IsNotExist(err) || showStatus:
@@ -128,7 +130,7 @@ func (app *App) Main() int {
 		return 1
 	}
 
-	file, err := openDataFile("File")
+	file, err := openDataFile(app.OutFile)
 	if err != nil {
 		println(err)
 		return 1
