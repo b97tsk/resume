@@ -18,7 +18,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -64,6 +63,7 @@ func main() {
 
 func (app *App) Main() int {
 	var (
+		workdir       string
 		showStatus    bool
 		showConfigure bool
 	)
@@ -72,41 +72,51 @@ func (app *App) Main() int {
 	flag.UintVar(&app.ErrorCapacity, "e", 3, "maximum number of errors")
 	flag.DurationVar(&app.RequestInterval, "interval", 2*time.Second, "request interval")
 	flag.StringVar(&app.RequestRange, "range", "", "request range (MiB), e.g., 0-1023")
+	flag.StringVar(&workdir, "w", ".", "working directory")
 	flag.BoolVar(&showStatus, "status", false, "show status, then exit")
 	flag.BoolVar(&showConfigure, "configure", false, "show configure, then exit")
 	flag.BoolVar(&app.streamToStdout, "stream", false, "write to stdout while downloading")
 	flag.UintVar(&app.StreamRate, "stream.rate", 12, "maximum number of stream rate (MiB/s)")
 	flag.Parse()
 
-	client := http.DefaultClient
-
-	if !showStatus {
-		err := app.loadConfigure(filepath.Join(".", "Configure"))
-		if err != nil && !os.IsNotExist(err) {
+	if workdir != "." {
+		err := os.Chdir(workdir)
+		if err != nil {
 			println(err)
 			return 1
 		}
+	}
 
-		flag.Parse() // Command line flags take precedence.
+	client := http.DefaultClient
+
+	if !showStatus {
+		err := app.loadConfigure("Configure")
+		if err != nil && !os.IsNotExist(err) && !isDir("Configure") {
+			println(err)
+			return 1
+		}
+		if err == nil {
+			flag.Parse() // Command line flags take precedence.
+		}
 
 		if showConfigure {
 			app.showConfigure()
 			return 2
 		}
 
-		jar, err := loadCookies(filepath.Join(".", "Cookies"))
-		if err != nil && !os.IsNotExist(err) {
+		jar, err := loadCookies("Cookies")
+		if err != nil && !os.IsNotExist(err) && !isDir("Cookies") {
 			println(err)
 			return 1
 		}
-
-		client = &http.Client{Jar: jar}
+		if err == nil {
+			client = &http.Client{Jar: jar}
+		}
 	}
 
-	fileName := filepath.Join(".", "File")
 	fileSize := int64(0)
 
-	switch stat, err := os.Stat(fileName); {
+	switch stat, err := os.Stat("File"); {
 	case err == nil:
 		fileSize = stat.Size()
 	case !os.IsNotExist(err) || showStatus:
@@ -114,7 +124,7 @@ func (app *App) Main() int {
 		return 1
 	}
 
-	file, err := openDataFile(fileName)
+	file, err := openDataFile("File")
 	if err != nil {
 		println(err)
 		return 1
@@ -1081,6 +1091,14 @@ func formatDuration(d time.Duration) (s string) {
 		s = s[:len(s)-2]
 	}
 	return
+}
+
+func isDir(name string) bool {
+	stat, err := os.Stat(name)
+	if err != nil {
+		return false
+	}
+	return stat.IsDir()
 }
 
 func loadCookies(name string) (jar http.CookieJar, err error) {
