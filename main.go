@@ -109,8 +109,9 @@ func (app *App) Main() int {
 		}
 
 		if app.CookieFile != "" {
-			jar, err := loadCookies(app.CookieFile)
-			if err != nil && !os.IsNotExist(err) && !isDir(app.CookieFile) {
+			cookiefile := os.ExpandEnv(app.CookieFile)
+			jar, err := loadCookies(cookiefile)
+			if err != nil && !os.IsNotExist(err) && !isDir(cookiefile) {
 				println(err)
 				return 1
 			}
@@ -120,17 +121,18 @@ func (app *App) Main() int {
 		}
 	}
 
-	fileSize := int64(0)
+	outfile := os.ExpandEnv(app.OutFile)
+	outfilesize := int64(0)
 
-	switch stat, err := os.Stat(app.OutFile); {
+	switch stat, err := os.Stat(outfile); {
 	case err == nil:
-		fileSize = stat.Size()
+		outfilesize = stat.Size()
 	case !os.IsNotExist(err) || showStatus:
 		println(err)
 		return 1
 	}
 
-	file, err := openDataFile(app.OutFile)
+	file, err := openDataFile(outfile)
 	if err != nil {
 		println(err)
 		return 1
@@ -142,7 +144,7 @@ func (app *App) Main() int {
 		}
 	}()
 
-	if fileSize > 0 {
+	if outfilesize > 0 {
 		err := file.LoadHashFile()
 		if err != nil && !os.IsNotExist(err) {
 			println(err)
