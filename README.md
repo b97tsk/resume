@@ -29,7 +29,7 @@ $ cd .. && rm -rf work
   - `url` the URL you want to download.
   - `referer` the referer.
   - `split-size` split size.
-  - `concurrent` maximum number of parallel downloads.
+  - `connections` maximum number of parallel downloads.
   - `error-capacity` maximum number of errors.
   - `request-interval` request interval.
   - `request-range` request range.

@@ -47,7 +47,7 @@ type Configure struct {
 	URL               string
 	Referer           string
 	SplitSize         uint          `yaml:"split-size"`
-	Concurrent        uint          `yaml:"concurrent"`
+	MaxConnections    uint          `yaml:"connections"`
 	ErrorCapacity     uint          `yaml:"error-capacity"`
 	RequestInterval   time.Duration `yaml:"request-interval"`
 	RequestRange      string        `yaml:"request-range"`
@@ -68,7 +68,7 @@ func (app *App) Main() int {
 		showConfigure bool
 	)
 	flag.UintVar(&app.SplitSize, "s", 0, "split size (MiB), 0 means use maximum possible")
-	flag.UintVar(&app.Concurrent, "c", 4, "maximum number of parallel downloads")
+	flag.UintVar(&app.MaxConnections, "c", 4, "maximum number of parallel downloads")
 	flag.UintVar(&app.ErrorCapacity, "e", 3, "maximum number of errors")
 	flag.DurationVar(&app.RequestInterval, "interval", 2*time.Second, "request interval")
 	flag.StringVar(&app.RequestRange, "range", "", "request range (MiB), e.g., 0-1023")
@@ -479,7 +479,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	queuedMessages := observable.NewSubject()
 	queuedMessagesCtx, _ := queuedMessages.
-		Pipe(operators.Congest(int(app.Concurrent*3))).
+		Pipe(operators.Congest(int(app.MaxConnections*3))).
 		Subscribe(dlCtx, func(t observable.Notification) {
 			shouldPrint := false
 			switch {
@@ -569,7 +569,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	queuedWrites := observable.NewSubject()
 	queuedWritesCtx, _ := queuedWrites.
-		Pipe(operators.Congest(int(app.Concurrent*3))).
+		Pipe(operators.Congest(int(app.MaxConnections*3))).
 		Subscribe(dlCtx, func(t observable.Notification) {
 			if t.HasValue {
 				t.Value.(func())()
@@ -609,7 +609,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	takeIncomplete := func() (offset, size int64) {
 		splitSize := int64(app.SplitSize) * 1024 * 1024
 		if file.ContentSize() > 0 {
-			size := (file.ContentSize() - file.CompleteSize()) / int64(app.Concurrent)
+			size := (file.ContentSize() - file.CompleteSize()) / int64(app.MaxConnections)
 			if size < splitSize || splitSize == 0 {
 				splitSize = size
 			}
@@ -641,9 +641,9 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		delayNewTask <-chan time.Time
 		errorCount   uint
 		fatalErrors  bool
-		maxDownloads = app.Concurrent
+		maxDownloads = app.MaxConnections
 		currentURL   = app.URL
-		onMessage    = make(chan interface{}, app.Concurrent)
+		onMessage    = make(chan interface{}, app.MaxConnections)
 	)
 
 	var (
@@ -696,7 +696,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}
 			}
 			currentURL = app.URL
-			maxDownloads = app.Concurrent
+			maxDownloads = app.MaxConnections
 			errorCount = 0
 			fallthrough
 		default:
@@ -939,7 +939,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			case ResponseMessage:
 				pauseNewTask = false
 				currentURL = e.URL // Save the redirected one if redirection happens.
-				maxDownloads = app.Concurrent
+				maxDownloads = app.MaxConnections
 				errorCount = 0
 				if len(app.UserAgents) > 1 {
 					queuedMessages.Next(
