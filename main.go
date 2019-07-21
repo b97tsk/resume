@@ -32,11 +32,10 @@ import (
 )
 
 const (
-	readBufferSize   = 4096
-	readTimeout      = 30 * time.Second
-	reportInterval   = 10 * time.Minute
-	syncInterval     = 5 * time.Minute
-	streamBufferSize = 1024 * 1024
+	readBufferSize = 4096
+	readTimeout    = 30 * time.Second
+	reportInterval = 10 * time.Minute
+	syncInterval   = 5 * time.Minute
 )
 
 type App struct {
@@ -212,11 +211,11 @@ func (app *App) Main() int {
 	mainDone := mainCtx.Done()
 	defer mainCancel()
 	go func() {
-		waitSignal := make(chan os.Signal, 1)
-		signal.Notify(waitSignal, syscall.SIGINT, syscall.SIGTERM)
-		defer signal.Stop(waitSignal)
+		interrupt := make(chan os.Signal, 1)
+		signal.Notify(interrupt, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(interrupt)
 		select {
-		case <-waitSignal:
+		case <-interrupt:
 			mainCancel()
 		case <-mainDone:
 		}
@@ -238,7 +237,7 @@ func (app *App) Main() int {
 			if app.StreamRate > 0 {
 				streamInterval = time.Second / time.Duration(app.StreamRate)
 			}
-			streamBuffer := make([]byte, streamBufferSize)
+			streamBuffer := make([]byte, 1024*1024)
 			streamOffset := int64(0)
 			streamTicker := time.NewTicker(streamInterval)
 			defer streamTicker.Stop()
@@ -704,7 +703,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}
 				if currentURL == app.URL {
 					// We tested all user agents and successfully started
-					// some downloads, but now we are going to presume this
+					// some downloads, but now we are going to assume this
 					// is all we can do so far.
 					// Let's limit the number of parallel downloads.
 					maxDownloads = activeCount
