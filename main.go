@@ -71,9 +71,10 @@ func (app *App) Main() int {
 		showStatus    bool
 		showConfigure bool
 	)
+	const defaultOutFile = "File"
 	flag.StringVar(&workdir, "w", ".", "working directory")
 	flag.StringVar(&conffile, "f", "Configure", "configure file")
-	flag.StringVar(&app.OutFile, "o", "File", "output file")
+	flag.StringVar(&app.OutFile, "o", defaultOutFile, "output file")
 	flag.StringVar(&app.CookieFile, "cookie", "", "cookie file")
 	flag.UintVar(&app.SplitSize, "s", 0, "split size (MiB), 0 means use maximum possible")
 	flag.UintVar(&app.MaxConnections, "c", 4, "maximum number of parallel downloads")
@@ -93,6 +94,10 @@ func (app *App) Main() int {
 			println(err)
 			return 1
 		}
+	}
+
+	if flag.Lookup("o") == nil {
+		app.OutFile = ""
 	}
 
 	os.Setenv("ConfigDir", filepath.Dir(conffile))
@@ -122,6 +127,26 @@ func (app *App) Main() int {
 	}
 
 	if !showStatus {
+		if app.URL == "" {
+			if stat, _ := os.Stdin.Stat(); (stat.Mode() & os.ModeCharDevice) != 0 {
+				print("Enter url: ")
+			}
+			stdin := bufio.NewScanner(os.Stdin)
+			if !stdin.Scan() {
+				return 1
+			}
+			app.URL = strings.TrimSpace(stdin.Text())
+			if app.URL == "" {
+				return 1
+			}
+		}
+		if u, err := url.Parse(app.URL); err != nil {
+			println(err)
+			return 1
+		} else if u.Scheme != "http" && u.Scheme != "https" {
+			printf("unsupported protocol scheme \"%v\"\n", u.Scheme)
+			return 1
+		}
 		if app.CookieFile != "" {
 			cookiefile := os.ExpandEnv(app.CookieFile)
 			jar, err := loadCookies(cookiefile)
@@ -135,32 +160,56 @@ func (app *App) Main() int {
 		}
 	}
 
-	outfile := os.ExpandEnv(app.OutFile)
-	outfilesize := int64(0)
+	filename := os.ExpandEnv(app.OutFile)
+	if filename == "" {
+		i := strings.LastIndexAny(app.URL, "/\\?#")
+		if i != -1 && (app.URL[i] == '/' || app.URL[i] == '\\') {
+			filename = app.URL[i+1:]
+		}
+		if filename == "" {
+			filename = defaultOutFile
+		}
+	}
 
-	switch stat, err := os.Stat(outfile); {
+	filesize := int64(0)
+	fileexists := false
+
+	switch stat, err := os.Stat(filename); {
 	case err == nil:
-		outfilesize = stat.Size()
+		filesize = stat.Size()
+		fileexists = true
 	case !os.IsNotExist(err) || showStatus:
 		println(err)
 		return 1
 	}
 
-	file, err := openDataFile(outfile)
+	file, err := openDataFile(filename)
 	if err != nil {
 		println(err)
 		return 1
 	}
 	defer func() {
+		completeSize := file.CompleteSize()
 		err := file.Close()
 		if err != nil {
 			println(err)
 		}
+		if completeSize == 0 && !fileexists {
+			os.Remove(filename)
+		}
 	}()
 
-	if outfilesize > 0 {
-		err := file.LoadHashFile()
-		if err != nil && !os.IsNotExist(err) {
+	if filesize > 0 {
+		if err := file.LoadHashFile(); err != nil {
+			if os.IsNotExist(err) {
+				filename := filename
+				if !filepath.IsAbs(filename) {
+					filename = filepath.Join(workdir, filename)
+				}
+				printf("\"%v\" already exists.\n", filename)
+				println("If you do want to redownload it, remove it first.")
+				return 1
+			}
 			println(err)
 			return 1
 		}
@@ -169,28 +218,6 @@ func (app *App) Main() int {
 	if showStatus {
 		app.showStatus(file)
 		return 2
-	}
-
-	if app.URL == "" {
-		if stat, _ := os.Stdin.Stat(); (stat.Mode() & os.ModeCharDevice) != 0 {
-			print("Enter url: ")
-		}
-		stdin := bufio.NewScanner(os.Stdin)
-		if !stdin.Scan() {
-			return 1
-		}
-		app.URL = strings.TrimSpace(stdin.Text())
-		if app.URL == "" {
-			return 1
-		}
-	}
-
-	if u, err := url.Parse(app.URL); err != nil {
-		println(err)
-		return 1
-	} else if u.Scheme != "http" && u.Scheme != "https" {
-		printf("unsupported protocol scheme \"%v\"\n", u.Scheme)
-		return 1
 	}
 
 	if app.RequestRange != "" {
