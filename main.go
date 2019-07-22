@@ -1028,6 +1028,7 @@ func (app *App) showStatus(file *DataFile) {
 		completeSize       = file.CompleteSize()
 		contentMD5         = file.ContentMD5()
 		contentDisposition = file.ContentDisposition()
+		entityTag          = file.EntityTag()
 	)
 	if contentSize > 0 {
 		progress := int(float64(completeSize) / float64(contentSize) * 100)
@@ -1059,6 +1060,9 @@ func (app *App) showStatus(file *DataFile) {
 	}
 	if contentDisposition != "" {
 		fmt.Println("Content-Disposition:", contentDisposition)
+	}
+	if entityTag != "" {
+		fmt.Println("ETag:", entityTag)
 	}
 }
 
