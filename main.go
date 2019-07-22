@@ -73,7 +73,7 @@ func (app *App) Main() int {
 	flag.StringVar(&workdir, "w", ".", "working directory")
 	flag.StringVar(&conffile, "f", "Configure", "configure file")
 	flag.StringVar(&app.OutFile, "o", "File", "output file")
-	flag.StringVar(&app.CookieFile, "k", "", "cookie file")
+	flag.StringVar(&app.CookieFile, "cookie", "", "cookie file")
 	flag.UintVar(&app.SplitSize, "s", 0, "split size (MiB), 0 means use maximum possible")
 	flag.UintVar(&app.MaxConnections, "c", 4, "maximum number of parallel downloads")
 	flag.UintVar(&app.MaxErrors, "e", 3, "maximum number of errors")
