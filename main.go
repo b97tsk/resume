@@ -96,7 +96,7 @@ func (app *App) Main() int {
 		}
 	}
 
-	if flag.Lookup("o") == nil {
+	if !isFlagPassed("o") {
 		app.OutFile = ""
 	}
 
@@ -107,7 +107,7 @@ func (app *App) Main() int {
 	if conffile != "" {
 		err := app.loadConfigure(conffile)
 		if err != nil && !os.IsNotExist(err) {
-			if !isDir(conffile) || flag.Lookup("f") != nil {
+			if !isDir(conffile) || isFlagPassed("f") {
 				println(err)
 				return 1
 			}
@@ -1167,6 +1167,15 @@ func isDir(name string) bool {
 		return false
 	}
 	return stat.IsDir()
+}
+
+func isFlagPassed(name string) (yes bool) {
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			yes = true
+		}
+	})
+	return
 }
 
 func loadCookies(name string) (jar http.CookieJar, err error) {
