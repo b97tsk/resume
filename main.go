@@ -97,25 +97,29 @@ func (app *App) Main() int {
 
 	client := http.DefaultClient
 
+	if conffile != "" {
+		err := app.loadConfigure(conffile)
+		if err != nil && !os.IsNotExist(err) {
+			if !isDir(conffile) || flag.Lookup("f") != nil {
+				println(err)
+				return 1
+			}
+		}
+		if err == nil {
+			flag.Parse() // Command line flags take precedence.
+		}
+	}
+
+	if flag.NArg() > 0 {
+		app.URL = flag.Arg(0)
+	}
+
+	if showConfigure {
+		app.showConfigure()
+		return 2
+	}
+
 	if !showStatus {
-		if conffile != "" {
-			err := app.loadConfigure(conffile)
-			if err != nil && !os.IsNotExist(err) {
-				if !isDir(conffile) || flag.Lookup("f") != nil {
-					println(err)
-					return 1
-				}
-			}
-			if err == nil {
-				flag.Parse() // Command line flags take precedence.
-			}
-		}
-
-		if showConfigure {
-			app.showConfigure()
-			return 2
-		}
-
 		if app.CookieFile != "" {
 			cookiefile := os.ExpandEnv(app.CookieFile)
 			jar, err := loadCookies(cookiefile)
