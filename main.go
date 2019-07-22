@@ -56,6 +56,7 @@ type Configure struct {
 	UserAgents        []string      `yaml:"user-agents"`
 	PerUserAgentLimit uint          `yaml:"per-user-agent-limit"`
 	StreamRate        uint          `yaml:"stream-rate"`
+	ETagUnreliable    bool          `yaml:"etag-unreliable"`
 }
 
 func main() {
@@ -83,6 +84,7 @@ func (app *App) Main() int {
 	flag.BoolVar(&showConfigure, "configure", false, "show configure, then exit")
 	flag.BoolVar(&app.streamToStdout, "stream", false, "write to stdout while downloading")
 	flag.UintVar(&app.StreamRate, "stream.rate", 12, "maximum number of stream rate (MiB/s)")
+	flag.BoolVar(&app.ETagUnreliable, "etag.unreliable", false, "ignore unreliable ETag")
 	flag.Parse()
 
 	if workdir != "." {
@@ -864,9 +866,11 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					shouldSync = true
 					file.SetEntityTag(eTag)
 				default:
-					err = errors.New("ETag mismatched")
-					fatal = true
-					return
+					if !app.ETagUnreliable {
+						err = errors.New("ETag mismatched")
+						fatal = true
+						return
+					}
 				}
 
 				if eTag == "" {
