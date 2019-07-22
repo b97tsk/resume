@@ -169,12 +169,25 @@ func (app *App) Main() int {
 		return 2
 	}
 
-	if flag.NArg() > 0 {
-		app.URL = flag.Arg(0)
+	if app.URL == "" {
+		if stat, _ := os.Stdin.Stat(); (stat.Mode() & os.ModeCharDevice) != 0 {
+			print("Enter url: ")
+		}
+		stdin := bufio.NewScanner(os.Stdin)
+		if !stdin.Scan() {
+			return 1
+		}
+		app.URL = strings.TrimSpace(stdin.Text())
+		if app.URL == "" {
+			return 1
+		}
 	}
 
-	if _, err := url.Parse(app.URL); err != nil {
+	if u, err := url.Parse(app.URL); err != nil {
 		println(err)
+		return 1
+	} else if u.Scheme != "http" && u.Scheme != "https" {
+		printf("unsupported protocol scheme \"%v\"\n", u.Scheme)
 		return 1
 	}
 
