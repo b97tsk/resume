@@ -471,12 +471,10 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	var operators observable.Operators
 
-	dlCtx, dlCancel := context.WithCancel(mainCtx)
-	dlDone := dlCtx.Done()
-	defer dlCancel()
+	dlCtx := context.Background() // dlCtx never cancels.
 
 	bytesPerSecond := observable.NewSubject()
-	observable.Create(
+	_, speedUpdateCancel := observable.Create(
 		func(ctx context.Context, sink observable.Observer) (context.Context, context.CancelFunc) {
 			const N = 5
 			skipZeros := bytesPerSecond.Pipe(
@@ -538,6 +536,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	).Pipe(
 		operators.Repeat(-1),
 	).Subscribe(dlCtx, observable.NopObserver)
+	defer speedUpdateCancel()
 
 	queuedMessages := observable.NewSubject()
 	queuedMessagesCtx, _ := queuedMessages.
@@ -683,18 +682,22 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		file.ReturnIncomplete(offset, size)
 	}
 
+	messages := make(chan interface{}, app.MaxConnections)
+
 	activeTasks := observable.NewSubject()
 	activeTasksCtx, _ := activeTasks.
 		Pipe(operators.MergeAll()).
-		Subscribe(
-			// Not dlCtx here, because we want to wait
-			// for all tasks complete when dl returns.
-			context.Background(),
-			queuedMessages.Observer,
-		)
+		Subscribe(dlCtx, queuedMessages.Observer)
 	defer func() {
 		activeTasks.Complete()
-		<-activeTasksCtx.Done()
+		done := activeTasksCtx.Done()
+		for {
+			select {
+			case <-done:
+				return
+			case <-messages:
+			}
+		}
 	}()
 
 	var (
@@ -705,7 +708,6 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		fatalErrors  bool
 		maxDownloads = app.MaxConnections
 		currentURL   = app.URL
-		onMessage    = make(chan interface{}, app.MaxConnections)
 	)
 
 	var (
@@ -717,6 +719,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	syncTicker := time.NewTicker(syncInterval)
 	defer syncTicker.Stop()
+
+	mainDone := mainCtx.Done()
 
 	for {
 		switch {
@@ -778,7 +782,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			cr := func(parent context.Context, sink observable.Observer) (ctx context.Context, cancel context.CancelFunc) {
 				// Note that parent will never be canceled, because
 				// subscription to activeTasks uses context.Background().
-				ctx, cancel = context.WithCancel(dlCtx) // Not parent.
+				ctx, cancel = context.WithCancel(mainCtx) // Not parent.
 
 				sink = observable.Finally(sink, cancel)
 
@@ -978,10 +982,10 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					case ProgressMessage:
 
 					case ResponseMessage:
-						onMessage <- t.Value
+						messages <- t.Value
 
 					case CompleteMessage:
-						onMessage <- t.Value
+						messages <- t.Value
 					}
 				}
 			}
@@ -994,11 +998,11 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		}
 
 		select {
-		case <-dlDone:
+		case <-mainDone:
 			return
 		case <-delayNewTask:
 			delayNewTask = nil
-		case e := <-onMessage:
+		case e := <-messages:
 			switch e := e.(type) {
 			case ResponseMessage:
 				pauseNewTask = false
