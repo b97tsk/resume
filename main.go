@@ -6,7 +6,6 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
-	"flag"
 	"fmt"
 	"hash"
 	"io"
@@ -27,11 +26,14 @@ import (
 	"time"
 
 	"github.com/b97tsk/rxgo/observable"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	"golang.org/x/net/publicsuffix"
 	"gopkg.in/yaml.v2"
 )
 
 const (
+	defaultOutFile = "File"
 	readBufferSize = 4096
 	readTimeout    = 30 * time.Second
 	reportInterval = 10 * time.Minute
@@ -40,93 +42,126 @@ const (
 
 type App struct {
 	Configure
+	workdir        string
+	conffile       string
+	showStatus     bool
+	showConfigure  bool
 	streamToStdout bool
 }
 
 type Configure struct {
-	URL               string        `yaml:"url"`
-	OutFile           string        `yaml:"output"`
-	SplitSize         uint          `yaml:"split-size"`
-	MaxConnections    uint          `yaml:"connections"`
-	MaxErrors         uint          `yaml:"errors"`
-	RequestInterval   time.Duration `yaml:"request-interval"`
-	RequestRange      string        `yaml:"request-range"`
-	CookieFile        string        `yaml:"cookie"`
-	Referer           string        `yaml:"referer"`
-	UserAgents        []string      `yaml:"user-agents"`
-	PerUserAgentLimit uint          `yaml:"per-user-agent-limit"`
-	StreamRate        uint          `yaml:"stream-rate"`
-	ETagUnreliable    bool          `yaml:"etag-unreliable"`
+	URL               string        `mapstructure:"url" yaml:"url"`
+	OutFile           string        `mapstructure:"output" yaml:"output"`
+	SplitSize         uint          `mapstructure:"split" yaml:"split"`
+	MaxConnections    uint          `mapstructure:"connections" yaml:"connections"`
+	MaxErrors         uint          `mapstructure:"errors" yaml:"errors"`
+	RequestInterval   time.Duration `mapstructure:"interval" yaml:"interval"`
+	RequestRange      string        `mapstructure:"range" yaml:"range"`
+	CookieFile        string        `mapstructure:"cookie" yaml:"cookie"`
+	Referer           string        `mapstructure:"referer" yaml:"referer"`
+	UserAgents        []string      `mapstructure:"user-agents" yaml:"user-agents"`
+	PerUserAgentLimit uint          `mapstructure:"per-user-agent-limit" yaml:"per-user-agent-limit"`
+	StreamRate        uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
+	ETagUnreliable    bool          `mapstructure:"etag-unreliable" yaml:"etag-unreliable"`
 }
 
 func main() {
 	var app App
-	os.Exit(app.Main())
+
+	rootCmd := &cobra.Command{
+		Use:   "resume",
+		Short: "splitting download a file",
+		Run: func(cmd *cobra.Command, args []string) {
+			os.Exit(app.Main(cmd, args))
+		},
+	}
+
+	flags := rootCmd.PersistentFlags()
+
+	flags.StringVarP(&app.OutFile, "output", "o", defaultOutFile, "output file")
+	flags.StringVar(&app.CookieFile, "cookie", "", "cookie file")
+	flags.UintVarP(&app.SplitSize, "split", "s", 0, "split size (MiB), 0 means use maximum possible")
+	flags.UintVarP(&app.MaxConnections, "connections", "c", 4, "maximum number of parallel downloads")
+	flags.UintVarP(&app.MaxErrors, "errors", "e", 3, "maximum number of errors")
+	flags.DurationVar(&app.RequestInterval, "interval", 2*time.Second, "request interval")
+	flags.StringVar(&app.RequestRange, "range", "", "request range (MiB), e.g., 0-1023")
+	flags.UintVar(&app.StreamRate, "stream-rate", 12, "maximum number of stream rate (MiB/s)")
+	flags.BoolVar(&app.ETagUnreliable, "etag-unreliable", false, "ignore unreliable ETag")
+
+	viper.BindPFlags(flags)
+
+	flags.StringVarP(&app.workdir, "workdir", "w", ".", "working directory")
+	flags.StringVarP(&app.conffile, "conf", "f", "Configure", "configure file")
+	flags.BoolVar(&app.streamToStdout, "stream", false, "write to stdout while downloading")
+
+	showCmd := &cobra.Command{
+		Use:   "show [command]",
+		Short: "show infomation",
+	}
+	showCmd.AddCommand(&cobra.Command{
+		Use:   "status",
+		Short: "show status",
+		Run: func(cmd *cobra.Command, args []string) {
+			app.showStatus = true
+			os.Exit(app.Main(cmd, args))
+		},
+	})
+	showCmd.AddCommand(&cobra.Command{
+		Use:   "configure",
+		Short: "show configure",
+		Run: func(cmd *cobra.Command, args []string) {
+			app.showConfigure = true
+			os.Exit(app.Main(cmd, args))
+		},
+	})
+
+	rootCmd.AddCommand(showCmd)
+	rootCmd.Execute()
 }
 
-func (app *App) Main() int {
-	var (
-		workdir       string
-		conffile      string
-		showStatus    bool
-		showConfigure bool
-	)
-	const defaultOutFile = "File"
-	flag.StringVar(&workdir, "w", ".", "working directory")
-	flag.StringVar(&conffile, "f", "Configure", "configure file")
-	flag.StringVar(&app.OutFile, "o", defaultOutFile, "output file")
-	flag.StringVar(&app.CookieFile, "cookie", "", "cookie file")
-	flag.UintVar(&app.SplitSize, "s", 0, "split size (MiB), 0 means use maximum possible")
-	flag.UintVar(&app.MaxConnections, "c", 4, "maximum number of parallel downloads")
-	flag.UintVar(&app.MaxErrors, "e", 3, "maximum number of errors")
-	flag.DurationVar(&app.RequestInterval, "interval", 2*time.Second, "request interval")
-	flag.StringVar(&app.RequestRange, "range", "", "request range (MiB), e.g., 0-1023")
-	flag.BoolVar(&showStatus, "status", false, "show status, then exit")
-	flag.BoolVar(&showConfigure, "configure", false, "show configure, then exit")
-	flag.BoolVar(&app.streamToStdout, "stream", false, "write to stdout while downloading")
-	flag.UintVar(&app.StreamRate, "stream.rate", 12, "maximum number of stream rate (MiB/s)")
-	flag.BoolVar(&app.ETagUnreliable, "etag.unreliable", false, "ignore unreliable ETag")
-	flag.Parse()
-
-	if workdir != "." {
-		err := os.Chdir(workdir)
+func (app *App) Main(cmd *cobra.Command, args []string) int {
+	if app.workdir != "." {
+		err := os.Chdir(app.workdir)
 		if err != nil {
 			println(err)
 			return 1
 		}
 	}
 
-	if !isFlagPassed("o") {
+	if !cmd.Flags().Changed("output") {
 		app.OutFile = ""
 	}
 
-	os.Setenv("ConfigDir", filepath.Dir(conffile))
+	os.Setenv("ConfigDir", filepath.Dir(app.conffile))
 
 	client := http.DefaultClient
 
-	if conffile != "" {
-		err := app.loadConfigure(conffile)
-		if err != nil && !os.IsNotExist(err) {
-			if !isDir(conffile) || isFlagPassed("f") {
-				println(err)
-				return 1
+	if app.conffile != "" {
+		viper.SetConfigFile(app.conffile)
+		viper.SetConfigType("yaml")
+		if err := viper.ReadInConfig(); err != nil {
+			if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+				if !isDir(app.conffile) || cmd.Flags().Changed("conf") {
+					println(err)
+					return 1
+				}
 			}
 		}
-		if err == nil {
-			flag.Parse() // Command line flags take precedence.
-		}
+		viper.Unmarshal(&app.Configure)
 	}
 
-	if flag.NArg() > 0 {
-		app.URL = flag.Arg(0)
+	if len(args) > 0 {
+		app.URL = args[0]
 	}
 
-	if showConfigure {
-		app.showConfigure()
+	if app.showConfigure {
+		enc := yaml.NewEncoder(os.Stdout)
+		enc.Encode(&app.Configure)
+		enc.Close()
 		return 2
 	}
 
-	if !showStatus {
+	if !app.showStatus {
 		if app.URL == "" {
 			if stat, _ := os.Stdin.Stat(); (stat.Mode() & os.ModeCharDevice) != 0 {
 				print("Enter url: ")
@@ -178,7 +213,7 @@ func (app *App) Main() int {
 	case err == nil:
 		filesize = stat.Size()
 		fileexists = true
-	case !os.IsNotExist(err) || showStatus:
+	case !os.IsNotExist(err) || app.showStatus:
 		println(err)
 		return 1
 	}
@@ -204,7 +239,7 @@ func (app *App) Main() int {
 			if os.IsNotExist(err) {
 				filename := filename
 				if !filepath.IsAbs(filename) {
-					filename = filepath.Join(workdir, filename)
+					filename = filepath.Join(app.workdir, filename)
 				}
 				printf("\"%v\" already exists.\n", filename)
 				println("If you do want to redownload it, remove it first.")
@@ -215,8 +250,8 @@ func (app *App) Main() int {
 		}
 	}
 
-	if showStatus {
-		app.showStatus(file)
+	if app.showStatus {
+		app.status(file)
 		return 2
 	}
 
@@ -409,25 +444,6 @@ func (app *App) Main() int {
 	}
 
 	return 1
-}
-
-func (app *App) loadConfigure(name string) error {
-	file, err := os.Open(name)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	dec := yaml.NewDecoder(file)
-	dec.SetStrict(true)
-
-	c := app.Configure
-	if err := dec.Decode(&c); err != nil {
-		return err
-	}
-
-	app.Configure = c
-	return nil
 }
 
 func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client) {
@@ -1070,7 +1086,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	}
 }
 
-func (app *App) showStatus(file *DataFile) {
+func (app *App) status(file *DataFile) {
 	var (
 		contentSize        = file.ContentSize()
 		completeSize       = file.CompleteSize()
@@ -1112,12 +1128,6 @@ func (app *App) showStatus(file *DataFile) {
 	if entityTag != "" {
 		fmt.Println("ETag:", entityTag)
 	}
-}
-
-func (app *App) showConfigure() {
-	enc := yaml.NewEncoder(os.Stdout)
-	enc.Encode(&app.Configure)
-	enc.Close()
 }
 
 func print(a ...interface{}) {
@@ -1171,15 +1181,6 @@ func isDir(name string) bool {
 		return false
 	}
 	return stat.IsDir()
-}
-
-func isFlagPassed(name string) (yes bool) {
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == name {
-			yes = true
-		}
-	})
-	return
 }
 
 func loadCookies(name string) (jar http.CookieJar, err error) {
