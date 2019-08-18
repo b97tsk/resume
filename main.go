@@ -62,7 +62,8 @@ type Configure struct {
 	UserAgents        []string      `mapstructure:"user-agents" yaml:"user-agents"`
 	PerUserAgentLimit uint          `mapstructure:"per-user-agent-limit" yaml:"per-user-agent-limit"`
 	StreamRate        uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
-	ETagUnreliable    bool          `mapstructure:"etag-unreliable" yaml:"etag-unreliable"`
+	SkipETag          bool          `mapstructure:"skip-etag" yaml:"skip-etag"`
+	SkipLastModified  bool          `mapstructure:"skip-last-modified" yaml:"skip-last-modified"`
 }
 
 func main() {
@@ -86,7 +87,8 @@ func main() {
 	flags.DurationVar(&app.RequestInterval, "interval", 2*time.Second, "request interval")
 	flags.StringVar(&app.RequestRange, "range", "", "request range (MiB), e.g., 0-1023")
 	flags.UintVar(&app.StreamRate, "stream-rate", 12, "maximum number of stream rate (MiB/s)")
-	flags.BoolVar(&app.ETagUnreliable, "etag-unreliable", false, "ignore unreliable ETag")
+	flags.BoolVar(&app.SkipETag, "skip-etag", false, "skip unreliable ETag field")
+	flags.BoolVar(&app.SkipLastModified, "skip-last-modified", false, "skip unreliable Last-Modified field")
 
 	viper.BindPFlags(flags)
 
@@ -908,21 +910,21 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					shouldSync = true
 					file.SetEntityTag(eTag)
 				default:
-					if !app.ETagUnreliable {
+					if !app.SkipETag {
 						err = errors.New("ETag mismatched")
 						fatal = true
 						return
 					}
 				}
 
-				if eTag == "" {
-					lastModified := resp.Header.Get("Last-Modified")
-					switch file.LastModified() {
-					case lastModified:
-					case "":
-						shouldSync = true
-						file.SetLastModified(lastModified)
-					default:
+				lastModified := resp.Header.Get("Last-Modified")
+				switch file.LastModified() {
+				case lastModified:
+				case "":
+					shouldSync = true
+					file.SetLastModified(lastModified)
+				default:
+					if !app.SkipLastModified {
 						err = errors.New("Last-Modified mismatched")
 						fatal = true
 						return
