@@ -94,11 +94,7 @@ func main() {
 	flags.StringVarP(&app.conffile, "conf", "f", "Configure", "configure file")
 	flags.BoolVar(&app.streamToStdout, "stream", false, "write to stdout while downloading")
 
-	showCmd := &cobra.Command{
-		Use:   "show [command]",
-		Short: "show infomation",
-	}
-	showCmd.AddCommand(&cobra.Command{
+	rootCmd.AddCommand(&cobra.Command{
 		Use:   "status",
 		Short: "show status",
 		Run: func(cmd *cobra.Command, args []string) {
@@ -106,8 +102,8 @@ func main() {
 			os.Exit(app.Main(cmd, args))
 		},
 	})
-	showCmd.AddCommand(&cobra.Command{
-		Use:   "configure",
+	rootCmd.AddCommand(&cobra.Command{
+		Use:   "config",
 		Short: "show configure",
 		Run: func(cmd *cobra.Command, args []string) {
 			app.showConfigure = true
@@ -115,7 +111,6 @@ func main() {
 		},
 	})
 
-	rootCmd.AddCommand(showCmd)
 	rootCmd.Execute()
 }
 
