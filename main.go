@@ -86,7 +86,6 @@ func main() {
 	flags.UintVarP(&app.MaxErrors, "errors", "e", 3, "maximum number of errors")
 	flags.DurationVar(&app.RequestInterval, "interval", 2*time.Second, "request interval")
 	flags.StringVar(&app.RequestRange, "range", "", "request range (MiB), e.g., 0-1023")
-	flags.UintVar(&app.StreamRate, "stream-rate", 12, "maximum number of stream rate (MiB/s)")
 	flags.BoolVar(&app.SkipETag, "skip-etag", false, "skip unreliable ETag field")
 	flags.BoolVar(&app.SkipLastModified, "skip-last-modified", false, "skip unreliable Last-Modified field")
 
@@ -94,11 +93,10 @@ func main() {
 
 	flags.StringVarP(&app.workdir, "workdir", "w", ".", "working directory")
 	flags.StringVarP(&app.conffile, "conf", "f", "Configure", "configure file")
-	flags.BoolVar(&app.streamToStdout, "stream", false, "write to stdout while downloading")
 
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "status",
-		Short: "show status",
+		Short: "Show status",
 		Run: func(cmd *cobra.Command, args []string) {
 			app.showStatus = true
 			os.Exit(app.Main(cmd, args))
@@ -106,12 +104,27 @@ func main() {
 	})
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "config",
-		Short: "show configure",
+		Short: "Show configure",
 		Run: func(cmd *cobra.Command, args []string) {
 			app.showConfigure = true
 			os.Exit(app.Main(cmd, args))
 		},
 	})
+
+	streamCmd := &cobra.Command{
+		Use:   "stream",
+		Short: "Write to stdout while downloading",
+		Run: func(cmd *cobra.Command, args []string) {
+			app.streamToStdout = true
+			os.Exit(app.Main(cmd, args))
+		},
+	}
+	{
+		flags := streamCmd.PersistentFlags()
+		flags.UintVar(&app.StreamRate, "rate", 12, "maximum number of stream rate (MiB/s)")
+		viper.BindPFlag("stream-rate", flags.Lookup("rate"))
+	}
+	rootCmd.AddCommand(streamCmd)
 
 	rootCmd.Execute()
 }
