@@ -23,7 +23,7 @@ $ cd .. && rm -rf work
 
 # Configure File
 
-By default, a file named `Configure` is read when the program starts, if it exists.
+By default, a file named `resume.yaml` is read when the program starts, if it exists.
 You can specify the path of this configure file by using command line flag `-f`.
 
 A configure file is an YAML document which can specify following options:

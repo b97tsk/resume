@@ -92,7 +92,7 @@ func main() {
 	viper.BindPFlags(flags)
 
 	flags.StringVarP(&app.workdir, "workdir", "w", ".", "working directory")
-	flags.StringVarP(&app.conffile, "conf", "f", "Configure", "configure file")
+	flags.StringVarP(&app.conffile, "conf", "f", "resume.yaml", "configure file")
 
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "status",
