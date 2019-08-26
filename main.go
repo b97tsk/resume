@@ -37,7 +37,6 @@ const (
 	readBufferSize = 4096
 	readTimeout    = 30 * time.Second
 	reportInterval = 10 * time.Minute
-	syncInterval   = 5 * time.Minute
 )
 
 type App struct {
@@ -55,6 +54,7 @@ type Configure struct {
 	SplitSize         uint          `mapstructure:"split" yaml:"split"`
 	MaxConnections    uint          `mapstructure:"connections" yaml:"connections"`
 	MaxErrors         uint          `mapstructure:"errors" yaml:"errors"`
+	SyncPeriod        time.Duration `mapstructure:"sync-period" yaml:"sync-period"`
 	RequestInterval   time.Duration `mapstructure:"interval" yaml:"interval"`
 	RequestRange      string        `mapstructure:"range" yaml:"range"`
 	CookieFile        string        `mapstructure:"cookie" yaml:"cookie"`
@@ -84,6 +84,7 @@ func main() {
 	flags.UintVarP(&app.SplitSize, "split", "s", 0, "split size (MiB), 0 means use maximum possible")
 	flags.UintVarP(&app.MaxConnections, "connections", "c", 4, "maximum number of parallel downloads")
 	flags.UintVarP(&app.MaxErrors, "errors", "e", 3, "maximum number of errors")
+	flags.DurationVar(&app.SyncPeriod, "sync-period", 1*time.Hour, "sync-to-disk period")
 	flags.DurationVar(&app.RequestInterval, "interval", 2*time.Second, "request interval")
 	flags.StringVar(&app.RequestRange, "range", "", "request range (MiB), e.g., 0-1023")
 	flags.BoolVar(&app.SkipETag, "skip-etag", false, "skip unreliable ETag field")
@@ -743,7 +744,12 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		newUserAgents        = make([]string, 0, len(app.UserAgents))
 	)
 
-	syncTicker := time.NewTicker(syncInterval)
+	syncPeriod := app.SyncPeriod
+	if syncPeriod < time.Minute {
+		syncPeriod = time.Minute
+	}
+
+	syncTicker := time.NewTicker(syncPeriod)
 	defer syncTicker.Stop()
 
 	mainDone := mainCtx.Done()

@@ -33,6 +33,7 @@ A configure file is an YAML document which can specify following options:
 - `split` split size.
 - `connections` maximum number of parallel downloads.
 - `errors` maximum number of errors.
+- `sync-period` sync-to-disk period.
 - `interval` request interval.
 - `range` request range.
 - `cookie` cookie file. The file format is [Netscape format](https://unix.stackexchange.com/a/210282).
