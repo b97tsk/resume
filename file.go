@@ -59,7 +59,7 @@ func (f *DataFile) LoadHashFile() (err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	file, err := os.Open(f.name + ".hash")
+	file, err := os.Open(f.name + ".resume")
 	if err != nil {
 		return
 	}
@@ -403,11 +403,11 @@ func (f *DataFile) SyncNow() error {
 }
 
 func (f *DataFile) syncLocked() error {
-	file, err := os.OpenFile(f.name+".hash.new", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePerm)
+	file, err := os.OpenFile(f.name+".resume.new", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePerm)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.name + ".hash.new")
+	defer os.Remove(f.name + ".resume.new")
 
 	err1 := gob.NewEncoder(file).Encode(&f.hash)
 	err2 := file.Sync()
@@ -424,7 +424,7 @@ func (f *DataFile) syncLocked() error {
 		return err3
 	}
 
-	os.Rename(f.name+".hash.new", f.name+".hash")
+	os.Rename(f.name+".resume.new", f.name+".resume")
 
 	return err4
 }
