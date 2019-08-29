@@ -150,12 +150,10 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	if app.conffile != "" {
 		viper.SetConfigFile(app.conffile)
 		viper.SetConfigType("yaml")
-		if err := viper.ReadInConfig(); err != nil {
-			if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-				if !isDir(app.conffile) || cmd.Flags().Changed("conf") {
-					println(err)
-					return 1
-				}
+		if err := viper.ReadInConfig(); err != nil && !os.IsNotExist(err) {
+			if !isDir(app.conffile) || cmd.Flags().Changed("conf") {
+				println(err)
+				return 1
 			}
 		}
 		viper.Unmarshal(&app.Configure)
