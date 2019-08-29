@@ -1047,7 +1047,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						),
 					)
 					userAgentConnections++
-					if userAgentConnections == app.PerUserAgentLimit {
+					switch userAgentConnections {
+					case app.PerUserAgentLimit:
 						// We successfully started some downloads with current
 						// user agent, let's try next.
 						userAgentIndex = (userAgentIndex + 1) % len(app.UserAgents)
@@ -1058,6 +1059,12 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						// If we change the user agent, we probably need to
 						// reset the url to the original one.
 						currentURL = app.URL
+					case 1:
+						// Successfully made the first connection with current
+						// user agent, we'll test all other user agents again.
+						userAgents = newUserAgents
+						userAgents = append(userAgents, app.UserAgents[userAgentIndex:]...)
+						userAgents = append(userAgents, app.UserAgents[:userAgentIndex]...)
 					}
 				}
 			case CompleteMessage:
