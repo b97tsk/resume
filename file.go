@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/gob"
 	"hash/crc32"
 	"io"
@@ -312,7 +313,48 @@ func (f *DataFile) WriteAt(b []byte, offset int64) {
 	}
 }
 
-func (f *DataFile) Verify(digest io.Writer) error {
+func (f *DataFile) Alloc(ctx context.Context, progress chan<- int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	const NB = 1024 * 1024
+	buf := make([]byte, NB)
+	done := ctx.Done()
+	for _, r := range f.incomplete {
+		if r.High == math.MaxInt64 {
+			break
+		}
+		offset := r.Low
+		f.file.Seek(offset, io.SeekStart)
+		size := r.High - r.Low
+		for size > NB {
+			n, err := f.file.Write(buf)
+			if err != nil {
+				return err
+			}
+			size -= int64(n)
+			offset += int64(n)
+			select {
+			case <-done:
+				return ctx.Err()
+			case progress <- offset:
+			default:
+			}
+		}
+		_, err := f.file.Write(buf[:size])
+		if err != nil {
+			return err
+		}
+		select {
+		case <-done:
+			return ctx.Err()
+		case progress <- r.High:
+		default:
+		}
+	}
+	return nil
+}
+
+func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -320,6 +362,8 @@ func (f *DataFile) Verify(digest io.Writer) error {
 		offset   int64
 		hashCode uint32
 	)
+
+	done := ctx.Done()
 
 	w := func(b []byte) (n int, err error) {
 		if digest != nil {
@@ -329,6 +373,12 @@ func (f *DataFile) Verify(digest io.Writer) error {
 		}
 		if err != nil {
 			return
+		}
+
+		select {
+		case <-done:
+			return 0, ctx.Err()
+		default:
 		}
 
 		i := int(offset / pieceSize)

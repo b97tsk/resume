@@ -419,18 +419,11 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				print("\033[1K\r")
 				printf("verifying...%v%%", p)
 			}
-			select {
-			case <-mainDone:
-				if err == nil {
-					err = context.Canceled
-				}
-			default:
-			}
 			return
 		}
 
 		printf("verifying...%v%%", p)
-		err := file.Verify(WriterFunc(w))
+		err := file.Verify(mainCtx, WriterFunc(w))
 		print("\033[1K\r")
 		print("verifying...")
 		if err != nil {
@@ -886,12 +879,14 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					return
 				}
 
+				shouldAlloc := false
 				shouldSync := false
 
 				contentLength, _ := strconv.ParseInt(slice[3], 10, 64)
 				switch file.ContentSize() {
 				case contentLength:
 				case 0:
+					shouldAlloc = true
 					shouldSync = true
 					file.SetContentSize(contentLength)
 				default:
@@ -943,6 +938,14 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				default:
 					if !app.SkipLastModified {
 						err = errors.New("Last-Modified mismatched")
+						fatal = true
+						return
+					}
+				}
+
+				if shouldAlloc {
+					err = app.alloc(mainCtx, file)
+					if err != nil {
 						fatal = true
 						return
 					}
@@ -1105,6 +1108,31 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			file.Sync()
 		}
 	}
+}
+
+func (app *App) alloc(mainCtx context.Context, file *DataFile) error {
+	done := make(chan struct{})
+	defer func() {
+		<-done
+		print("\033[1K\r")
+	}()
+	progress := make(chan int64, 1)
+	defer close(progress)
+	contentSize := file.ContentSize()
+	go func() {
+		p := int64(0)
+		print("\033[1K\r")
+		printf("allocating...%v%%", p)
+		for s := range progress {
+			if s*100 >= (p+1)*contentSize {
+				p = s * 100 / contentSize
+				print("\033[1K\r")
+				printf("allocating...%v%%", p)
+			}
+		}
+		close(done)
+	}()
+	return file.Alloc(mainCtx, progress)
 }
 
 func (app *App) status(file *DataFile) {
