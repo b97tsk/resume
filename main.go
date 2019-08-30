@@ -62,6 +62,7 @@ type Configure struct {
 	UserAgents        []string      `mapstructure:"user-agents" yaml:"user-agents"`
 	PerUserAgentLimit uint          `mapstructure:"per-user-agent-limit" yaml:"per-user-agent-limit"`
 	StreamRate        uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
+	Alloc             bool          `mapstructure:"alloc" yaml:"alloc"`
 	SkipETag          bool          `mapstructure:"skip-etag" yaml:"skip-etag"`
 	SkipLastModified  bool          `mapstructure:"skip-last-modified" yaml:"skip-last-modified"`
 }
@@ -87,6 +88,7 @@ func main() {
 	flags.DurationVar(&app.SyncPeriod, "sync-period", 1*time.Hour, "sync-to-disk period")
 	flags.DurationVar(&app.RequestInterval, "interval", 2*time.Second, "request interval")
 	flags.StringVar(&app.RequestRange, "range", "", "request range (MiB), e.g., 0-1023")
+	flags.BoolVarP(&app.Alloc, "alloc", "a", false, "alloc disk space before the first write")
 	flags.BoolVar(&app.SkipETag, "skip-etag", false, "skip unreliable ETag field")
 	flags.BoolVar(&app.SkipLastModified, "skip-last-modified", false, "skip unreliable Last-Modified field")
 
@@ -886,7 +888,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				switch file.ContentSize() {
 				case contentLength:
 				case 0:
-					shouldAlloc = true
+					shouldAlloc = app.Alloc
 					shouldSync = true
 					file.SetContentSize(contentLength)
 				default:
