@@ -85,7 +85,7 @@ func main() {
 	flags.UintVarP(&app.SplitSize, "split", "s", 0, "split size (MiB), 0 means use maximum possible")
 	flags.UintVarP(&app.MaxConnections, "connections", "c", 4, "maximum number of parallel downloads")
 	flags.UintVarP(&app.MaxErrors, "errors", "e", 3, "maximum number of errors")
-	flags.DurationVar(&app.SyncPeriod, "sync-period", 1*time.Hour, "sync-to-disk period")
+	flags.DurationVar(&app.SyncPeriod, "sync-period", 10*time.Minute, "sync-to-disk period")
 	flags.DurationVar(&app.RequestInterval, "interval", 2*time.Second, "request interval")
 	flags.StringVar(&app.RequestRange, "range", "", "request range (MiB), e.g., 0-1023")
 	flags.BoolVarP(&app.Alloc, "alloc", "a", false, "alloc disk space before the first write")
