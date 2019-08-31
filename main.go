@@ -392,15 +392,15 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 		var digest hash.Hash
 
+		contentDisposition := file.ContentDisposition()
+		if contentDisposition != "" {
+			println("Content-Disposition:", contentDisposition)
+		}
+
 		contentMD5 := strings.ToLower(file.ContentMD5())
 		if len(contentMD5) == 32 {
 			digest = md5.New()
 			println("Content-MD5:", contentMD5)
-		}
-
-		contentDisposition := file.ContentDisposition()
-		if contentDisposition != "" {
-			println("Content-Disposition:", contentDisposition)
 		}
 
 		shouldVerify := i == 0 || digest != nil
@@ -897,6 +897,14 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					return
 				}
 
+				contentDisposition := resp.Header.Get("Content-Disposition")
+				switch file.ContentDisposition() {
+				case contentDisposition:
+				default:
+					shouldSync = true
+					file.SetContentDisposition(contentDisposition)
+				}
+
 				contentMD5 := resp.Header.Get("Content-MD5")
 				switch file.ContentMD5() {
 				case contentMD5:
@@ -907,14 +915,6 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					err = errors.New("Content-MD5 mismatched")
 					fatal = true
 					return
-				}
-
-				contentDisposition := resp.Header.Get("Content-Disposition")
-				switch file.ContentDisposition() {
-				case contentDisposition:
-				default:
-					shouldSync = true
-					file.SetContentDisposition(contentDisposition)
 				}
 
 				eTag := resp.Header.Get("ETag")
@@ -1141,8 +1141,8 @@ func (app *App) status(file *DataFile) {
 	var (
 		contentSize        = file.ContentSize()
 		completeSize       = file.CompleteSize()
-		contentMD5         = file.ContentMD5()
 		contentDisposition = file.ContentDisposition()
+		contentMD5         = file.ContentMD5()
 		entityTag          = file.EntityTag()
 	)
 	if contentSize > 0 {
@@ -1170,11 +1170,11 @@ func (app *App) status(file *DataFile) {
 	if len(items) > 0 {
 		fmt.Println("Incomplete(MiB):", strings.Join(items, ","))
 	}
-	if contentMD5 != "" {
-		fmt.Println("Content-MD5:", contentMD5)
-	}
 	if contentDisposition != "" {
 		fmt.Println("Content-Disposition:", contentDisposition)
+	}
+	if contentMD5 != "" {
+		fmt.Println("Content-MD5:", contentMD5)
 	}
 	if entityTag != "" {
 		fmt.Println("ETag:", entityTag)
