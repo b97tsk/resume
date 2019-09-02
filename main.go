@@ -147,8 +147,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 	os.Setenv("ConfigDir", filepath.Dir(app.conffile))
 
-	client := http.DefaultClient
-
 	if app.conffile != "" {
 		viper.SetConfigFile(app.conffile)
 		viper.SetConfigType("yaml")
@@ -171,6 +169,8 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		enc.Close()
 		return 2
 	}
+
+	var cookieJar http.CookieJar
 
 	if !app.showStatus {
 		if app.URL == "" {
@@ -201,7 +201,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				return 1
 			}
 			if err == nil {
-				client = &http.Client{Jar: jar}
+				cookieJar = jar
 			}
 		}
 	}
@@ -365,6 +365,23 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				}
 			}
 		}()
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+				DualStack: true,
+			}).DialContext,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+		Jar: cookieJar,
 	}
 
 	for i := 0; i < 2; i++ {
