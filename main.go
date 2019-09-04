@@ -133,6 +133,8 @@ func main() {
 }
 
 func (app *App) Main(cmd *cobra.Command, args []string) int {
+	log.SetFlags(log.Ltime)
+
 	if app.workdir != "." {
 		err := os.Chdir(app.workdir)
 		if err != nil {
@@ -499,10 +501,11 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		timeUsed := time.Since(firstRecvTime)
 		print("\033[1K\r")
 		log.Printf(
-			"recv %vB in %v, %vB/s\n",
+			"recv %vB in %v, %vB/s, %v%% completed\n",
 			formatBytes(totalReceived),
-			timeUsed.Round(time.Second),
+			strings.TrimSuffix(timeUsed.Round(time.Minute).String(), "0s"),
 			formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
+			int(float64(file.CompleteSize())/float64(file.ContentSize())*100),
 		)
 	}
 
@@ -619,23 +622,16 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				contentSize := file.ContentSize()
 				completeSize := file.CompleteSize()
 
-				{
-					const length = 20
-					progress := 0
-					if contentSize > 0 {
-						progress = int(float64(completeSize) / float64(contentSize) * 100)
-					}
-					s := strings.Repeat("=", length*progress/100)
-					if len(s) < length && completeSize > 0 {
-						s += ">"
-					}
-					if len(s) < length {
-						s += strings.Repeat("-", length-len(s))
-					}
-					printf("%v%% [%v] ", progress, s)
+				const length = 20
+				progress := int(float64(completeSize) / float64(contentSize) * 100)
+				s := strings.Repeat("=", length*progress/100)
+				if len(s) < length {
+					s += ">"
 				}
-
-				printf("CN:%v DL:%vB/s", connections, formatBytes(emaSpeed))
+				if len(s) < length {
+					s += strings.Repeat("-", length-len(s))
+				}
+				printf("%v%% [%v] CN:%v DL:%vB/s", progress, s, connections, formatBytes(emaSpeed))
 
 				if contentSize > 0 && emaSpeed > 0 {
 					remaining := float64(contentSize - completeSize)
