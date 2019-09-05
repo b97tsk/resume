@@ -9,6 +9,8 @@ import (
 	"os"
 	"sort"
 	"sync"
+	"sync/atomic"
+	"unsafe"
 )
 
 const (
@@ -45,6 +47,16 @@ type PieceInfo struct {
 func (p *PieceInfo) Reset() {
 	p.Size = 0
 	p.HashCode = 0
+}
+
+func init() {
+	var f DataFile
+	if unsafe.Offsetof(f.completeSize)%8 != 0 {
+		panic("offset of DataFile.completeSize must be multiple of 8")
+	}
+	if (unsafe.Offsetof(f.hash)+unsafe.Offsetof(f.hash.ContentSize))%8 != 0 {
+		panic("offset of DataFile.hash.ContentSize must be multiple of 8")
+	}
 }
 
 func openDataFile(name string) (f *DataFile, err error) {
@@ -94,7 +106,7 @@ func (f *DataFile) LoadHashFile() (err error) {
 	f.hash = hash
 	f.completed = completed
 	f.incomplete = incomplete
-	f.completeSize = completeSize
+	atomic.StoreInt64(&f.completeSize, completeSize)
 
 	if hash.ContentSize > 0 {
 		f.setContentSizeLocked(hash.ContentSize)
@@ -109,9 +121,7 @@ func (f *DataFile) Incomplete() RangeSet {
 }
 
 func (f *DataFile) CompleteSize() int64 {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.completeSize
+	return atomic.LoadInt64(&f.completeSize)
 }
 
 func (f *DataFile) SetContentSize(size int64) error {
@@ -121,7 +131,7 @@ func (f *DataFile) SetContentSize(size int64) error {
 }
 
 func (f *DataFile) setContentSizeLocked(size int64) error {
-	f.hash.ContentSize = size
+	atomic.StoreInt64(&f.hash.ContentSize, size)
 
 	pieceCount := int(math.Ceil(float64(size) / pieceSize))
 	if len(f.hash.Pieces) != pieceCount {
@@ -140,9 +150,7 @@ func (f *DataFile) setContentSizeLocked(size int64) error {
 }
 
 func (f *DataFile) ContentSize() int64 {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.hash.ContentSize
+	return atomic.LoadInt64(&f.hash.ContentSize)
 }
 
 func (f *DataFile) SetContentMD5(contentMD5 string) {
@@ -282,13 +290,13 @@ func (f *DataFile) WriteAt(b []byte, offset int64) {
 
 	pieceSizeRequired := pieceSize - int(p.Size)
 	if n < pieceSizeRequired {
-		f.completeSize += int64(n)
+		atomic.AddInt64(&f.completeSize, int64(n))
 		p.HashCode = crc32.Update(p.HashCode, crc32.IEEETable, b)
 		p.Size += uint32(n)
 		return
 	}
 
-	f.completeSize += int64(pieceSizeRequired)
+	atomic.AddInt64(&f.completeSize, int64(pieceSizeRequired))
 	p.HashCode = crc32.Update(p.HashCode, crc32.IEEETable, b[:pieceSizeRequired])
 	p.Size = pieceSize
 	b, i = b[pieceSizeRequired:], i+1
@@ -296,7 +304,7 @@ func (f *DataFile) WriteAt(b []byte, offset int64) {
 	for len(b) >= pieceSize {
 		p := &f.hash.Pieces[i]
 		if p.Size < pieceSize {
-			f.completeSize += pieceSize - int64(p.Size)
+			atomic.AddInt64(&f.completeSize, pieceSize-int64(p.Size))
 			p.HashCode = crc32.ChecksumIEEE(b[:pieceSize])
 			p.Size = pieceSize
 		}
@@ -306,7 +314,7 @@ func (f *DataFile) WriteAt(b []byte, offset int64) {
 	if len(b) > 0 {
 		p := &f.hash.Pieces[i]
 		if int(p.Size) < len(b) {
-			f.completeSize += int64(len(b) - int(p.Size))
+			atomic.AddInt64(&f.completeSize, int64(len(b)-int(p.Size)))
 			p.HashCode = crc32.ChecksumIEEE(b)
 			p.Size = uint32(len(b))
 		}
@@ -395,7 +403,7 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 			offset := pieceSize * int64(i)
 			f.completed.DeleteRange(offset, offset+int64(p.Size))
 			f.incomplete.AddRange(offset, offset+int64(p.Size))
-			f.completeSize -= int64(p.Size)
+			atomic.AddInt64(&f.completeSize, -int64(p.Size))
 			p.Reset()
 		}
 		b, i = b[pieceSizeRequired:], i+1
@@ -407,7 +415,7 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 				offset := pieceSize * int64(i)
 				f.completed.DeleteRange(offset, offset+int64(p.Size))
 				f.incomplete.AddRange(offset, offset+int64(p.Size))
-				f.completeSize -= int64(p.Size)
+				atomic.AddInt64(&f.completeSize, -int64(p.Size))
 				p.Reset()
 			}
 			b, i = b[pieceSize:], i+1
@@ -428,7 +436,7 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 			offset := pieceSize * int64(i)
 			f.completed.DeleteRange(offset, offset+int64(p.Size))
 			f.incomplete.AddRange(offset, offset+int64(p.Size))
-			f.completeSize -= int64(p.Size)
+			atomic.AddInt64(&f.completeSize, -int64(p.Size))
 			p.Reset()
 		}
 	}
@@ -453,11 +461,11 @@ func (f *DataFile) SyncNow() error {
 }
 
 func (f *DataFile) syncLocked() error {
-	file, err := os.OpenFile(f.name+".resume.new", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePerm)
+	file, err := os.OpenFile(f.name+".resume~", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePerm)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.name + ".resume.new")
+	defer os.Remove(f.name + ".resume~")
 
 	err1 := gob.NewEncoder(file).Encode(&f.hash)
 	err2 := file.Sync()
@@ -474,7 +482,7 @@ func (f *DataFile) syncLocked() error {
 		return err3
 	}
 
-	os.Rename(f.name+".resume.new", f.name+".resume")
+	os.Rename(f.name+".resume~", f.name+".resume")
 
 	return err4
 }
