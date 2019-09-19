@@ -1,8 +1,10 @@
 package main
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/gob"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"math"
@@ -78,10 +80,30 @@ func (f *DataFile) LoadHashFile() (err error) {
 	}
 	defer file.Close()
 
-	var hash HashInfo
-	err = gob.NewDecoder(file).Decode(&hash)
+	fi, err := file.Stat()
 	if err != nil {
 		return
+	}
+
+	zr, err := zip.NewReader(file, fi.Size())
+	if err != nil {
+		return fmt.Errorf("open %v: tampered", f.name+".resume")
+	}
+
+	if len(zr.File) != 1 || zr.File[0].Name != "HASH" {
+		return fmt.Errorf("open %v: tampered", f.name+".resume")
+	}
+
+	rc, err := zr.File[0].Open()
+	if err != nil {
+		return fmt.Errorf("open %v: tampered", f.name+".resume")
+	}
+	defer rc.Close()
+
+	var hash HashInfo
+	err = gob.NewDecoder(rc).Decode(&hash)
+	if err != nil {
+		return fmt.Errorf("open %v: tampered", f.name+".resume")
 	}
 
 	var (
@@ -461,30 +483,35 @@ func (f *DataFile) SyncNow() error {
 }
 
 func (f *DataFile) syncLocked() error {
+	serr := f.file.Sync()
+
 	file, err := os.OpenFile(f.name+".resume~", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePerm)
 	if err != nil {
 		return err
 	}
 	defer os.Remove(f.name + ".resume~")
 
-	err1 := gob.NewEncoder(file).Encode(&f.hash)
-	err2 := file.Sync()
-	err3 := file.Close()
-	err4 := f.file.Sync()
-
-	if err1 != nil {
-		return err1
+	zw := zip.NewWriter(file)
+	w, err := zw.Create("HASH")
+	if err == nil {
+		err = gob.NewEncoder(w).Encode(&f.hash)
 	}
-	if err2 != nil {
-		return err2
+	if cerr := zw.Close(); err == nil {
+		err = cerr
 	}
-	if err3 != nil {
-		return err3
+	if err == nil {
+		err = file.Sync()
+	}
+	if cerr := file.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
 	}
 
 	os.Rename(f.name+".resume~", f.name+".resume")
 
-	return err4
+	return serr
 }
 
 func (f *DataFile) SetAutoSyncSize(size int64) {
@@ -497,18 +524,18 @@ func (f *DataFile) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	var err1 error
+	var serr error
 	if f.recentIncrement > 0 {
 		f.recentIncrement = 0
-		err1 = f.syncLocked()
+		serr = f.syncLocked()
 	}
 
-	err2 := f.file.Close()
+	cerr := f.file.Close()
 
-	if err1 != nil {
-		return err1
+	if serr != nil {
+		return serr
 	}
-	return err2
+	return cerr
 }
 
 type WriterFunc func(p []byte) (n int, err error)
