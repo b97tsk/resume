@@ -65,6 +65,7 @@ type Configure struct {
 	Alloc             bool          `mapstructure:"alloc" yaml:"alloc"`
 	SkipETag          bool          `mapstructure:"skip-etag" yaml:"skip-etag"`
 	SkipLastModified  bool          `mapstructure:"skip-last-modified" yaml:"skip-last-modified"`
+	RemoteControl     string        `mapstructure:"remote-control" yaml:"remote-control"`
 }
 
 func main() {
@@ -91,6 +92,7 @@ func main() {
 	flags.BoolVarP(&app.Alloc, "alloc", "a", false, "alloc disk space before the first write")
 	flags.BoolVar(&app.SkipETag, "skip-etag", false, "skip unreliable ETag field")
 	flags.BoolVar(&app.SkipLastModified, "skip-last-modified", false, "skip unreliable Last-Modified field")
+	flags.StringVar(&app.RemoteControl, "remote-control", "", "http listen address")
 
 	viper.BindPFlags(flags)
 
@@ -169,7 +171,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		enc := yaml.NewEncoder(os.Stdout)
 		enc.Encode(&app.Configure)
 		enc.Close()
-		return 2
+		return 0
 	}
 
 	var cookieJar http.CookieJar
@@ -264,8 +266,8 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	}
 
 	if app.showStatus {
-		app.status(file)
-		return 2
+		app.status(file, os.Stdout)
+		return 0
 	}
 
 	if app.RequestRange != "" {
@@ -340,7 +342,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				case <-mainDone:
 					return
 				case <-streamTicker.C:
-					if n, ok := file.ReadAt(streamBuffer, streamOffset); ok {
+					if n, err := file.ReadAt(streamBuffer, streamOffset); err == nil {
 						streamOffset += int64(n)
 						if _, err := os.Stdout.Write(streamBuffer[:n]); err != nil {
 							return
@@ -349,7 +351,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				case <-streamRest:
 					contentSize := file.ContentSize()
 					for streamOffset < contentSize {
-						if n, ok := file.ReadAt(streamBuffer, streamOffset); ok {
+						if n, err := file.ReadAt(streamBuffer, streamOffset); err == nil {
 							streamOffset += int64(n)
 							if _, err := os.Stdout.Write(streamBuffer[:n]); err != nil {
 								return
@@ -367,6 +369,68 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				}
 			}
 		}()
+	}
+
+	if app.RemoteControl != "" {
+		l, err := net.Listen("tcp", app.RemoteControl)
+		if err != nil {
+			println(err)
+			return 1
+		}
+		http.Handle("/quit", http.HandlerFunc(
+			func(w http.ResponseWriter, r *http.Request) {
+				mainCancel()
+			},
+		))
+		http.Handle("/status", http.HandlerFunc(
+			func(w http.ResponseWriter, r *http.Request) {
+				app.status(file, w)
+			},
+		))
+		http.Handle("/stream", http.HandlerFunc(
+			func(w http.ResponseWriter, r *http.Request) {
+				done := r.Context().Done()
+				content := struct {
+					io.Reader
+					io.Seeker
+				}{
+					ReaderFunc(
+						func(p []byte) (n int, err error) {
+							n, err = file.Read(p)
+							for err == ErrIncomplete {
+								select {
+								case <-done:
+									return
+								case <-mainDone:
+									return
+								case <-time.After(time.Second):
+									n, err = file.Read(p)
+								}
+							}
+							return
+						},
+					),
+					file,
+				}
+				http.ServeContent(w, r, filepath.Base(filename), time.Time{}, content)
+			},
+		))
+		srv := &http.Server{}
+		defer func() {
+			timeout := make(chan bool, 1)
+			timeout <- true
+			time.AfterFunc(time.Second, func() {
+				if <-timeout {
+					println("shuting down remote control server...")
+					close(timeout)
+				}
+			})
+			srv.Shutdown(mainCtx)
+			if <-timeout {
+				close(timeout)
+			}
+		}()
+		go srv.Serve(l)
 	}
 
 	client := &http.Client{
@@ -1150,7 +1214,7 @@ func (app *App) alloc(mainCtx context.Context, file *DataFile) error {
 	return file.Alloc(mainCtx, progress)
 }
 
-func (app *App) status(file *DataFile) {
+func (app *App) status(file *DataFile, writer io.Writer) {
 	var (
 		contentSize        = file.ContentSize()
 		completeSize       = file.CompleteSize()
@@ -1160,11 +1224,11 @@ func (app *App) status(file *DataFile) {
 	)
 	if contentSize > 0 {
 		progress := int(float64(completeSize) / float64(contentSize) * 100)
-		fmt.Println("Size:", contentSize)
-		fmt.Println("Completed:", completeSize, fmt.Sprintf("(%v%%)", progress))
+		fmt.Fprintln(writer, "Size:", contentSize)
+		fmt.Fprintln(writer, "Completed:", completeSize, fmt.Sprintf("(%v%%)", progress))
 	} else {
-		fmt.Println("Size: unknown")
-		fmt.Println("Completed:", completeSize)
+		fmt.Fprintln(writer, "Size: unknown")
+		fmt.Fprintln(writer, "Completed:", completeSize)
 	}
 	var items []string
 	for _, r := range file.Incomplete() {
@@ -1181,16 +1245,16 @@ func (app *App) status(file *DataFile) {
 		items = append(items, fmt.Sprintf("%v-%v", i, j-1))
 	}
 	if len(items) > 0 {
-		fmt.Println("Incomplete(MiB):", strings.Join(items, ","))
+		fmt.Fprintln(writer, "Incomplete(MiB):", strings.Join(items, ","))
 	}
 	if contentDisposition != "" {
-		fmt.Println("Content-Disposition:", contentDisposition)
+		fmt.Fprintln(writer, "Content-Disposition:", contentDisposition)
 	}
 	if contentMD5 != "" {
-		fmt.Println("Content-MD5:", contentMD5)
+		fmt.Fprintln(writer, "Content-MD5:", contentMD5)
 	}
 	if entityTag != "" {
-		fmt.Println("ETag:", entityTag)
+		fmt.Fprintln(writer, "ETag:", entityTag)
 	}
 }
 

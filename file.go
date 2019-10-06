@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -139,7 +140,15 @@ func (f *DataFile) LoadHashFile() (err error) {
 func (f *DataFile) Incomplete() RangeSet {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append(RangeSet(nil), f.incomplete...)
+	var incomplete RangeSet
+	incomplete.AddRange(0, math.MaxInt64)
+	for _, r := range f.completed {
+		incomplete.DeleteRange(r.Low, r.High)
+	}
+	if f.hash.ContentSize > 0 {
+		incomplete.DeleteRange(f.hash.ContentSize, math.MaxInt64)
+	}
+	return incomplete
 }
 
 func (f *DataFile) CompleteSize() int64 {
@@ -264,7 +273,21 @@ func (f *DataFile) ReturnIncomplete(offset, size int64) {
 	}
 }
 
-func (f *DataFile) ReadAt(b []byte, offset int64) (n int, ok bool) {
+func (f *DataFile) Seek(offset int64, whence int) (int64, error) {
+	return f.file.Seek(offset, whence)
+}
+
+func (f *DataFile) Read(b []byte) (n int, err error) {
+	offset, err := f.file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return
+	}
+	n, err = f.ReadAt(b, offset)
+	f.file.Seek(int64(n), io.SeekCurrent)
+	return
+}
+
+func (f *DataFile) ReadAt(b []byte, offset int64) (n int, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	i := sort.Search(len(f.completed), func(i int) bool {
@@ -275,19 +298,16 @@ func (f *DataFile) ReadAt(b []byte, offset int64) (n int, ok bool) {
 		if available < len(b) {
 			b = b[:available]
 		}
-		n, _ = f.file.ReadAt(b, offset)
-		if n > 0 {
-			return n, true
-		}
+		return f.file.ReadAt(b, offset)
 	}
-	return 0, false
+	return 0, ErrIncomplete
 }
 
-func (f *DataFile) WriteAt(b []byte, offset int64) {
+func (f *DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	n, err := f.file.WriteAt(b, offset)
+	n, err = f.file.WriteAt(b, offset)
 	if err != nil {
 		panic(err)
 	}
@@ -341,6 +361,8 @@ func (f *DataFile) WriteAt(b []byte, offset int64) {
 			p.Size = uint32(len(b))
 		}
 	}
+
+	return
 }
 
 func (f *DataFile) Alloc(ctx context.Context, progress chan<- int64) error {
@@ -538,8 +560,4 @@ func (f *DataFile) Close() error {
 	return cerr
 }
 
-type WriterFunc func(p []byte) (n int, err error)
-
-func (f WriterFunc) Write(p []byte) (n int, err error) {
-	return f(p)
-}
+var ErrIncomplete = errors.New("incomplete")
