@@ -59,7 +59,7 @@ type Configure struct {
 	RequestRange      string        `mapstructure:"range" yaml:"range"`
 	CookieFile        string        `mapstructure:"cookie" yaml:"cookie"`
 	Referer           string        `mapstructure:"referer" yaml:"referer"`
-	UserAgents        []string      `mapstructure:"user-agents" yaml:"user-agents"`
+	UserAgent         string        `mapstructure:"user-agent" yaml:"user-agent"`
 	PerUserAgentLimit uint          `mapstructure:"per-user-agent-limit" yaml:"per-user-agent-limit"`
 	StreamRate        uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
 	Alloc             bool          `mapstructure:"alloc" yaml:"alloc"`
@@ -83,6 +83,8 @@ func main() {
 
 	flags.StringVarP(&app.OutFile, "output", "o", defaultOutFile, "output file")
 	flags.StringVar(&app.CookieFile, "cookie", "", "cookie file")
+	flags.StringVar(&app.Referer, "referer", "", "referer url")
+	flags.StringVar(&app.UserAgent, "user-agent", "", "user agent")
 	flags.UintVarP(&app.SplitSize, "split", "s", 0, "split size (MiB), 0 means use maximum possible")
 	flags.UintVarP(&app.MaxConnections, "connections", "c", 4, "maximum number of parallel downloads")
 	flags.UintVarP(&app.MaxErrors, "errors", "e", 3, "maximum number of errors")
@@ -808,10 +810,11 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	)
 
 	var (
-		userAgents           = app.UserAgents
-		userAgentIndex       = 0
-		userAgentConnections = uint(0)
-		newUserAgents        = make([]string, 0, len(app.UserAgents))
+		allUserAgents  = strings.Split(strings.TrimSuffix(app.UserAgent, "\n"), "\n")
+		newUserAgents  = make([]string, 0, len(allUserAgents))
+		userAgents     = allUserAgents
+		userAgentIndex = 0
+		userAgentConns = uint(0)
 	)
 
 	syncPeriod := app.SyncPeriod
@@ -838,16 +841,16 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				// If multiple user agents are provided, we are going to
 				// test all of them one by one.
 				userAgents = userAgents[1:] // Switch to next one.
-				userAgentIndex = (userAgentIndex + 1) % len(app.UserAgents)
-				userAgentConnections = 0
+				userAgentIndex = (userAgentIndex + 1) % len(allUserAgents)
+				userAgentConns = 0
 			} else {
-				if len(app.UserAgents) > 1 {
+				if len(allUserAgents) > 1 {
 					// We tested all user agents, now prepare to start over again.
-					userAgentIndex = (userAgentIndex + 1) % len(app.UserAgents)
-					userAgentConnections = 0
+					userAgentIndex = (userAgentIndex + 1) % len(allUserAgents)
+					userAgentConns = 0
 					userAgents = newUserAgents
-					userAgents = append(userAgents, app.UserAgents[userAgentIndex:]...)
-					userAgents = append(userAgents, app.UserAgents[:userAgentIndex]...)
+					userAgents = append(userAgents, allUserAgents[userAgentIndex:]...)
+					userAgents = append(userAgents, allUserAgents[:userAgentIndex]...)
 				}
 				if activeCount == 0 {
 					// We tested all user agents, failed to start any download.
@@ -1121,23 +1124,23 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				currentURL = e.URL // Save the redirected one if redirection happens.
 				maxDownloads = app.MaxConnections
 				errorCount = 0
-				if len(app.UserAgents) > 1 {
+				if len(allUserAgents) > 1 {
 					queuedMessages.Next(
 						fmt.Sprintf(
 							"UserAgent #%v: +1 connections",
 							userAgentIndex+1,
 						),
 					)
-					userAgentConnections++
-					switch userAgentConnections {
+					userAgentConns++
+					switch userAgentConns {
 					case app.PerUserAgentLimit:
 						// We successfully started some downloads with current
 						// user agent, let's try next.
-						userAgentIndex = (userAgentIndex + 1) % len(app.UserAgents)
-						userAgentConnections = 0
+						userAgentIndex = (userAgentIndex + 1) % len(allUserAgents)
+						userAgentConns = 0
 						userAgents = newUserAgents
-						userAgents = append(userAgents, app.UserAgents[userAgentIndex:]...)
-						userAgents = append(userAgents, app.UserAgents[:userAgentIndex]...)
+						userAgents = append(userAgents, allUserAgents[userAgentIndex:]...)
+						userAgents = append(userAgents, allUserAgents[:userAgentIndex]...)
 						// If we change the user agent, we probably need to
 						// reset the url to the original one.
 						currentURL = app.URL
@@ -1145,8 +1148,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						// Successfully made the first connection with current
 						// user agent, we'll test all other user agents again.
 						userAgents = newUserAgents
-						userAgents = append(userAgents, app.UserAgents[userAgentIndex:]...)
-						userAgents = append(userAgents, app.UserAgents[:userAgentIndex]...)
+						userAgents = append(userAgents, allUserAgents[userAgentIndex:]...)
+						userAgents = append(userAgents, allUserAgents[:userAgentIndex]...)
 					}
 				}
 			case CompleteMessage:
@@ -1158,11 +1161,11 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				if e.Err != nil && e.Fatal {
 					fatalErrors = true
 				}
-				if e.Responsed && len(app.UserAgents) > 1 {
+				if e.Responsed && len(allUserAgents) > 1 {
 					// Prepare to test all user agents again.
 					userAgents = newUserAgents
-					userAgents = append(userAgents, app.UserAgents[userAgentIndex:]...)
-					userAgents = append(userAgents, app.UserAgents[:userAgentIndex]...)
+					userAgents = append(userAgents, allUserAgents[userAgentIndex:]...)
+					userAgents = append(userAgents, allUserAgents[:userAgentIndex]...)
 				}
 				if e.Err != nil && !e.Responsed {
 					unwrappedErr := e.Err
@@ -1173,7 +1176,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						unwrappedErr = e.Err
 					}
 					message := unwrappedErr.Error()
-					if len(app.UserAgents) > 1 {
+					if len(allUserAgents) > 1 {
 						message = fmt.Sprintf(
 							"UserAgent #%v: %v",
 							userAgentIndex+1,

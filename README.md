@@ -37,8 +37,8 @@ A configure file is an YAML document which can specify following options:
 - `interval` request interval.
 - `range` request range.
 - `cookie` cookie file. The file format is [Netscape format](https://unix.stackexchange.com/a/210282).
-- `referer` the referer.
-- `user-agents` list of user agents.
+- `referer` referer url.
+- `user-agent` user agent, one for each line.
 - `per-user-agent-limit` limit per user agent connections.
 - `stream-rate` maximum number of stream rate.
 - `alloc` alloc disk space before the first write.
