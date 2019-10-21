@@ -85,19 +85,19 @@ func main() {
 
 	flags.StringVarP(&app.OutFile, "output", "o", defaultOutFile, "output file")
 	flags.StringVar(&app.CookieFile, "cookie", "", "cookie file")
-	flags.StringVar(&app.Referer, "referer", "", "referer url")
-	flags.StringVar(&app.UserAgent, "user-agent", "", "user agent")
-	flags.UintVarP(&app.SplitSize, "split", "s", 0, "split size (MiB), 0 means use maximum possible")
+	flags.StringVarP(&app.Referer, "referer", "R", "", "referer url")
+	flags.StringVarP(&app.UserAgent, "user-agent", "A", "", "user agent")
+	flags.UintVarP(&app.SplitSize, "split", "s", 0, "split size (MiB), 0 means use maximum reasonable")
 	flags.UintVarP(&app.MaxConnections, "connections", "c", 4, "maximum number of parallel downloads")
 	flags.UintVarP(&app.MaxErrors, "errors", "e", 3, "maximum number of errors")
 	flags.DurationVar(&app.SyncPeriod, "sync-period", 10*time.Minute, "sync-to-disk period")
-	flags.DurationVar(&app.RequestInterval, "interval", 2*time.Second, "request interval")
-	flags.StringVar(&app.RequestRange, "range", "", "request range (MiB), e.g., 0-1023")
-	flags.BoolVarP(&app.Alloc, "alloc", "a", false, "alloc disk space before first write")
+	flags.DurationVarP(&app.RequestInterval, "interval", "i", 2*time.Second, "request interval")
+	flags.StringVarP(&app.RequestRange, "range", "r", "", "request range (MiB), e.g., 0-1023")
+	flags.BoolVar(&app.Alloc, "alloc", false, "alloc disk space before first write")
 	flags.BoolVar(&app.Truncate, "truncate", false, "truncate output file before first write")
 	flags.BoolVar(&app.Verify, "verify", true, "verify output file after download completes")
-	flags.BoolVar(&app.SkipETag, "skip-etag", false, "skip unreliable ETag field")
-	flags.BoolVar(&app.SkipLastModified, "skip-last-modified", false, "skip unreliable Last-Modified field")
+	flags.BoolVarP(&app.SkipETag, "skip-etag", "E", false, "skip unreliable ETag field")
+	flags.BoolVarP(&app.SkipLastModified, "skip-last-modified", "M", false, "skip unreliable Last-Modified field")
 	flags.StringVar(&app.RemoteControl, "remote-control", "", "http listen address")
 
 	viper.BindPFlags(flags)
@@ -227,12 +227,10 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}
 	}
 
-	filesize := int64(0)
 	fileexists := false
 
-	switch stat, err := os.Stat(filename); {
+	switch _, err := os.Stat(filename); {
 	case err == nil:
-		filesize = stat.Size()
 		fileexists = true
 	case !os.IsNotExist(err) || app.showStatus:
 		println(err)
@@ -255,7 +253,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}
 	}()
 
-	if filesize > 0 {
+	if fileexists {
 		if err := file.LoadHashFile(); err != nil {
 			if os.IsNotExist(err) {
 				filename := filename
@@ -484,22 +482,16 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			return 0
 		}
 
-		var digest hash.Hash
-
-		contentDisposition := file.ContentDisposition()
-		if contentDisposition != "" {
-			println("Content-Disposition:", contentDisposition)
-		}
-
-		contentMD5 := strings.ToLower(file.ContentMD5())
-		if len(contentMD5) == 32 {
-			digest = md5.New()
-			println("Content-MD5:", contentMD5)
-		}
-
-		shouldVerify := i == 0 || digest != nil
+		contentMD5 := file.ContentMD5()
+		shouldVerify := i == 0 || contentMD5 != ""
 		if !shouldVerify {
 			return 0
+		}
+
+		var digest hash.Hash
+		if contentMD5 != "" {
+			println("Content-MD5:", contentMD5)
+			digest = md5.New()
 		}
 
 		p := int64(0)
@@ -665,7 +657,6 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					if totalReceived == 0 {
 						firstRecvTime = time.Now()
 						nextReportTime = firstRecvTime.Add(reportInterval)
-						log.Println("first arrival")
 					}
 					totalReceived += int64(v.Just)
 					recentReceived += int64(v.Just)
@@ -973,13 +964,13 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				shouldAlloc := false
 				shouldSync := false
 
-				contentLength, _ := strconv.ParseInt(slice[3], 10, 64)
+				contentSize, _ := strconv.ParseInt(slice[3], 10, 64)
 				switch file.ContentSize() {
-				case contentLength:
+				case contentSize:
 				case 0:
+					file.SetContentSize(contentSize)
 					shouldAlloc = app.Alloc
 					shouldSync = true
-					file.SetContentSize(contentLength)
 				default:
 					err = errors.New("Content-Length mismatched")
 					fatal = true
@@ -987,50 +978,56 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}
 
 				contentDisposition := resp.Header.Get("Content-Disposition")
-				switch file.ContentDisposition() {
-				case contentDisposition:
-				default:
-					shouldSync = true
-					file.SetContentDisposition(contentDisposition)
+				if contentDisposition != "" {
+					if contentDisposition != file.ContentDisposition() {
+						file.SetContentDisposition(contentDisposition)
+						shouldSync = true
+					}
 				}
 
-				contentMD5 := resp.Header.Get("Content-MD5")
-				switch file.ContentMD5() {
-				case contentMD5:
-				case "":
-					shouldSync = true
-					file.SetContentMD5(contentMD5)
-				default:
-					err = errors.New("Content-MD5 mismatched")
-					fatal = true
-					return
-				}
-
-				eTag := resp.Header.Get("ETag")
-				switch file.EntityTag() {
-				case eTag:
-				case "":
-					shouldSync = true
-					file.SetEntityTag(eTag)
-				default:
-					if !app.SkipETag {
-						err = errors.New("ETag mismatched")
+				contentMD5 := strings.ToLower(resp.Header.Get("Content-MD5"))
+				if len(contentMD5) == 32 {
+					switch file.ContentMD5() {
+					case contentMD5:
+					case "":
+						file.SetContentMD5(contentMD5)
+						shouldSync = true
+					default:
+						err = errors.New("Content-MD5 mismatched")
 						fatal = true
 						return
 					}
 				}
 
+				eTag := resp.Header.Get("ETag")
+				if eTag != "" {
+					switch file.EntityTag() {
+					case eTag:
+					case "":
+						file.SetEntityTag(eTag)
+						shouldSync = true
+					default:
+						if !app.SkipETag {
+							err = errors.New("ETag mismatched")
+							fatal = true
+							return
+						}
+					}
+				}
+
 				lastModified := resp.Header.Get("Last-Modified")
-				switch file.LastModified() {
-				case lastModified:
-				case "":
-					shouldSync = true
-					file.SetLastModified(lastModified)
-				default:
-					if !app.SkipLastModified {
-						err = errors.New("Last-Modified mismatched")
-						fatal = true
-						return
+				if lastModified != "" {
+					switch file.LastModified() {
+					case lastModified:
+					case "":
+						file.SetLastModified(lastModified)
+						shouldSync = true
+					default:
+						if !app.SkipLastModified {
+							err = errors.New("Last-Modified mismatched")
+							fatal = true
+							return
+						}
 					}
 				}
 
