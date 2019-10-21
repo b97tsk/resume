@@ -155,13 +155,13 @@ func (f *DataFile) CompleteSize() int64 {
 	return atomic.LoadInt64(&f.completeSize)
 }
 
-func (f *DataFile) SetContentSize(size int64) error {
+func (f *DataFile) SetContentSize(size int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.setContentSizeLocked(size)
+	f.setContentSizeLocked(size)
 }
 
-func (f *DataFile) setContentSizeLocked(size int64) error {
+func (f *DataFile) setContentSizeLocked(size int64) {
 	atomic.StoreInt64(&f.hash.ContentSize, size)
 
 	pieceCount := int(math.Ceil(float64(size) / pieceSize))
@@ -172,8 +172,17 @@ func (f *DataFile) setContentSizeLocked(size int64) error {
 	}
 
 	f.incomplete.DeleteRange(size, math.MaxInt64)
+}
 
-	if fileSize, _ := f.file.Seek(0, io.SeekEnd); size == fileSize {
+func (f *DataFile) Truncate(size int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	curoffset, _ := f.file.Seek(0, io.SeekCurrent)
+	defer f.file.Seek(curoffset, io.SeekStart)
+
+	fileSize, _ := f.file.Seek(0, io.SeekEnd)
+	if size == fileSize {
 		return nil
 	}
 

@@ -41,7 +41,8 @@ A configure file is an YAML document which can specify following options:
 - `user-agent` user agent, one for each line.
 - `per-user-agent-limit` limit per user agent connections.
 - `stream-rate` maximum number of stream rate.
-- `alloc` alloc disk space before the first write.
+- `alloc` alloc disk space before first write.
+- `truncate` truncate output file before first write.
 - `skip-etag` skip unreliable ETag field or not.
 - `skip-last-modified` skip unreliable Last-Modified field or not.
 - `remote-control` create an HTTP server for remote control.

@@ -63,6 +63,7 @@ type Configure struct {
 	PerUserAgentLimit uint          `mapstructure:"per-user-agent-limit" yaml:"per-user-agent-limit"`
 	StreamRate        uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
 	Alloc             bool          `mapstructure:"alloc" yaml:"alloc"`
+	Truncate          bool          `mapstructure:"truncate" yaml:"truncate"`
 	SkipETag          bool          `mapstructure:"skip-etag" yaml:"skip-etag"`
 	SkipLastModified  bool          `mapstructure:"skip-last-modified" yaml:"skip-last-modified"`
 	RemoteControl     string        `mapstructure:"remote-control" yaml:"remote-control"`
@@ -91,7 +92,8 @@ func main() {
 	flags.DurationVar(&app.SyncPeriod, "sync-period", 10*time.Minute, "sync-to-disk period")
 	flags.DurationVar(&app.RequestInterval, "interval", 2*time.Second, "request interval")
 	flags.StringVar(&app.RequestRange, "range", "", "request range (MiB), e.g., 0-1023")
-	flags.BoolVarP(&app.Alloc, "alloc", "a", false, "alloc disk space before the first write")
+	flags.BoolVarP(&app.Alloc, "alloc", "a", false, "alloc disk space before first write")
+	flags.BoolVar(&app.Truncate, "truncate", false, "truncate output file before first write")
 	flags.BoolVar(&app.SkipETag, "skip-etag", false, "skip unreliable ETag field")
 	flags.BoolVar(&app.SkipLastModified, "skip-last-modified", false, "skip unreliable Last-Modified field")
 	flags.StringVar(&app.RemoteControl, "remote-control", "", "http listen address")
@@ -1031,6 +1033,10 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						fatal = true
 						return
 					}
+				}
+
+				if app.Truncate {
+					file.Truncate(contentSize)
 				}
 
 				if shouldSync {
