@@ -43,6 +43,7 @@ A configure file is an YAML document which can specify following options:
 - `stream-rate` maximum number of stream rate.
 - `alloc` alloc disk space before first write.
 - `truncate` truncate output file before first write.
+- `verify` verify output file after download completes.
 - `skip-etag` skip unreliable ETag field or not.
 - `skip-last-modified` skip unreliable Last-Modified field or not.
 - `remote-control` create an HTTP server for remote control.

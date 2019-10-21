@@ -64,6 +64,7 @@ type Configure struct {
 	StreamRate        uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
 	Alloc             bool          `mapstructure:"alloc" yaml:"alloc"`
 	Truncate          bool          `mapstructure:"truncate" yaml:"truncate"`
+	Verify            bool          `mapstructure:"verify" yaml:"verify"`
 	SkipETag          bool          `mapstructure:"skip-etag" yaml:"skip-etag"`
 	SkipLastModified  bool          `mapstructure:"skip-last-modified" yaml:"skip-last-modified"`
 	RemoteControl     string        `mapstructure:"remote-control" yaml:"remote-control"`
@@ -94,6 +95,7 @@ func main() {
 	flags.StringVar(&app.RequestRange, "range", "", "request range (MiB), e.g., 0-1023")
 	flags.BoolVarP(&app.Alloc, "alloc", "a", false, "alloc disk space before first write")
 	flags.BoolVar(&app.Truncate, "truncate", false, "truncate output file before first write")
+	flags.BoolVar(&app.Verify, "verify", true, "verify output file after download completes")
 	flags.BoolVar(&app.SkipETag, "skip-etag", false, "skip unreliable ETag field")
 	flags.BoolVar(&app.SkipLastModified, "skip-last-modified", false, "skip unreliable Last-Modified field")
 	flags.StringVar(&app.RemoteControl, "remote-control", "", "http listen address")
@@ -465,6 +467,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				return 1
 			}
 		}
+
 		if app.streamToStdout {
 			print("streaming...")
 			app.streamToStdout = false
@@ -475,6 +478,10 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			case <-streamDone:
 			}
 			print("\033[1K\r")
+		}
+
+		if !app.Verify {
+			return 0
 		}
 
 		var digest hash.Hash
