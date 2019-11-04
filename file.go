@@ -282,20 +282,6 @@ func (f *DataFile) ReturnIncomplete(offset, size int64) {
 	}
 }
 
-func (f *DataFile) Seek(offset int64, whence int) (int64, error) {
-	return f.file.Seek(offset, whence)
-}
-
-func (f *DataFile) Read(b []byte) (n int, err error) {
-	offset, err := f.file.Seek(0, io.SeekCurrent)
-	if err != nil {
-		return
-	}
-	n, err = f.ReadAt(b, offset)
-	f.file.Seek(int64(n), io.SeekCurrent)
-	return
-}
-
 func (f *DataFile) ReadAt(b []byte, offset int64) (n int, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

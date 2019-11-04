@@ -394,13 +394,14 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		http.Handle("/stream", http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
 				done := r.Context().Done()
+				currentOffset := int64(0)
 				content := struct {
 					io.Reader
 					io.Seeker
 				}{
 					ReaderFunc(
 						func(p []byte) (n int, err error) {
-							n, err = file.Read(p)
+							n, err = file.ReadAt(p, currentOffset)
 							for err == ErrIncomplete {
 								select {
 								case <-done:
@@ -408,13 +409,26 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 								case <-mainDone:
 									return
 								case <-time.After(time.Second):
-									n, err = file.Read(p)
+									n, err = file.ReadAt(p, currentOffset)
 								}
 							}
+							currentOffset += int64(n)
 							return
 						},
 					),
-					file,
+					SeekerFunc(
+						func(offset int64, whence int) (int64, error) {
+							switch whence {
+							case io.SeekStart:
+								currentOffset = offset
+							case io.SeekCurrent:
+								currentOffset += offset
+							case io.SeekEnd:
+								currentOffset = file.ContentSize() - offset
+							}
+							return currentOffset, nil
+						},
+					),
 				}
 				http.ServeContent(w, r, filepath.Base(filename), time.Time{}, content)
 			},
