@@ -70,6 +70,8 @@ type Configure struct {
 	RemoteControl     string        `mapstructure:"remote-control" yaml:"remote-control"`
 }
 
+var operators observable.Operators
+
 func main() {
 	var app App
 
@@ -381,18 +383,34 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			println(err)
 			return 1
 		}
-		http.Handle("/quit", http.HandlerFunc(
+		exitHandler := http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
 				mainCancel()
 			},
-		))
+		)
+		http.Handle("/exit", exitHandler)
+		http.Handle("/quit", exitHandler)
 		http.Handle("/status", http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
 				app.status(file, w)
 			},
 		))
+		streamNotify := observable.NewSubject()
+		streamCounter := observable.NewBehaviorSubject(0)
+		streamNotify.Pipe(
+			operators.Scan(
+				func(acc, val interface{}, idx int) interface{} {
+					return acc.(int) + val.(int)
+				},
+			),
+		).Subscribe(
+			context.Background(),
+			streamCounter.Observer,
+		)
 		http.Handle("/stream", http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
+				streamNotify.Next(1)
+				defer streamNotify.Next(-1)
 				done := r.Context().Done()
 				currentOffset := int64(0)
 				content := struct {
@@ -435,6 +453,40 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		))
 		srv := &http.Server{}
 		defer func() {
+			if streamCounter.Value().(int) > 0 {
+				// Wait until `streamCounter` remains zero for N seconds.
+				const N = 5
+				println("Waiting for remote streaming to complete...")
+				streamCounter.Pipe(
+					operators.Filter(
+						func(val interface{}, idx int) bool {
+							return val == 0
+						},
+					),
+					operators.SwitchMapTo(
+						observable.Race(
+							observable.Interval(N*time.Second).Pipe(operators.MapTo(nil)),
+							streamCounter.Pipe(
+								operators.Exclude(
+									func(val interface{}, idx int) bool {
+										// Exclude the first value that is zero.
+										return idx == 0 && val == 0
+									},
+								),
+							),
+						).Pipe(
+							operators.Take(1),
+							operators.Filter(
+								func(val interface{}, idx int) bool {
+									// Check if this is the value from `Interval`.
+									return val == nil
+								},
+							),
+						),
+					),
+					operators.Take(1),
+				).BlockingSingle(mainCtx)
+			}
 			timeout := make(chan bool, 1)
 			timeout <- true
 			time.AfterFunc(time.Second, func() {
@@ -589,8 +641,6 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			int(float64(file.CompleteSize())/float64(file.ContentSize())*100),
 		)
 	}
-
-	var operators observable.Operators
 
 	dlCtx := context.Background() // dlCtx never cancels.
 
