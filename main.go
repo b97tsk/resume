@@ -35,7 +35,6 @@ import (
 const (
 	defaultOutFile = "File"
 	readBufferSize = 4096
-	readTimeout    = 30 * time.Second
 	reportInterval = 10 * time.Minute
 )
 
@@ -49,25 +48,30 @@ type App struct {
 }
 
 type Configure struct {
-	URL               string        `mapstructure:"url" yaml:"url"`
-	OutFile           string        `mapstructure:"output" yaml:"output"`
-	SplitSize         uint          `mapstructure:"split" yaml:"split"`
-	MaxConnections    uint          `mapstructure:"connections" yaml:"connections"`
-	MaxErrors         uint          `mapstructure:"errors" yaml:"errors"`
-	SyncPeriod        time.Duration `mapstructure:"sync-period" yaml:"sync-period"`
-	RequestInterval   time.Duration `mapstructure:"interval" yaml:"interval"`
-	RequestRange      string        `mapstructure:"range" yaml:"range"`
-	CookieFile        string        `mapstructure:"cookie" yaml:"cookie"`
-	Referer           string        `mapstructure:"referer" yaml:"referer"`
-	UserAgent         string        `mapstructure:"user-agent" yaml:"user-agent"`
-	PerUserAgentLimit uint          `mapstructure:"per-user-agent-limit" yaml:"per-user-agent-limit"`
-	StreamRate        uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
-	Alloc             bool          `mapstructure:"alloc" yaml:"alloc"`
-	Truncate          bool          `mapstructure:"truncate" yaml:"truncate"`
-	Verify            bool          `mapstructure:"verify" yaml:"verify"`
-	SkipETag          bool          `mapstructure:"skip-etag" yaml:"skip-etag"`
-	SkipLastModified  bool          `mapstructure:"skip-last-modified" yaml:"skip-last-modified"`
-	RemoteControl     string        `mapstructure:"remote-control" yaml:"remote-control"`
+	URL                   string        `mapstructure:"url" yaml:"url"`
+	OutFile               string        `mapstructure:"output" yaml:"output"`
+	SplitSize             uint          `mapstructure:"split" yaml:"split"`
+	MaxConnections        uint          `mapstructure:"connections" yaml:"connections"`
+	MaxErrors             uint          `mapstructure:"errors" yaml:"errors"`
+	DialTimeout           time.Duration `mapstructure:"dial-timeout" yaml:"dial-timeout"`
+	KeepAlive             time.Duration `mapstructure:"keep-alive" yaml:"keep-alive"`
+	ReadTimeout           time.Duration `mapstructure:"read-timeout" yaml:"read-timeout"`
+	TLSHandshakeTimeout   time.Duration `mapstructure:"tls-handshake-timeout" yaml:"tls-handshake-timeout"`
+	ResponseHeaderTimeout time.Duration `mapstructure:"response-header-timeout" yaml:"response-header-timeout"`
+	SyncPeriod            time.Duration `mapstructure:"sync-period" yaml:"sync-period"`
+	RequestInterval       time.Duration `mapstructure:"interval" yaml:"interval"`
+	RequestRange          string        `mapstructure:"range" yaml:"range"`
+	CookieFile            string        `mapstructure:"cookie" yaml:"cookie"`
+	Referer               string        `mapstructure:"referer" yaml:"referer"`
+	UserAgent             string        `mapstructure:"user-agent" yaml:"user-agent"`
+	PerUserAgentLimit     uint          `mapstructure:"per-user-agent-limit" yaml:"per-user-agent-limit"`
+	StreamRate            uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
+	Alloc                 bool          `mapstructure:"alloc" yaml:"alloc"`
+	Truncate              bool          `mapstructure:"truncate" yaml:"truncate"`
+	Verify                bool          `mapstructure:"verify" yaml:"verify"`
+	SkipETag              bool          `mapstructure:"skip-etag" yaml:"skip-etag"`
+	SkipLastModified      bool          `mapstructure:"skip-last-modified" yaml:"skip-last-modified"`
+	RemoteControl         string        `mapstructure:"remote-control" yaml:"remote-control"`
 }
 
 var operators observable.Operators
@@ -92,6 +96,11 @@ func main() {
 	flags.UintVarP(&app.SplitSize, "split", "s", 0, "split size (MiB), 0 means use maximum reasonable")
 	flags.UintVarP(&app.MaxConnections, "connections", "c", 4, "maximum number of parallel downloads")
 	flags.UintVarP(&app.MaxErrors, "errors", "e", 3, "maximum number of errors")
+	flags.DurationVar(&app.DialTimeout, "dial-timeout", 30*time.Second, "dial timeout")
+	flags.DurationVar(&app.KeepAlive, "keep-alive", 30*time.Second, "keep-alive duration")
+	flags.DurationVar(&app.ReadTimeout, "read-timeout", 30*time.Second, "read timeout")
+	flags.DurationVar(&app.TLSHandshakeTimeout, "tls-handshake-timeout", 10*time.Second, "tls handshake timeout")
+	flags.DurationVar(&app.ResponseHeaderTimeout, "response-header-timeout", 10*time.Second, "response header timeout")
 	flags.DurationVar(&app.SyncPeriod, "sync-period", 10*time.Minute, "sync-to-disk period")
 	flags.DurationVarP(&app.RequestInterval, "interval", "i", 2*time.Second, "request interval")
 	flags.StringVarP(&app.RequestRange, "range", "r", "", "request range (MiB), e.g., 0-1023")
@@ -507,14 +516,14 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
+				Timeout:   app.DialTimeout,
+				KeepAlive: app.KeepAlive,
 				DualStack: true,
 			}).DialContext,
 			MaxIdleConns:          100,
 			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
+			TLSHandshakeTimeout:   app.TLSHandshakeTimeout,
+			ResponseHeaderTimeout: app.ResponseHeaderTimeout,
 			ExpectContinueTimeout: 1 * time.Second,
 		},
 		Jar: cookieJar,
@@ -1126,6 +1135,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 				go func() (err error) {
 					var (
+						readTimeout      = app.ReadTimeout
 						readTimer        = time.AfterFunc(readTimeout, cancel)
 						shouldResetTimer bool
 						shouldWaitWrite  bool

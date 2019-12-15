@@ -33,6 +33,11 @@ A configure file is an YAML document which can specify following options:
 - `split` split size.
 - `connections` maximum number of parallel downloads.
 - `errors` maximum number of errors.
+- `dial-timeout` dial timeout.
+- `keep-alive` keep-alive duration.
+- `read-timeout` read timeout.
+- `tls-handshake-timeout` tls handshake timeout.
+- `response-header-timeout` response header timeout.
 - `sync-period` sync-to-disk period.
 - `interval` request interval.
 - `range` request range.
