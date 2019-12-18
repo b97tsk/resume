@@ -82,6 +82,7 @@ func main() {
 	rootCmd := &cobra.Command{
 		Use:   "resume",
 		Short: "splitting download a file",
+		Args:  cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			os.Exit(app.Main(cmd, args))
 		},
