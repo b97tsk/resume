@@ -33,7 +33,6 @@ import (
 )
 
 const (
-	defaultOutFile = "File"
 	readBufferSize = 4096
 	reportInterval = 10 * time.Minute
 )
@@ -103,7 +102,7 @@ func main() {
 	flags.DurationVarP(&app.Interval, "interval", "i", 2*time.Second, "request interval")
 	flags.StringVar(&app.CookieFile, "cookie", "", "cookie file")
 	flags.StringVar(&app.RemoteControl, "remote-control", "", "http listen address")
-	flags.StringVarP(&app.OutputFile, "output", "o", defaultOutFile, "output file")
+	flags.StringVarP(&app.OutputFile, "output", "o", "", "output file")
 	flags.StringVarP(&app.Range, "range", "r", "", "request range (MiB), e.g., 0-1023")
 	flags.StringVarP(&app.Referer, "referer", "R", "", "referer url")
 	flags.StringVarP(&app.UserAgent, "user-agent", "A", "", "user agent")
@@ -160,10 +159,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			println(err)
 			return 1
 		}
-	}
-
-	if !cmd.Flags().Changed("output") {
-		app.OutputFile = ""
 	}
 
 	os.Setenv("ConfigDir", filepath.Dir(app.conffile))
@@ -234,7 +229,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			filename = app.URL[i+1:]
 		}
 		if filename == "" {
-			filename = defaultOutFile
+			filename = "resume.out"
 		}
 	}
 
