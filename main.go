@@ -66,6 +66,7 @@ type Configure struct {
 	SplitSize             uint          `mapstructure:"split" yaml:"split"`
 	StreamRate            uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
 	SyncPeriod            time.Duration `mapstructure:"sync-period" yaml:"sync-period"`
+	Timeout               time.Duration `mapstructure:"timeout" yaml:"timeout"`
 	TLSHandshakeTimeout   time.Duration `mapstructure:"tls-handshake-timeout" yaml:"tls-handshake-timeout"`
 	Truncate              bool          `mapstructure:"truncate" yaml:"truncate"`
 	URL                   string        `mapstructure:"url" yaml:"url"`
@@ -100,6 +101,7 @@ func main() {
 	flags.DurationVar(&app.SyncPeriod, "sync-period", 10*time.Minute, "sync-to-disk period")
 	flags.DurationVar(&app.TLSHandshakeTimeout, "tls-handshake-timeout", 10*time.Second, "tls handshake timeout")
 	flags.DurationVarP(&app.Interval, "interval", "i", 2*time.Second, "request interval")
+	flags.DurationVarP(&app.Timeout, "timeout", "t", 0, "if non-zero, all timeouts default to this value")
 	flags.StringVar(&app.CookieFile, "cookie", "", "cookie file")
 	flags.StringVar(&app.RemoteControl, "remote-control", "", "http listen address")
 	flags.StringVarP(&app.OutputFile, "output", "o", "", "output file")
@@ -173,6 +175,30 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			}
 		}
 		viper.Unmarshal(&app.Configure)
+	}
+
+	if app.Timeout > 0 {
+		timeoutFlagProvided := cmd.Flags().Changed("timeout")
+		if !cmd.Flags().Changed("dial-timeout") {
+			if timeoutFlagProvided || !viper.InConfig("dial-timeout") {
+				app.DialTimeout = app.Timeout
+			}
+		}
+		if !cmd.Flags().Changed("read-timeout") {
+			if timeoutFlagProvided || !viper.InConfig("read-timeout") {
+				app.ReadTimeout = app.Timeout
+			}
+		}
+		if !cmd.Flags().Changed("response-header-timeout") {
+			if timeoutFlagProvided || !viper.InConfig("response-header-timeout") {
+				app.ResponseHeaderTimeout = app.Timeout
+			}
+		}
+		if !cmd.Flags().Changed("tls-handshake-timeout") {
+			if timeoutFlagProvided || !viper.InConfig("tls-handshake-timeout") {
+				app.TLSHandshakeTimeout = app.Timeout
+			}
+		}
 	}
 
 	if len(args) > 0 {
