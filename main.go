@@ -48,30 +48,30 @@ type App struct {
 }
 
 type Configure struct {
-	URL                   string        `mapstructure:"url" yaml:"url"`
-	OutFile               string        `mapstructure:"output" yaml:"output"`
-	SplitSize             uint          `mapstructure:"split" yaml:"split"`
-	MaxConnections        uint          `mapstructure:"connections" yaml:"connections"`
-	MaxErrors             uint          `mapstructure:"errors" yaml:"errors"`
-	DialTimeout           time.Duration `mapstructure:"dial-timeout" yaml:"dial-timeout"`
-	KeepAlive             time.Duration `mapstructure:"keep-alive" yaml:"keep-alive"`
-	ReadTimeout           time.Duration `mapstructure:"read-timeout" yaml:"read-timeout"`
-	TLSHandshakeTimeout   time.Duration `mapstructure:"tls-handshake-timeout" yaml:"tls-handshake-timeout"`
-	ResponseHeaderTimeout time.Duration `mapstructure:"response-header-timeout" yaml:"response-header-timeout"`
-	SyncPeriod            time.Duration `mapstructure:"sync-period" yaml:"sync-period"`
-	RequestInterval       time.Duration `mapstructure:"interval" yaml:"interval"`
-	RequestRange          string        `mapstructure:"range" yaml:"range"`
-	CookieFile            string        `mapstructure:"cookie" yaml:"cookie"`
-	Referer               string        `mapstructure:"referer" yaml:"referer"`
-	UserAgent             string        `mapstructure:"user-agent" yaml:"user-agent"`
-	PerUserAgentLimit     uint          `mapstructure:"per-user-agent-limit" yaml:"per-user-agent-limit"`
-	StreamRate            uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
 	Alloc                 bool          `mapstructure:"alloc" yaml:"alloc"`
-	Truncate              bool          `mapstructure:"truncate" yaml:"truncate"`
-	Verify                bool          `mapstructure:"verify" yaml:"verify"`
+	Connections           uint          `mapstructure:"connections" yaml:"connections"`
+	CookieFile            string        `mapstructure:"cookie" yaml:"cookie"`
+	DialTimeout           time.Duration `mapstructure:"dial-timeout" yaml:"dial-timeout"`
+	Errors                uint          `mapstructure:"errors" yaml:"errors"`
+	Interval              time.Duration `mapstructure:"interval" yaml:"interval"`
+	KeepAlive             time.Duration `mapstructure:"keep-alive" yaml:"keep-alive"`
+	OutputFile            string        `mapstructure:"output" yaml:"output"`
+	PerUserAgentLimit     uint          `mapstructure:"per-user-agent-limit" yaml:"per-user-agent-limit"`
+	Range                 string        `mapstructure:"range" yaml:"range"`
+	ReadTimeout           time.Duration `mapstructure:"read-timeout" yaml:"read-timeout"`
+	Referer               string        `mapstructure:"referer" yaml:"referer"`
+	RemoteControl         string        `mapstructure:"remote-control" yaml:"remote-control"`
+	ResponseHeaderTimeout time.Duration `mapstructure:"response-header-timeout" yaml:"response-header-timeout"`
 	SkipETag              bool          `mapstructure:"skip-etag" yaml:"skip-etag"`
 	SkipLastModified      bool          `mapstructure:"skip-last-modified" yaml:"skip-last-modified"`
-	RemoteControl         string        `mapstructure:"remote-control" yaml:"remote-control"`
+	SplitSize             uint          `mapstructure:"split" yaml:"split"`
+	StreamRate            uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
+	SyncPeriod            time.Duration `mapstructure:"sync-period" yaml:"sync-period"`
+	TLSHandshakeTimeout   time.Duration `mapstructure:"tls-handshake-timeout" yaml:"tls-handshake-timeout"`
+	Truncate              bool          `mapstructure:"truncate" yaml:"truncate"`
+	URL                   string        `mapstructure:"url" yaml:"url"`
+	UserAgent             string        `mapstructure:"user-agent" yaml:"user-agent"`
+	Verify                bool          `mapstructure:"verify" yaml:"verify"`
 }
 
 var operators observable.Operators
@@ -89,27 +89,27 @@ func main() {
 
 	flags := rootCmd.PersistentFlags()
 
-	flags.StringVarP(&app.OutFile, "output", "o", defaultOutFile, "output file")
-	flags.StringVar(&app.CookieFile, "cookie", "", "cookie file")
-	flags.StringVarP(&app.Referer, "referer", "R", "", "referer url")
-	flags.StringVarP(&app.UserAgent, "user-agent", "A", "", "user agent")
-	flags.UintVarP(&app.SplitSize, "split", "s", 0, "split size (MiB), 0 means use maximum reasonable")
-	flags.UintVarP(&app.MaxConnections, "connections", "c", 4, "maximum number of parallel downloads")
-	flags.UintVarP(&app.MaxErrors, "errors", "e", 3, "maximum number of errors")
-	flags.DurationVar(&app.DialTimeout, "dial-timeout", 30*time.Second, "dial timeout")
-	flags.DurationVar(&app.KeepAlive, "keep-alive", 30*time.Second, "keep-alive duration")
-	flags.DurationVar(&app.ReadTimeout, "read-timeout", 30*time.Second, "read timeout")
-	flags.DurationVar(&app.TLSHandshakeTimeout, "tls-handshake-timeout", 10*time.Second, "tls handshake timeout")
-	flags.DurationVar(&app.ResponseHeaderTimeout, "response-header-timeout", 10*time.Second, "response header timeout")
-	flags.DurationVar(&app.SyncPeriod, "sync-period", 10*time.Minute, "sync-to-disk period")
-	flags.DurationVarP(&app.RequestInterval, "interval", "i", 2*time.Second, "request interval")
-	flags.StringVarP(&app.RequestRange, "range", "r", "", "request range (MiB), e.g., 0-1023")
 	flags.BoolVar(&app.Alloc, "alloc", false, "alloc disk space before first write")
 	flags.BoolVar(&app.Truncate, "truncate", false, "truncate output file before first write")
 	flags.BoolVar(&app.Verify, "verify", true, "verify output file after download completes")
 	flags.BoolVarP(&app.SkipETag, "skip-etag", "E", false, "skip unreliable ETag field")
 	flags.BoolVarP(&app.SkipLastModified, "skip-last-modified", "M", false, "skip unreliable Last-Modified field")
+	flags.DurationVar(&app.DialTimeout, "dial-timeout", 30*time.Second, "dial timeout")
+	flags.DurationVar(&app.KeepAlive, "keep-alive", 30*time.Second, "keep-alive duration")
+	flags.DurationVar(&app.ReadTimeout, "read-timeout", 30*time.Second, "read timeout")
+	flags.DurationVar(&app.ResponseHeaderTimeout, "response-header-timeout", 10*time.Second, "response header timeout")
+	flags.DurationVar(&app.SyncPeriod, "sync-period", 10*time.Minute, "sync-to-disk period")
+	flags.DurationVar(&app.TLSHandshakeTimeout, "tls-handshake-timeout", 10*time.Second, "tls handshake timeout")
+	flags.DurationVarP(&app.Interval, "interval", "i", 2*time.Second, "request interval")
+	flags.StringVar(&app.CookieFile, "cookie", "", "cookie file")
 	flags.StringVar(&app.RemoteControl, "remote-control", "", "http listen address")
+	flags.StringVarP(&app.OutputFile, "output", "o", defaultOutFile, "output file")
+	flags.StringVarP(&app.Range, "range", "r", "", "request range (MiB), e.g., 0-1023")
+	flags.StringVarP(&app.Referer, "referer", "R", "", "referer url")
+	flags.StringVarP(&app.UserAgent, "user-agent", "A", "", "user agent")
+	flags.UintVarP(&app.Connections, "connections", "c", 4, "maximum number of parallel downloads")
+	flags.UintVarP(&app.Errors, "errors", "e", 3, "maximum number of errors")
+	flags.UintVarP(&app.SplitSize, "split", "s", 0, "split size (MiB), 0 means use maximum reasonable")
 
 	viper.BindPFlags(flags)
 
@@ -163,7 +163,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	}
 
 	if !cmd.Flags().Changed("output") {
-		app.OutFile = ""
+		app.OutputFile = ""
 	}
 
 	os.Setenv("ConfigDir", filepath.Dir(app.conffile))
@@ -227,7 +227,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}
 	}
 
-	filename := os.ExpandEnv(app.OutFile)
+	filename := os.ExpandEnv(app.OutputFile)
 	if filename == "" {
 		i := strings.LastIndexAny(app.URL, "/\\?#")
 		if i != -1 && (app.URL[i] == '/' || app.URL[i] == '\\') {
@@ -285,9 +285,9 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		return 0
 	}
 
-	if app.RequestRange != "" {
-		var requestRange RangeSet
-		for _, r := range strings.Split(app.RequestRange, ",") {
+	if app.Range != "" {
+		var sections RangeSet
+		for _, r := range strings.Split(app.Range, ",") {
 			r := strings.Split(r, "-")
 			if len(r) > 2 {
 				println("request range is invalid")
@@ -299,11 +299,11 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				return 1
 			}
 			if len(r) == 1 {
-				requestRange.AddRange(i*1024*1024, (i+1)*1024*1024)
+				sections.AddRange(i*1024*1024, (i+1)*1024*1024)
 				continue
 			}
 			if r[1] == "" {
-				requestRange.AddRange(i*1024*1024, math.MaxInt64)
+				sections.AddRange(i*1024*1024, math.MaxInt64)
 				continue
 			}
 			j, err := strconv.ParseInt(r[1], 10, 32)
@@ -311,10 +311,10 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				println("request range is invalid")
 				return 1
 			}
-			requestRange.AddRange(i*1024*1024, (j+1)*1024*1024)
+			sections.AddRange(i*1024*1024, (j+1)*1024*1024)
 		}
-		if len(requestRange) > 0 {
-			file.SetRange(requestRange)
+		if len(sections) > 0 {
+			file.SetRange(sections)
 		}
 	}
 
@@ -720,7 +720,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	queuedMessages := observable.NewSubject()
 	queuedMessagesCtx, _ := queuedMessages.
-		Pipe(operators.Congest(int(app.MaxConnections*3))).
+		Pipe(operators.Congest(int(app.Connections*3))).
 		Subscribe(dlCtx, func(t observable.Notification) {
 			shouldPrint := false
 			switch {
@@ -802,7 +802,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	queuedWrites := observable.NewSubject()
 	queuedWritesCtx, _ := queuedWrites.
-		Pipe(operators.Congest(int(app.MaxConnections*3))).
+		Pipe(operators.Congest(int(app.Connections*3))).
 		Subscribe(dlCtx, func(t observable.Notification) {
 			if t.HasValue {
 				t.Value.(func())()
@@ -842,7 +842,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	takeIncomplete := func() (offset, size int64) {
 		splitSize := int64(app.SplitSize) * 1024 * 1024
 		if file.ContentSize() > 0 {
-			size := (file.ContentSize() - file.CompleteSize()) / int64(app.MaxConnections)
+			size := (file.ContentSize() - file.CompleteSize()) / int64(app.Connections)
 			if size < splitSize || splitSize == 0 {
 				splitSize = size
 			}
@@ -854,7 +854,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		file.ReturnIncomplete(offset, size)
 	}
 
-	messages := make(chan interface{}, app.MaxConnections)
+	messages := make(chan interface{}, app.Connections)
 
 	activeTasks := observable.NewSubject()
 	activeTasksCtx, _ := activeTasks.
@@ -878,7 +878,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		delayNewTask <-chan time.Time
 		errorCount   uint
 		fatalErrors  bool
-		maxDownloads = app.MaxConnections
+		maxDownloads = app.Connections
 		currentURL   = app.URL
 	)
 
@@ -909,7 +909,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			if activeCount == 0 {
 				return
 			}
-		case errorCount >= app.MaxErrors:
+		case errorCount >= app.Errors:
 			if len(userAgents) > 1 {
 				// If multiple user agents are provided, we are going to
 				// test all of them one by one.
@@ -940,7 +940,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}
 			}
 			currentURL = app.URL
-			maxDownloads = app.MaxConnections
+			maxDownloads = app.Connections
 			errorCount = 0
 			fallthrough
 		default:
@@ -1191,7 +1191,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 			activeCount++
 			pauseNewTask = true
-			delayNewTask = time.After(app.RequestInterval)
+			delayNewTask = time.After(app.Interval)
 
 			activeTasks.Next(observable.Create(cr).Pipe(operators.Do(do)))
 		}
@@ -1206,7 +1206,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			case ResponseMessage:
 				pauseNewTask = false
 				currentURL = e.URL // Save the redirected one if redirection happens.
-				maxDownloads = app.MaxConnections
+				maxDownloads = app.Connections
 				errorCount = 0
 				if len(allUserAgents) > 1 {
 					queuedMessages.Next(
