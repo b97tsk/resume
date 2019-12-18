@@ -11,14 +11,22 @@ go get -u github.com/b97tsk/resume
 # Usage
 
 ```console
-### Create a working directory.
-$ mkdir work && cd work
-### Download with max concurrent number set to 9.
-$ resume -c 9 http://...
-### A file named `File` will be created, save it when done.
-$ cp File path/to/file
-### Remove the working directory if you don't need it anymore.
-$ cd .. && rm -rf work
+### Download with default options.
+$ resume -- http://...
+### Download with a specified output file.
+$ resume -o dl.zip -- http://...
+### Download with max parallel downloads set to 9.
+$ resume -c9 -- http://...
+### Download with a configure file (see below).
+$ resume -f resume.yaml
+### Download with default configure file (i.e. resume.yaml) found in current directory.
+$ resume
+### Print configure to standard output.
+$ resume config
+### Print status to standard output.
+$ resume status
+### Stream to standard output while downloading.
+$ resume stream | mpv -
 ```
 
 # Configure File
