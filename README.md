@@ -43,12 +43,12 @@ A configure file is an YAML document which can specify following options:
 - `errors` maximum number of errors.
 - `interval` request interval.
 - `keep-alive` keep-alive duration.
+- `listen` HTTP listen address for remote control.
 - `output` output file.
 - `per-user-agent-limit` limit per user agent connections.
 - `range` request range.
 - `read-timeout` read timeout.
 - `referer` referer url.
-- `remote-control` create an HTTP server for remote control.
 - `response-header-timeout` response header timeout.
 - `skip-etag` skip unreliable ETag field or not.
 - `skip-last-modified` skip unreliable Last-Modified field or not.
@@ -58,7 +58,7 @@ A configure file is an YAML document which can specify following options:
 - `timeout` if non-zero, all timeouts default to this value.
 - `tls-handshake-timeout` tls handshake timeout.
 - `truncate` truncate output file before first write.
-- `url` the URL you want to download.
+- `url` the URL to download.
 - `user-agent` user agent, one for each line.
 - `verify` verify output file after download completes.
 

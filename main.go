@@ -54,12 +54,12 @@ type Configure struct {
 	Errors                uint          `mapstructure:"errors" yaml:"errors"`
 	Interval              time.Duration `mapstructure:"interval" yaml:"interval"`
 	KeepAlive             time.Duration `mapstructure:"keep-alive" yaml:"keep-alive"`
+	ListenAddress         string        `mapstructure:"listen" yaml:"listen"`
 	OutputFile            string        `mapstructure:"output" yaml:"output"`
 	PerUserAgentLimit     uint          `mapstructure:"per-user-agent-limit" yaml:"per-user-agent-limit"`
 	Range                 string        `mapstructure:"range" yaml:"range"`
 	ReadTimeout           time.Duration `mapstructure:"read-timeout" yaml:"read-timeout"`
 	Referer               string        `mapstructure:"referer" yaml:"referer"`
-	RemoteControl         string        `mapstructure:"remote-control" yaml:"remote-control"`
 	ResponseHeaderTimeout time.Duration `mapstructure:"response-header-timeout" yaml:"response-header-timeout"`
 	SkipETag              bool          `mapstructure:"skip-etag" yaml:"skip-etag"`
 	SkipLastModified      bool          `mapstructure:"skip-last-modified" yaml:"skip-last-modified"`
@@ -104,7 +104,7 @@ func main() {
 	flags.DurationVarP(&app.Interval, "interval", "i", 2*time.Second, "request interval")
 	flags.DurationVarP(&app.Timeout, "timeout", "t", 0, "if non-zero, all timeouts default to this value")
 	flags.StringVar(&app.CookieFile, "cookie", "", "cookie file")
-	flags.StringVar(&app.RemoteControl, "remote-control", "", "http listen address")
+	flags.StringVarP(&app.ListenAddress, "listen", "L", "", "HTTP listen address for remote control")
 	flags.StringVarP(&app.OutputFile, "output", "o", "", "output file")
 	flags.StringVarP(&app.Range, "range", "r", "", "request range (MiB), e.g., 0-1023")
 	flags.StringVarP(&app.Referer, "referer", "R", "", "referer url")
@@ -408,8 +408,8 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}()
 	}
 
-	if app.RemoteControl != "" {
-		l, err := net.Listen("tcp", app.RemoteControl)
+	if app.ListenAddress != "" {
+		l, err := net.Listen("tcp", app.ListenAddress)
 		if err != nil {
 			println(err)
 			return 1
