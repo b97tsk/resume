@@ -1349,12 +1349,12 @@ func (app *App) status(file *DataFile, writer io.Writer) {
 			items = append(items, fmt.Sprintf("%v-", i))
 			break
 		}
-		j := int(r.High / (1024 * 1024))
-		if i+1 == j {
+		j := int(math.Ceil(float64(r.High)/(1024*1024))) - 1
+		if i == j {
 			items = append(items, fmt.Sprint(i))
 			continue
 		}
-		items = append(items, fmt.Sprintf("%v-%v", i, j-1))
+		items = append(items, fmt.Sprintf("%v-%v", i, j))
 	}
 	if len(items) > 0 {
 		fmt.Fprintln(writer, "Incomplete(MiB):", strings.Join(items, ","))
