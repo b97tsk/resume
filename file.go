@@ -252,6 +252,12 @@ func (f *DataFile) SetRange(s RangeSet) {
 	f.incomplete.DeleteRange(low, math.MaxInt64)
 }
 
+func (f *DataFile) HasIncomplete() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.incomplete) > 0
+}
+
 func (f *DataFile) TakeIncomplete(max int64) (offset, size int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

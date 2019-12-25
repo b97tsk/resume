@@ -559,7 +559,10 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			contentSize = file.ContentSize()
 			completeSize = file.CompleteSize()
 			if contentSize == 0 || completeSize != contentSize {
-				return 1
+				if file.HasIncomplete() {
+					return 1
+				}
+				return 0
 			}
 		}
 
