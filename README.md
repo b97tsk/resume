@@ -44,15 +44,16 @@ A configure file is an YAML document which can specify following options:
 - `interval` request interval.
 - `keep-alive` keep-alive duration.
 - `listen` HTTP listen address for remote control.
+- `max-split` maximal split size (MiB).
+- `min-split` minimal split size (MiB).
 - `output` output file.
 - `per-user-agent-limit` limit per user agent connections.
-- `range` request range.
+- `range` request range (MiB).
 - `read-timeout` read timeout.
 - `referer` referer url.
 - `response-header-timeout` response header timeout.
 - `skip-etag` skip unreliable ETag field or not.
 - `skip-last-modified` skip unreliable Last-Modified field or not.
-- `split` split size.
 - `stream-rate` maximum number of stream rate.
 - `sync-period` sync-to-disk period.
 - `timeout` if non-zero, all timeouts default to this value.

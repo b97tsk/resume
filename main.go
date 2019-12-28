@@ -55,6 +55,8 @@ type Configure struct {
 	Interval              time.Duration `mapstructure:"interval" yaml:"interval"`
 	KeepAlive             time.Duration `mapstructure:"keep-alive" yaml:"keep-alive"`
 	ListenAddress         string        `mapstructure:"listen" yaml:"listen"`
+	MaxSplitSize          uint          `mapstructure:"max-split" yaml:"max-split"`
+	MinSplitSize          uint          `mapstructure:"min-split" yaml:"min-split"`
 	OutputFile            string        `mapstructure:"output" yaml:"output"`
 	PerUserAgentLimit     uint          `mapstructure:"per-user-agent-limit" yaml:"per-user-agent-limit"`
 	Range                 string        `mapstructure:"range" yaml:"range"`
@@ -63,7 +65,6 @@ type Configure struct {
 	ResponseHeaderTimeout time.Duration `mapstructure:"response-header-timeout" yaml:"response-header-timeout"`
 	SkipETag              bool          `mapstructure:"skip-etag" yaml:"skip-etag"`
 	SkipLastModified      bool          `mapstructure:"skip-last-modified" yaml:"skip-last-modified"`
-	SplitSize             uint          `mapstructure:"split" yaml:"split"`
 	StreamRate            uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
 	SyncPeriod            time.Duration `mapstructure:"sync-period" yaml:"sync-period"`
 	Timeout               time.Duration `mapstructure:"timeout" yaml:"timeout"`
@@ -111,7 +112,8 @@ func main() {
 	flags.StringVarP(&app.UserAgent, "user-agent", "A", "", "user agent")
 	flags.UintVarP(&app.Connections, "connections", "c", 4, "maximum number of parallel downloads")
 	flags.UintVarP(&app.Errors, "errors", "e", 3, "maximum number of errors")
-	flags.UintVarP(&app.SplitSize, "split", "s", 0, "split size (MiB), 0 means use maximum reasonable")
+	flags.UintVarP(&app.MaxSplitSize, "max-split", "s", 0, "maximal split size (MiB), 0 means use maximum possible")
+	flags.UintVarP(&app.MinSplitSize, "min-split", "p", 0, "minimal split size (MiB), even smaller value may be used")
 
 	viper.BindPFlags(flags)
 
@@ -176,6 +178,14 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			}
 		}
 		viper.Unmarshal(&app.Configure)
+	}
+
+	if app.Connections == 0 {
+		println("Zero connections are not allowed.")
+		if viper.InConfig("connections") && !cmd.Flags().Changed("connections") {
+			println("Please check your configure file.")
+		}
+		return 1
 	}
 
 	if app.Timeout > 0 {
@@ -562,7 +572,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				if file.HasIncomplete() {
 					return 1
 				}
-				return 0
+				return 0 // Successfully downloaded specified range.
 			}
 		}
 
@@ -865,14 +875,18 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	}
 
 	takeIncomplete := func() (offset, size int64) {
-		splitSize := int64(app.SplitSize) * 1024 * 1024
+		splitSize := uint(0)
 		if file.ContentSize() > 0 {
-			size := (file.ContentSize() - file.CompleteSize()) / int64(app.Connections)
-			if size < splitSize || splitSize == 0 {
-				splitSize = size
+			average := float64(file.ContentSize() - file.CompleteSize()) / float64(app.Connections)
+			splitSize = uint(math.Ceil(average / (1024 * 1024)))
+			switch {
+			case splitSize > app.MaxSplitSize && app.MaxSplitSize > 0:
+				splitSize = app.MaxSplitSize
+			case splitSize < app.MinSplitSize && app.MinSplitSize > 0:
+				splitSize = app.MinSplitSize
 			}
 		}
-		return file.TakeIncomplete(splitSize)
+		return file.TakeIncomplete(int64(splitSize) * 1024 * 1024)
 	}
 
 	returnIncomplete := func(offset, size int64) {
