@@ -28,6 +28,8 @@ type DataFile struct {
 	hash            HashInfo
 	completed       RangeSet
 	incomplete      RangeSet
+	requested       RangeSet
+	ignoreSize      int64
 	completeSize    int64
 	recentIncrement int64
 	autoSyncSize    int64
@@ -54,6 +56,9 @@ func (p *PieceInfo) Reset() {
 
 func init() {
 	var f DataFile
+	if unsafe.Offsetof(f.ignoreSize)%8 != 0 {
+		panic("offset of DataFile.ignoreSize must be multiple of 8")
+	}
 	if unsafe.Offsetof(f.completeSize)%8 != 0 {
 		panic("offset of DataFile.completeSize must be multiple of 8")
 	}
@@ -140,15 +145,27 @@ func (f *DataFile) LoadHashFile() (err error) {
 func (f *DataFile) Incomplete() RangeSet {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var incomplete RangeSet
-	incomplete.AddRange(0, math.MaxInt64)
-	for _, r := range f.completed {
-		incomplete.DeleteRange(r.Low, r.High)
-	}
+	return f.getIncompleteLocked()
+}
+
+func (f *DataFile) getIncompleteLocked() RangeSet {
+	high := int64(math.MaxInt64)
 	if f.hash.ContentSize > 0 {
-		incomplete.DeleteRange(f.hash.ContentSize, math.MaxInt64)
+		high = f.hash.ContentSize
 	}
-	return incomplete
+	return RangeSet{{0, high}}.Intersect(f.completed.Inverse())
+}
+
+func (f *DataFile) IncompleteSize() int64 {
+	contentSize := f.ContentSize()
+	if contentSize > 0 {
+		return contentSize - f.CompleteSize() - f.IgnoreSize()
+	}
+	return -1
+}
+
+func (f *DataFile) IgnoreSize() int64 {
+	return atomic.LoadInt64(&f.ignoreSize)
 }
 
 func (f *DataFile) CompleteSize() int64 {
@@ -172,6 +189,16 @@ func (f *DataFile) setContentSizeLocked(size int64) {
 	}
 
 	f.incomplete.DeleteRange(size, math.MaxInt64)
+	f.updateIgnoreSizeLocked()
+}
+
+func (f *DataFile) updateIgnoreSizeLocked() {
+	ignoreSize := int64(0)
+	if f.requested != nil {
+		ignored := f.getIncompleteLocked().Intersect(f.requested.Inverse())
+		ignoreSize = int64(ignored.Sum())
+	}
+	atomic.StoreInt64(&f.ignoreSize, int64(ignoreSize))
 }
 
 func (f *DataFile) Truncate(size int64) error {
@@ -244,12 +271,11 @@ func (f *DataFile) LastModified() string {
 func (f *DataFile) SetRange(s RangeSet) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	low := int64(math.MinInt64)
-	for _, r := range s {
-		f.incomplete.DeleteRange(low, r.Low)
-		low = r.High
+	f.incomplete = f.incomplete.Intersect(s)
+	f.requested = append(RangeSet{}, f.incomplete...)
+	if f.hash.ContentSize > 0 {
+		f.updateIgnoreSizeLocked()
 	}
-	f.incomplete.DeleteRange(low, math.MaxInt64)
 }
 
 func (f *DataFile) HasIncomplete() bool {

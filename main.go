@@ -808,7 +808,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				printf("%v%% [%v] CN:%v DL:%vB/s", progress, s, connections, formatBytes(emaSpeed))
 
 				if contentSize > 0 && emaSpeed > 0 {
-					remaining := float64(contentSize - completeSize)
+					remaining := float64(file.IncompleteSize())
 					seconds := int64(math.Ceil(remaining / float64(emaSpeed)))
 					printf(" ETA:%v", formatDuration(time.Duration(seconds)*time.Second))
 				}
@@ -876,8 +876,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	takeIncomplete := func() (offset, size int64) {
 		splitSize := uint(0)
-		if file.ContentSize() > 0 {
-			average := float64(file.ContentSize() - file.CompleteSize()) / float64(app.Connections)
+		if incompleteSize := file.IncompleteSize(); incompleteSize > 0 {
+			average := float64(incompleteSize) / float64(app.Connections)
 			splitSize = uint(math.Ceil(average / (1024 * 1024)))
 			switch {
 			case splitSize > app.MaxSplitSize && app.MaxSplitSize > 0:
