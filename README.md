@@ -34,9 +34,10 @@ $ resume stream | mpv -
 By default, a file named `resume.yaml` is read when the program starts, if it exists.
 You can specify the path of this configure file by using command line flag `-f`.
 
-A configure file is an YAML document which can specify following options:
+A configure file is an YAML document that can specify following options:
 
-- `alloc` alloc disk space before first write.
+- `alloc` alloc disk space before the first write.
+- `autoremove` auto remove .resume file after successfully verified.
 - `connections` maximum number of parallel downloads.
 - `cookie` cookie file. The file format is [Netscape format](https://unix.stackexchange.com/a/210282).
 - `dial-timeout` dial timeout.
@@ -58,7 +59,7 @@ A configure file is an YAML document which can specify following options:
 - `sync-period` sync-to-disk period.
 - `timeout` if non-zero, all timeouts default to this value.
 - `tls-handshake-timeout` tls handshake timeout.
-- `truncate` truncate output file before first write.
+- `truncate` truncate output file before the first write.
 - `url` the URL to download.
 - `user-agent` user agent, one for each line.
 - `verify` verify output file after download completes.

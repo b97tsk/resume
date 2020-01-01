@@ -76,11 +76,19 @@ func openDataFile(name string) (f *DataFile, err error) {
 	return
 }
 
+func (f *DataFile) HashFile() string {
+	return f.name + ".resume"
+}
+
+func (f *DataFile) TempHashFile() string {
+	return f.name + ".resume~"
+}
+
 func (f *DataFile) LoadHashFile() (err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	file, err := os.Open(f.name + ".resume")
+	file, err := os.Open(f.HashFile())
 	if err != nil {
 		return
 	}
@@ -93,23 +101,23 @@ func (f *DataFile) LoadHashFile() (err error) {
 
 	zr, err := zip.NewReader(file, fi.Size())
 	if err != nil {
-		return fmt.Errorf("open %v: tampered", f.name+".resume")
+		return fmt.Errorf("open %v: tampered", f.HashFile())
 	}
 
 	if len(zr.File) != 1 || zr.File[0].Name != "HASH" {
-		return fmt.Errorf("open %v: tampered", f.name+".resume")
+		return fmt.Errorf("open %v: tampered", f.HashFile())
 	}
 
 	rc, err := zr.File[0].Open()
 	if err != nil {
-		return fmt.Errorf("open %v: tampered", f.name+".resume")
+		return fmt.Errorf("open %v: tampered", f.HashFile())
 	}
 	defer rc.Close()
 
 	var hash HashInfo
 	err = gob.NewDecoder(rc).Decode(&hash)
 	if err != nil {
-		return fmt.Errorf("open %v: tampered", f.name+".resume")
+		return fmt.Errorf("open %v: tampered", f.HashFile())
 	}
 
 	var (
@@ -534,11 +542,11 @@ func (f *DataFile) SyncNow() error {
 func (f *DataFile) syncLocked() error {
 	serr := f.file.Sync()
 
-	file, err := os.OpenFile(f.name+".resume~", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePerm)
+	file, err := os.OpenFile(f.TempHashFile(), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePerm)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.name + ".resume~")
+	defer os.Remove(f.TempHashFile())
 
 	zw := zip.NewWriter(file)
 	w, err := zw.Create("HASH")
@@ -558,7 +566,7 @@ func (f *DataFile) syncLocked() error {
 		return err
 	}
 
-	os.Rename(f.name+".resume~", f.name+".resume")
+	os.Rename(f.TempHashFile(), f.HashFile())
 
 	return serr
 }

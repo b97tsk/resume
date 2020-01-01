@@ -48,6 +48,7 @@ type App struct {
 
 type Configure struct {
 	Alloc                 bool          `mapstructure:"alloc" yaml:"alloc"`
+	Autoremove            bool          `mapstructure:"autoremove" yaml:"autoremove"`
 	Connections           uint          `mapstructure:"connections" yaml:"connections"`
 	CookieFile            string        `mapstructure:"cookie" yaml:"cookie"`
 	DialTimeout           time.Duration `mapstructure:"dial-timeout" yaml:"dial-timeout"`
@@ -91,8 +92,9 @@ func main() {
 
 	flags := rootCmd.PersistentFlags()
 
-	flags.BoolVar(&app.Alloc, "alloc", false, "alloc disk space before first write")
-	flags.BoolVar(&app.Truncate, "truncate", false, "truncate output file before first write")
+	flags.BoolVar(&app.Alloc, "alloc", false, "alloc disk space before the first write")
+	flags.BoolVar(&app.Autoremove, "autoremove", false, "auto remove .resume file after successfully verified")
+	flags.BoolVar(&app.Truncate, "truncate", false, "truncate output file before the first write")
 	flags.BoolVar(&app.Verify, "verify", true, "verify output file after download completes")
 	flags.BoolVarP(&app.SkipETag, "skip-etag", "E", false, "skip unreliable ETag field")
 	flags.BoolVarP(&app.SkipLastModified, "skip-last-modified", "M", false, "skip unreliable Last-Modified field")
@@ -286,13 +288,14 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		return 1
 	}
 	defer func() {
-		completeSize := file.CompleteSize()
 		err := file.Close()
 		if err != nil {
 			println(err)
 		}
+		completeSize := file.CompleteSize()
 		if completeSize == 0 && !fileexists {
 			os.Remove(filename)
+			os.Remove(file.HashFile())
 		}
 	}()
 
@@ -637,6 +640,10 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		if digest != nil && hex.EncodeToString(digest.Sum(nil)) != contentMD5 {
 			println("BAD")
 			return 1
+		}
+
+		if app.Autoremove {
+			os.Remove(file.HashFile())
 		}
 
 		println("OK")
