@@ -33,8 +33,10 @@ import (
 )
 
 const (
-	readBufferSize = 4096
-	reportInterval = 10 * time.Minute
+	readBufferSize          = 4096
+	reportInterval          = 10 * time.Minute
+	measureInterval         = 1500 * time.Millisecond
+	measureIntervalMultiple = float64(measureInterval) / float64(time.Second)
 )
 
 type App struct {
@@ -105,7 +107,7 @@ func main() {
 	flags.DurationVar(&app.SyncPeriod, "sync-period", 10*time.Minute, "sync-to-disk period")
 	flags.DurationVar(&app.TLSHandshakeTimeout, "tls-handshake-timeout", 10*time.Second, "tls handshake timeout")
 	flags.DurationVarP(&app.Interval, "interval", "i", 2*time.Second, "request interval")
-	flags.DurationVarP(&app.Timeout, "timeout", "t", 0, "if non-zero, all timeouts default to this value")
+	flags.DurationVarP(&app.Timeout, "timeout", "t", 0, "if positive, all timeouts default to this value")
 	flags.StringVar(&app.CookieFile, "cookie", "", "cookie file")
 	flags.StringVarP(&app.ListenAddress, "listen", "L", "", "HTTP listen address for remote control")
 	flags.StringVarP(&app.OutputFile, "output", "o", "", "output file")
@@ -655,7 +657,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client) {
 	type (
-		PrintMessage struct{}
+		MeasureMessage struct{}
 
 		ResponseMessage struct {
 			URL string
@@ -677,6 +679,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		nextReportTime time.Time
 		totalReceived  int64
 		recentReceived int64
+		emaValue       int64
 		emaSpeed       int64
 		connections    int
 	)
@@ -695,11 +698,11 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	dlCtx := context.Background() // dlCtx never cancels.
 
-	bytesPerSecond := observable.NewSubject()
+	byteIntervals := observable.NewSubject()
 	_, speedUpdateCancel := observable.Create(
 		func(ctx context.Context, sink observable.Observer) (context.Context, context.CancelFunc) {
 			const N = 5
-			skipZeros := bytesPerSecond.Pipe(
+			skipZeros := byteIntervals.Pipe(
 				operators.SkipWhile(
 					func(val interface{}, idx int) bool {
 						return val.(int64) == 0
@@ -714,15 +717,19 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				),
 				operators.Map(
 					func(val interface{}, idx int) interface{} {
-						// For the first N seconds, we average the speed.
-						emaSpeed = val.(int64) / int64(idx+1)
+						// For the first `N * measureInterval`, we average the speed.
+						emaValue = val.(int64) / int64(idx+1)
+						emaSpeed = int64(float64(emaValue) / measureIntervalMultiple)
 						return val
 					},
 				),
 				operators.Take(N),
 			).Subscribe(ctx, observable.NopObserver)
 			return skipZeros.Pipe(
-				observable.BufferCountConfig{N, 1}.MakeFunc(),
+				observable.BufferCountConfig{
+					BufferSize:       N,
+					StartBufferEvery: 1,
+				}.MakeFunc(),
 				operators.Skip(1),
 				operators.Map(
 					func(val interface{}, idx int) interface{} {
@@ -736,10 +743,11 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				),
 				operators.Map(
 					func(val interface{}, idx int) interface{} {
-						// After N seconds, we calculate the speed by using
+						// After `N * measureInterval`, we calculate the speed by using
 						// exponential moving average (EMA).
 						const ia = 5 // Inverse of alpha.
-						emaSpeed = (val.(int64) + (ia-1)*emaSpeed) / ia
+						emaValue = (val.(int64) + (ia-1)*emaValue) / ia
+						emaSpeed = int64(float64(emaValue) / measureIntervalMultiple)
 						return val
 					},
 				),
@@ -750,7 +758,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				),
 				operators.Finally(
 					func() {
-						emaSpeed = 0
+						emaValue, emaSpeed = 0, 0
 					},
 				),
 			).Subscribe(ctx, sink)
@@ -776,8 +784,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					totalReceived += int64(v.Just)
 					recentReceived += int64(v.Just)
 
-				case PrintMessage:
-					bytesPerSecond.Next(recentReceived)
+				case MeasureMessage:
+					byteIntervals.Next(recentReceived)
 					recentReceived = 0
 					shouldPrint = totalReceived > 0
 
@@ -803,20 +811,16 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				contentSize := file.ContentSize()
 				completeSize := file.CompleteSize()
 
-				const length = 20
 				progress := int(float64(completeSize) / float64(contentSize) * 100)
-				s := strings.Repeat("=", length*progress/100)
-				if len(s) < length {
-					s += ">"
-				}
-				if len(s) < length {
-					s += strings.Repeat("-", length-len(s))
-				}
-				printf("%v%% [%v] CN:%v DL:%vB/s", progress, s, connections, formatBytes(emaSpeed))
+				printf("%v%%", progress)
+				printf(" %vB", formatBytes(completeSize))
+				printf("/%vB", formatBytes(contentSize))
+				printf(" CN:%v", connections)
 
-				if contentSize > 0 && emaSpeed > 0 {
+				if emaSpeed > 0 {
 					remaining := float64(file.IncompleteSize())
 					seconds := int64(math.Ceil(remaining / float64(emaSpeed)))
+					printf(" DL:%vB/s", formatBytes(emaSpeed))
 					printf(" ETA:%v", formatDuration(time.Duration(seconds)*time.Second))
 				}
 
@@ -836,8 +840,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	}()
 
 	{
-		_, cancel := observable.Interval(time.Second).
-			Pipe(operators.MapTo(PrintMessage{})).
+		_, cancel := observable.Interval(measureInterval).
+			Pipe(operators.MapTo(MeasureMessage{})).
 			Subscribe(dlCtx, queuedMessages.Observer)
 		defer cancel()
 	}
@@ -1372,7 +1376,7 @@ func (app *App) status(file *DataFile, writer io.Writer) {
 		}
 		j := int(math.Ceil(float64(r.High)/(1024*1024))) - 1
 		if i == j {
-			items = append(items, fmt.Sprint(i))
+			items = append(items, strconv.Itoa(i))
 			continue
 		}
 		items = append(items, fmt.Sprintf("%v-%v", i, j))
@@ -1409,13 +1413,13 @@ func formatBytes(n int64) string {
 	}
 	kilobytes := int64(math.Ceil(float64(n) / 1024))
 	if kilobytes < 1000 {
-		return strconv.FormatInt(kilobytes, 10) + "K"
+		return strconv.FormatInt(kilobytes, 10) + "Ki"
 	}
 	if kilobytes < 102400 {
-		return fmt.Sprintf("%.1fM", float64(n)/(1024*1024))
+		return strconv.FormatFloat(float64(n)/(1024*1024), 'f', 1, 64) + "Mi"
 	}
 	megabytes := int64(math.Ceil(float64(n) / (1024 * 1024)))
-	return strconv.FormatInt(megabytes, 10) + "M"
+	return strconv.FormatInt(megabytes, 10) + "Mi"
 }
 
 func formatDuration(d time.Duration) (s string) {
