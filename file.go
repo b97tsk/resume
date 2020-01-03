@@ -120,20 +120,12 @@ func (f *DataFile) LoadHashFile() (err error) {
 		return fmt.Errorf("open %v: tampered", f.HashFile())
 	}
 
-	var (
-		completed    RangeSet
-		incomplete   RangeSet
-		completeSize int64
-	)
-	incomplete.AddRange(0, math.MaxInt64)
-
+	var completed RangeSet
 	for i := range hash.Pieces {
 		p := &hash.Pieces[i]
 		if p.Size > 0 && p.Size <= pieceSize && p.HashCode > 0 {
 			offset := pieceSize * int64(i)
 			completed.AddRange(offset, offset+int64(p.Size))
-			incomplete.DeleteRange(offset, offset+int64(p.Size))
-			completeSize += int64(p.Size)
 			continue
 		}
 		p.Reset()
@@ -141,8 +133,8 @@ func (f *DataFile) LoadHashFile() (err error) {
 
 	f.hash = hash
 	f.completed = completed
-	f.incomplete = incomplete
-	atomic.StoreInt64(&f.completeSize, completeSize)
+	f.incomplete = RangeSet{{0, math.MaxInt64}}.Intersect(completed.Complement())
+	atomic.StoreInt64(&f.completeSize, int64(completed.Sum()))
 
 	if hash.ContentSize > 0 {
 		f.setContentSizeLocked(hash.ContentSize)
@@ -161,7 +153,7 @@ func (f *DataFile) getIncompleteLocked() RangeSet {
 	if f.hash.ContentSize > 0 {
 		high = f.hash.ContentSize
 	}
-	return RangeSet{{0, high}}.Intersect(f.completed.Inverse())
+	return RangeSet{{0, high}}.Intersect(f.completed.Complement())
 }
 
 func (f *DataFile) IncompleteSize() int64 {
@@ -203,7 +195,7 @@ func (f *DataFile) setContentSizeLocked(size int64) {
 func (f *DataFile) updateIgnoreSizeLocked() {
 	ignoreSize := int64(0)
 	if f.requested != nil {
-		ignored := f.getIncompleteLocked().Intersect(f.requested.Inverse())
+		ignored := f.getIncompleteLocked().Intersect(f.requested.Complement())
 		ignoreSize = int64(ignored.Sum())
 	}
 	atomic.StoreInt64(&f.ignoreSize, int64(ignoreSize))

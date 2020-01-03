@@ -100,27 +100,63 @@ func TestRangeSet(t *testing.T) {
 		))
 	})
 	t.Run("TestContains", func(t *testing.T) {
-		s := RangeSet{{1, 2}, {3, 4}}
+		s := RangeSet{{1, 3}, {5, 7}}
 		assert(t, "Case 1", s.Contains(0) == false)
 		assert(t, "Case 2", s.Contains(1) == true)
-		assert(t, "Case 3", s.Contains(2) == false)
-		assert(t, "Case 4", s.Contains(3) == true)
+		assert(t, "Case 3", s.Contains(2) == true)
+		assert(t, "Case 4", s.Contains(3) == false)
 		assert(t, "Case 5", s.Contains(4) == false)
-		assert(t, "Case 6", s.ContainsRange(0, 2) == false)
-		assert(t, "Case 7", s.ContainsRange(1, 3) == false)
-		assert(t, "Case 8", s.ContainsRange(2, 4) == false)
-		assert(t, "Case 9", s.ContainsRange(3, 5) == false)
-		assert(t, "Case 10", s.ContainsRange(4, 6) == false)
-		assert(t, "Case 11", s.ContainsAny(0, 1) == false)
-		assert(t, "Case 12", s.ContainsAny(1, 2) == true)
-		assert(t, "Case 13", s.ContainsAny(2, 3) == false)
-		assert(t, "Case 14", s.ContainsAny(3, 4) == true)
-		assert(t, "Case 15", s.ContainsAny(4, 5) == false)
-		assert(t, "Case 16", s.ContainsAny(0, 2) == true)
-		assert(t, "Case 17", s.ContainsAny(1, 3) == true)
-		assert(t, "Case 18", s.ContainsAny(2, 4) == true)
-		assert(t, "Case 19", s.ContainsAny(3, 5) == true)
-		assert(t, "Case 20", s.ContainsAny(4, 6) == false)
+		assert(t, "Case 6", s.Contains(5) == true)
+		assert(t, "Case 7", s.Contains(6) == true)
+		assert(t, "Case 8", s.Contains(7) == false)
+		assert(t, "Case 9", s.ContainsRange(1, 3) == true)
+		assert(t, "Case 10", s.ContainsRange(3, 5) == false)
+		assert(t, "Case 11", s.ContainsRange(5, 7) == true)
+		assert(t, "Case 12", s.ContainsRange(1, 7) == false)
+		assert(t, "Case 13", s.ContainsRange(1, 1) == false)
+		assert(t, "Case 14", s.ContainsRange(2, 2) == false)
+		assert(t, "Case 15", s.ContainsAny(1, 3) == true)
+		assert(t, "Case 16", s.ContainsAny(3, 5) == false)
+		assert(t, "Case 17", s.ContainsAny(5, 7) == true)
+		assert(t, "Case 18", s.ContainsAny(1, 7) == true)
+		assert(t, "Case 19", s.ContainsAny(1, 1) == false)
+		assert(t, "Case 20", s.ContainsAny(2, 2) == false)
+	})
+	t.Run("TestEquals", func(t *testing.T) {
+		assert(t, "Case 1", equals(
+			RangeSet{{1, 3}, {5, 7}},
+			RangeSet{{1, 3}, {5, 7}},
+		))
+		assert(t, "Case 2", !equals(
+			RangeSet{{1, 3}, {5, 7}},
+			RangeSet{{1, 3}, {5, 9}},
+		))
+		assert(t, "Case 3", !equals(
+			RangeSet{{1, 3}, {5, 7}},
+			RangeSet{{1, 3}},
+		))
+	})
+	t.Run("TestUnion", func(t *testing.T) {
+		assert(t, "Case 1", equals(
+			RangeSet{{1, 3}, {5, 7}}.Union(RangeSet{}),
+			RangeSet{{1, 3}, {5, 7}},
+		))
+		assert(t, "Case 2", equals(
+			RangeSet{}.Union(RangeSet{{1, 3}, {5, 7}}),
+			RangeSet{{1, 3}, {5, 7}},
+		))
+		assert(t, "Case 3", equals(
+			RangeSet{{1, 3}}.Union(RangeSet{{5, 7}}),
+			RangeSet{{1, 3}, {5, 7}},
+		))
+		assert(t, "Case 4", equals(
+			RangeSet{{1, 5}}.Union(RangeSet{{3, 7}}),
+			RangeSet{{1, 7}},
+		))
+		assert(t, "Case 5", equals(
+			RangeSet{{2, 6}, {7, 12}}.Union(RangeSet{{1, 4}, {5, 9}, {10, 16}}),
+			RangeSet{{1, 16}},
+		))
 	})
 	t.Run("TestIntersect", func(t *testing.T) {
 		assert(t, "Case 1", equals(
@@ -132,25 +168,21 @@ func TestRangeSet(t *testing.T) {
 			RangeSet{{3, 5}},
 		))
 		assert(t, "Case 3", equals(
-			RangeSet{{3, 7}}.Intersect(RangeSet{{1, 5}}),
-			RangeSet{{3, 5}},
-		))
-		assert(t, "Case 4", equals(
 			RangeSet{{2, 6}, {7, 12}}.Intersect(RangeSet{{1, 4}, {5, 9}, {10, 16}}),
 			RangeSet{{2, 4}, {5, 6}, {7, 9}, {10, 12}},
 		))
 	})
-	t.Run("TestInverse", func(t *testing.T) {
+	t.Run("TestComplement", func(t *testing.T) {
 		assert(t, "Case 1", equals(
-			RangeSet{}.Inverse(),
+			RangeSet{}.Complement(),
 			RangeSet{{math.MinInt64, math.MaxInt64}},
 		))
 		assert(t, "Case 2", equals(
-			RangeSet{{math.MinInt64, math.MaxInt64}}.Inverse(),
+			RangeSet{{math.MinInt64, math.MaxInt64}}.Complement(),
 			RangeSet{},
 		))
 		assert(t, "Case 3", equals(
-			RangeSet{{1, 4}, {6, 9}}.Inverse(),
+			RangeSet{{1, 4}, {6, 9}}.Complement(),
 			RangeSet{{math.MinInt64, 1}, {4, 6}, {9, math.MaxInt64}},
 		))
 	})

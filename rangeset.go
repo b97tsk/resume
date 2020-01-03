@@ -94,13 +94,14 @@ func (s RangeSet) Contains(single int64) bool {
 
 func (s RangeSet) ContainsRange(low, high int64) bool {
 	i := sort.Search(len(s), func(i int) bool { return s[i].High > low })
-	return i < len(s) && s[i].Low <= low && high <= s[i].High
+	return i < len(s) && s[i].Low <= low && high <= s[i].High && low < high
 }
 
 func (s RangeSet) ContainsAny(low, high int64) bool {
 	i := sort.Search(len(s), func(i int) bool { return s[i].High > low })
 	t := s[i:]
-	return sort.Search(len(t), func(i int) bool { return t[i].Low >= high }) > 0
+	j := i + sort.Search(len(t), func(i int) bool { return t[i].Low >= high })
+	return i < j && low < high
 }
 
 func (s RangeSet) Equals(other RangeSet) bool {
@@ -113,6 +114,41 @@ func (s RangeSet) Equals(other RangeSet) bool {
 		}
 	}
 	return true
+}
+
+func (s RangeSet) Union(other RangeSet) RangeSet {
+	if len(s) < len(other) {
+		s, other = other, s
+	}
+	if len(other) == 0 {
+		// Always return a distinct RangeSet.
+		result := make(RangeSet, len(s))
+		copy(result, s)
+		return result
+	}
+	var result RangeSet
+	r := other[0]
+	other = other[1:]
+	for {
+		i := sort.Search(len(s), func(i int) bool { return s[i].Low > r.Low })
+		j := sort.Search(len(s), func(i int) bool { return s[i].High > r.High })
+		if i > 0 && r.Low <= s[i-1].High {
+			r.Low = s[i-1].Low
+			i--
+		}
+		if j < len(s) && r.High >= s[j].Low {
+			r.High = s[j].High
+			j++
+		}
+		result = append(result, s[:i]...)
+		if len(other) == 0 {
+			result = append(result, r)
+			result = append(result, s[j:]...)
+			break
+		}
+		s, other = other, s[j:]
+	}
+	return result
 }
 
 func (s RangeSet) Intersect(other RangeSet) RangeSet {
@@ -144,7 +180,7 @@ func (s RangeSet) Intersect(other RangeSet) RangeSet {
 	return result
 }
 
-func (s RangeSet) Inverse() RangeSet {
+func (s RangeSet) Complement() RangeSet {
 	if len(s) == 0 {
 		return RangeSet{{math.MinInt64, math.MaxInt64}}
 	}
