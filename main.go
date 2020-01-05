@@ -265,12 +265,9 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 	filename := os.ExpandEnv(app.OutputFile)
 	if filename == "" {
-		i := strings.LastIndexAny(app.URL, "/\\?#")
-		if i != -1 && (app.URL[i] == '/' || app.URL[i] == '\\') {
-			filename = app.URL[i+1:]
-		}
+		filename = guestFilename(app.URL)
 		if filename == "" {
-			filename = "resume.out"
+			filename = sanitizeFilename(app.URL)
 		}
 	}
 
@@ -1446,6 +1443,19 @@ func isDir(name string) bool {
 		return false
 	}
 	return stat.IsDir()
+}
+
+func guestFilename(rawurl string) (name string) {
+	i := strings.LastIndexAny(rawurl, "/\\?#")
+	if i != -1 && (rawurl[i] == '/' || rawurl[i] == '\\') {
+		name = sanitizeFilename(rawurl[i+1:])
+	}
+	return
+}
+
+func sanitizeFilename(name string) string {
+	re := regexp.MustCompile(`_?[<>:"/\\|?*]+_?`)
+	return re.ReplaceAllString(name, "_")
 }
 
 func loadCookies(name string) (jar http.CookieJar, err error) {
