@@ -14,10 +14,7 @@ import (
 	"unsafe"
 )
 
-const (
-	pieceSize = 1024 * 1024
-	filePerm  = 0644
-)
+const pieceSize = 1024 * 1024
 
 type DataFile struct {
 	mu              sync.Mutex
@@ -66,7 +63,7 @@ func init() {
 }
 
 func openDataFile(name string) (f *DataFile, err error) {
-	file, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE, filePerm)
+	file, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE, 0666)
 	if err == nil {
 		f = &DataFile{name: name, file: file}
 		f.incomplete.AddRange(0, math.MaxInt64)
@@ -532,7 +529,7 @@ func (f *DataFile) SyncNow() error {
 func (f *DataFile) syncLocked() error {
 	serr := f.file.Sync()
 
-	file, err := os.OpenFile(f.TempHashFile(), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePerm)
+	file, err := os.Create(f.TempHashFile())
 	if err != nil {
 		return err
 	}
