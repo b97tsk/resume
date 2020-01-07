@@ -5,8 +5,6 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
-	"errors"
-	"fmt"
 	"hash"
 	"io"
 	"log"
@@ -165,7 +163,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	if app.workdir != "." {
 		err := os.Chdir(app.workdir)
 		if err != nil {
-			println(err)
+			eprintln(err)
 			return 1
 		}
 	}
@@ -177,7 +175,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		viper.SetConfigType("yaml")
 		if err := viper.ReadInConfig(); err != nil && !os.IsNotExist(err) {
 			if !isDir(app.conffile) || cmd.Flags().Changed("conf") {
-				println(err)
+				eprintln(err)
 				return 1
 			}
 		}
@@ -185,9 +183,9 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	}
 
 	if app.Connections == 0 {
-		println("Zero connections are not allowed.")
+		eprintln("Zero connections are not allowed.")
 		if viper.InConfig("connections") && !cmd.Flags().Changed("connections") {
-			println("Please check your configure file.")
+			eprintln("Please check your configure file.")
 		}
 		return 1
 	}
@@ -232,7 +230,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	if !app.showStatus {
 		if app.URL == "" {
 			if stat, _ := os.Stdin.Stat(); (stat.Mode() & os.ModeCharDevice) != 0 {
-				print("Enter url: ")
+				eprint("Enter url: ")
 			}
 			stdin := bufio.NewScanner(os.Stdin)
 			if !stdin.Scan() {
@@ -244,17 +242,17 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			}
 		}
 		if u, err := url.Parse(app.URL); err != nil {
-			println(err)
+			eprintln(err)
 			return 1
 		} else if u.Scheme != "http" && u.Scheme != "https" {
-			printf("unsupported protocol scheme \"%v\"\n", u.Scheme)
+			eprintf("unsupported protocol scheme \"%v\"\n", u.Scheme)
 			return 1
 		}
 		if app.CookieFile != "" {
 			cookiefile := os.ExpandEnv(app.CookieFile)
 			jar, err := loadCookies(cookiefile)
 			if err != nil && !os.IsNotExist(err) {
-				println(err)
+				eprintln(err)
 				return 1
 			}
 			if err == nil {
@@ -277,19 +275,19 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	case err == nil:
 		fileexists = true
 	case !os.IsNotExist(err) || app.showStatus:
-		println(err)
+		eprintln(err)
 		return 1
 	}
 
 	file, err := openDataFile(filename)
 	if err != nil {
-		println(err)
+		eprintln(err)
 		return 1
 	}
 	defer func() {
 		err := file.Close()
 		if err != nil {
-			println(err)
+			eprintln(err)
 		}
 		completeSize := file.CompleteSize()
 		if completeSize == 0 && !fileexists {
@@ -305,11 +303,11 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				if !filepath.IsAbs(filename) {
 					filename = filepath.Join(app.workdir, filename)
 				}
-				printf("\"%v\" already exists.\n", filename)
-				println("If you do want to redownload it, remove it first.")
+				eprintf("\"%v\" already exists.\n", filename)
+				eprintln("If you do want to redownload it, remove it first.")
 				return 1
 			}
-			println(err)
+			eprintln(err)
 			return 1
 		}
 	}
@@ -324,12 +322,12 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		for _, r := range strings.Split(app.Range, ",") {
 			r := strings.Split(r, "-")
 			if len(r) > 2 {
-				println("request range is invalid")
+				eprintln("request range is invalid")
 				return 1
 			}
 			i, err := strconv.ParseInt(r[0], 10, 32)
 			if err != nil {
-				println("request range is invalid")
+				eprintln("request range is invalid")
 				return 1
 			}
 			if len(r) == 1 {
@@ -342,7 +340,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			}
 			j, err := strconv.ParseInt(r[1], 10, 32)
 			if err != nil || j < i {
-				println("request range is invalid")
+				eprintln("request range is invalid")
 				return 1
 			}
 			sections.AddRange(i*1024*1024, (j+1)*1024*1024)
@@ -423,7 +421,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	if app.ListenAddress != "" {
 		l, err := net.Listen("tcp", app.ListenAddress)
 		if err != nil {
-			println(err)
+			eprintln(err)
 			return 1
 		}
 		exitHandler := http.HandlerFunc(
@@ -499,7 +497,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			if streamCounter.Value().(int) > 0 {
 				// Wait until `streamCounter` remains zero for N seconds.
 				const N = 5
-				println("Waiting for remote streaming to complete...")
+				eprintln("Waiting for remote streaming to complete...")
 				streamCounter.Pipe(
 					operators.Filter(
 						func(val interface{}, idx int) bool {
@@ -534,7 +532,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			timeout <- true
 			time.AfterFunc(time.Second, func() {
 				if <-timeout {
-					println("shuting down remote control server...")
+					eprintln("shuting down remote control server...")
 					close(timeout)
 				}
 			})
@@ -579,7 +577,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}
 
 		if app.streamToStdout {
-			print("streaming...")
+			eprint("streaming...")
 			app.streamToStdout = false
 			close(streamRest)
 			select {
@@ -587,7 +585,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				return 1
 			case <-streamDone:
 			}
-			print("\033[1K\r")
+			eprint("\033[1K\r")
 		}
 
 		if !app.Verify {
@@ -602,7 +600,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 		var digest hash.Hash
 		if contentMD5 != "" {
-			println("Content-MD5:", contentMD5)
+			eprintln("Content-MD5:", contentMD5)
 			digest = md5.New()
 		}
 
@@ -616,28 +614,28 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			s += int64(n)
 			if s*100 >= (p+1)*contentSize {
 				p = s * 100 / contentSize
-				print("\033[1K\r")
-				printf("verifying...%v%%", p)
+				eprint("\033[1K\r")
+				eprintf("verifying...%v%%", p)
 			}
 			return
 		}
 
-		printf("verifying...%v%%", p)
+		eprintf("verifying...%v%%", p)
 		err := file.Verify(mainCtx, WriterFunc(w))
-		print("\033[1K\r")
-		print("verifying...")
+		eprint("\033[1K\r")
+		eprint("verifying...")
 		if err != nil {
-			println(err)
+			eprintln(err)
 			return 1
 		}
 
 		if file.CompleteSize() != contentSize {
-			println("BAD")
+			eprintln("BAD")
 			continue
 		}
 
 		if digest != nil && hex.EncodeToString(digest.Sum(nil)) != contentMD5 {
-			println("BAD")
+			eprintln("BAD")
 			return 1
 		}
 
@@ -645,7 +643,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			os.Remove(file.HashFile())
 		}
 
-		println("OK")
+		eprintln("OK")
 		return 0
 	}
 
@@ -683,7 +681,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	reportStatus := func() {
 		timeUsed := time.Since(firstRecvTime)
-		print("\033[1K\r")
+		eprint("\033[1K\r")
 		log.Printf(
 			"recv %vB in %v, %vB/s, %v%% completed\n",
 			formatBytes(totalReceived),
@@ -795,7 +793,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					}
 
 				case string:
-					print("\033[1K\r")
+					eprint("\033[1K\r")
 					log.Println(v)
 					shouldPrint = totalReceived > 0
 				}
@@ -803,27 +801,27 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				shouldPrint = totalReceived > 0
 			}
 			if shouldPrint {
-				print("\033[1K\r")
+				eprint("\033[1K\r")
 
 				contentSize := file.ContentSize()
 				completeSize := file.CompleteSize()
 
 				progress := int(float64(completeSize) / float64(contentSize) * 100)
-				printf("%v%%", progress)
-				printf(" %vB", formatBytes(completeSize))
-				printf("/%vB", formatBytes(contentSize))
-				printf(" CN:%v", connections)
+				eprintf("%v%%", progress)
+				eprintf(" %vB", formatBytes(completeSize))
+				eprintf("/%vB", formatBytes(contentSize))
+				eprintf(" CN:%v", connections)
 
 				if emaSpeed > 0 {
 					remaining := float64(file.IncompleteSize())
 					seconds := int64(math.Ceil(remaining / float64(emaSpeed)))
-					printf(" DL:%vB/s", formatBytes(emaSpeed))
-					printf(" ETA:%v", formatDuration(time.Duration(seconds)*time.Second))
+					eprintf(" DL:%vB/s", formatBytes(emaSpeed))
+					eprintf(" ETA:%v", formatDuration(time.Duration(seconds)*time.Second))
 				}
 
 				if !t.HasValue {
 					// about to exit, keep this status line
-					println()
+					eprintln()
 				}
 			}
 			if totalReceived > 0 && (!t.HasValue || time.Now().After(nextReportTime)) {
@@ -1030,9 +1028,9 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 				shouldLimitSize := false
 				if file.ContentSize() > 0 {
-					req.Header.Set("Range", fmt.Sprintf("bytes=%v-%v", offset, offset+size-1))
+					req.Header.Set("Range", sprintf("bytes=%v-%v", offset, offset+size-1))
 				} else {
-					req.Header.Set("Range", fmt.Sprintf("bytes=%v-", offset))
+					req.Header.Set("Range", sprintf("bytes=%v-", offset))
 					shouldLimitSize = true
 				}
 
@@ -1056,19 +1054,19 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}()
 
 				if resp.StatusCode == 200 {
-					err = errors.New("this server does not support partial requests")
+					err = enew("this server does not support partial requests")
 					fatal = true
 					return
 				}
 
 				if resp.StatusCode != 206 {
-					err = errors.New(resp.Status)
+					err = enew(resp.Status)
 					return
 				}
 
 				contentRange := resp.Header.Get("Content-Range")
 				if contentRange == "" {
-					err = errors.New("Content-Range not found")
+					err = enew("Content-Range not found")
 					fatal = true
 					return
 				}
@@ -1076,7 +1074,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				re := regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+)$`)
 				slice := re.FindStringSubmatch(contentRange)
 				if slice == nil {
-					err = fmt.Errorf("Content-Range unrecognized: %v", contentRange)
+					err = errorf("Content-Range unrecognized: %v", contentRange)
 					fatal = true
 					return
 				}
@@ -1092,7 +1090,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					shouldAlloc = app.Alloc
 					shouldSync = true
 				default:
-					err = errors.New("Content-Length mismatched")
+					err = enew("Content-Length mismatched")
 					fatal = true
 					return
 				}
@@ -1113,7 +1111,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						file.SetContentMD5(contentMD5)
 						shouldSync = true
 					default:
-						err = errors.New("Content-MD5 mismatched")
+						err = enew("Content-MD5 mismatched")
 						fatal = true
 						return
 					}
@@ -1128,7 +1126,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						shouldSync = true
 					default:
 						if !app.SkipETag {
-							err = errors.New("ETag mismatched")
+							err = enew("ETag mismatched")
 							fatal = true
 							return
 						}
@@ -1144,7 +1142,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						shouldSync = true
 					default:
 						if !app.SkipLastModified {
-							err = errors.New("Last-Modified mismatched")
+							err = enew("Last-Modified mismatched")
 							fatal = true
 							return
 						}
@@ -1257,7 +1255,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				errorCount = 0
 				if len(allUserAgents) > 1 {
 					queuedMessages.Next(
-						fmt.Sprintf(
+						sprintf(
 							"UserAgent #%v: +1 connections",
 							userAgentIndex+1,
 						),
@@ -1308,7 +1306,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					}
 					message := unwrappedErr.Error()
 					if len(allUserAgents) > 1 {
-						message = fmt.Sprintf(
+						message = sprintf(
 							"UserAgent #%v: %v",
 							userAgentIndex+1,
 							message,
@@ -1327,20 +1325,20 @@ func (app *App) alloc(mainCtx context.Context, file *DataFile) error {
 	done := make(chan struct{})
 	defer func() {
 		<-done
-		print("\033[1K\r")
+		eprint("\033[1K\r")
 	}()
 	progress := make(chan int64, 1)
 	defer close(progress)
 	contentSize := file.ContentSize()
 	go func() {
 		p := int64(0)
-		print("\033[1K\r")
-		printf("allocating...%v%%", p)
+		eprint("\033[1K\r")
+		eprintf("allocating...%v%%", p)
 		for s := range progress {
 			if s*100 >= (p+1)*contentSize {
 				p = s * 100 / contentSize
-				print("\033[1K\r")
-				printf("allocating...%v%%", p)
+				eprint("\033[1K\r")
+				eprintf("allocating...%v%%", p)
 			}
 		}
 		close(done)
@@ -1358,50 +1356,38 @@ func (app *App) status(file *DataFile, writer io.Writer) {
 	)
 	if contentSize > 0 {
 		progress := int(float64(completeSize) / float64(contentSize) * 100)
-		fmt.Fprintln(writer, "Size:", contentSize)
-		fmt.Fprintln(writer, "Completed:", completeSize, fmt.Sprintf("(%v%%)", progress))
+		fprintln(writer, "Size:", contentSize)
+		fprintln(writer, "Completed:", completeSize, sprintf("(%v%%)", progress))
 	} else {
-		fmt.Fprintln(writer, "Size: unknown")
-		fmt.Fprintln(writer, "Completed:", completeSize)
+		fprintln(writer, "Size: unknown")
+		fprintln(writer, "Completed:", completeSize)
 	}
 	var items []string
 	for _, r := range file.Incomplete() {
 		i := int(r.Low / (1024 * 1024))
 		if r.High == math.MaxInt64 {
-			items = append(items, fmt.Sprintf("%v-", i))
+			items = append(items, sprintf("%v-", i))
 			break
 		}
 		j := int(math.Ceil(float64(r.High)/(1024*1024))) - 1
 		if i == j {
-			items = append(items, strconv.Itoa(i))
+			items = append(items, itoa(i))
 			continue
 		}
-		items = append(items, fmt.Sprintf("%v-%v", i, j))
+		items = append(items, sprintf("%v-%v", i, j))
 	}
 	if len(items) > 0 {
-		fmt.Fprintln(writer, "Incomplete(MiB):", strings.Join(items, ","))
+		fprintln(writer, "Incomplete(MiB):", strings.Join(items, ","))
 	}
 	if contentDisposition != "" {
-		fmt.Fprintln(writer, "Content-Disposition:", contentDisposition)
+		fprintln(writer, "Content-Disposition:", contentDisposition)
 	}
 	if contentMD5 != "" {
-		fmt.Fprintln(writer, "Content-MD5:", contentMD5)
+		fprintln(writer, "Content-MD5:", contentMD5)
 	}
 	if entityTag != "" {
-		fmt.Fprintln(writer, "ETag:", entityTag)
+		fprintln(writer, "ETag:", entityTag)
 	}
-}
-
-func print(a ...interface{}) {
-	fmt.Fprint(os.Stderr, a...)
-}
-
-func printf(format string, a ...interface{}) {
-	fmt.Fprintf(os.Stderr, format, a...)
-}
-
-func println(a ...interface{}) {
-	fmt.Fprintln(os.Stderr, a...)
 }
 
 func formatBytes(n int64) string {

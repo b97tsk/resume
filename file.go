@@ -4,8 +4,6 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/gob"
-	"errors"
-	"fmt"
 	"hash/crc32"
 	"io"
 	"math"
@@ -101,23 +99,23 @@ func (f *DataFile) LoadHashFile() (err error) {
 
 	zr, err := zip.NewReader(file, fi.Size())
 	if err != nil {
-		return fmt.Errorf("open %v: tampered", f.HashFile())
+		return errorf("open %v: tampered", f.HashFile())
 	}
 
 	if len(zr.File) != 1 || zr.File[0].Name != "HASH" {
-		return fmt.Errorf("open %v: tampered", f.HashFile())
+		return errorf("open %v: tampered", f.HashFile())
 	}
 
 	rc, err := zr.File[0].Open()
 	if err != nil {
-		return fmt.Errorf("open %v: tampered", f.HashFile())
+		return errorf("open %v: tampered", f.HashFile())
 	}
 	defer rc.Close()
 
 	var hash HashInfo
 	err = gob.NewDecoder(rc).Decode(&hash)
 	if err != nil {
-		return fmt.Errorf("open %v: tampered", f.HashFile())
+		return errorf("open %v: tampered", f.HashFile())
 	}
 
 	var completed RangeSet
@@ -587,4 +585,4 @@ func (f *DataFile) Close() error {
 	return cerr
 }
 
-var ErrIncomplete = errors.New("incomplete")
+var ErrIncomplete = enew("incomplete")
