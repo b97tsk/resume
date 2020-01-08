@@ -34,6 +34,8 @@ type HashInfo struct {
 	Pieces             []PieceInfo
 	ContentSize        int64
 	ContentMD5         string
+	ContentSHA1        string
+	ContentSHA256      string
 	ContentDisposition string
 	EntityTag          string
 	LastModified       string
@@ -225,6 +227,30 @@ func (f *DataFile) ContentMD5() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.hash.ContentMD5
+}
+
+func (f *DataFile) SetContentSHA1(contentSHA1 string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hash.ContentSHA1 = contentSHA1
+}
+
+func (f *DataFile) ContentSHA1() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hash.ContentSHA1
+}
+
+func (f *DataFile) SetContentSHA256(contentSHA256 string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hash.ContentSHA256 = contentSHA256
+}
+
+func (f *DataFile) ContentSHA256() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hash.ContentSHA256
 }
 
 func (f *DataFile) SetContentDisposition(contentDisposition string) {

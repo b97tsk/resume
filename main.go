@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"context"
 	"crypto/md5"
+	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"hash"
 	"io"
@@ -36,6 +38,19 @@ const (
 	measureInterval         = 1500 * time.Millisecond
 	measureIntervalMultiple = float64(measureInterval) / float64(time.Second)
 )
+
+var supportedHashMethods = [...]struct {
+	Name   string
+	Length int
+	New    func() hash.Hash
+	Get    func(*DataFile) string
+	Set    func(*DataFile, string)
+}{
+	{"MD5", md5.Size * 2, md5.New, (*DataFile).ContentMD5, (*DataFile).SetContentMD5},
+	{"SHA1", sha1.Size * 2, sha1.New, (*DataFile).ContentSHA1, (*DataFile).SetContentSHA1},
+	{"SHA2", sha256.Size * 2, sha256.New, (*DataFile).ContentSHA256, (*DataFile).SetContentSHA256},
+	{"SHA256", sha256.Size * 2, sha256.New, (*DataFile).ContentSHA256, (*DataFile).SetContentSHA256},
+}
 
 type App struct {
 	Configure
@@ -592,24 +607,36 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			return 0
 		}
 
-		contentMD5 := file.ContentMD5()
-		shouldVerify := i == 0 || contentMD5 != ""
-		if !shouldVerify {
-			return 0
+		type DigestInfo struct {
+			Name string
+			Hash hash.Hash
+		}
+		var digests map[string]DigestInfo
+		for _, h := range supportedHashMethods {
+			hashCode := h.Get(file)
+			if hashCode != "" {
+				if digests == nil {
+					digests = make(map[string]DigestInfo)
+				}
+				digests[hashCode] = DigestInfo{h.Name, h.New()}
+				eprintln(h.Name+":", hashCode)
+			}
 		}
 
-		var digest hash.Hash
-		if contentMD5 != "" {
-			eprintln("Content-MD5:", contentMD5)
-			digest = md5.New()
+		shouldVerify := i == 0 || digests != nil
+		if !shouldVerify {
+			return 0
 		}
 
 		p := int64(0)
 		s := int64(0)
 		w := func(b []byte) (n int, err error) {
 			n = len(b)
-			if digest != nil {
-				n, err = digest.Write(b)
+			for _, digest := range digests {
+				n, err = digest.Hash.Write(b)
+				if err != nil {
+					break
+				}
 			}
 			s += int64(n)
 			if s*100 >= (p+1)*contentSize {
@@ -630,13 +657,15 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}
 
 		if file.CompleteSize() != contentSize {
-			eprintln("BAD")
+			eprintln("BAD: file corrupted")
 			continue
 		}
 
-		if digest != nil && hex.EncodeToString(digest.Sum(nil)) != contentMD5 {
-			eprintln("BAD")
-			return 1
+		for hashCode, digest := range digests {
+			if hashCode != hex.EncodeToString(digest.Hash.Sum(nil)) {
+				eprintf("BAD: %v mismatched\n", digest.Name)
+				return 1
+			}
 		}
 
 		if app.Autoremove {
@@ -1095,25 +1124,31 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					return
 				}
 
+				for _, h := range supportedHashMethods {
+					hashCode := resp.Header.Get("Content-" + h.Name)
+					if hashCode == "" {
+						hashCode = resp.Header.Get("X-Checksum-" + h.Name)
+					}
+					if len(hashCode) == h.Length {
+						hashCode = strings.ToLower(hashCode)
+						switch h.Get(file) {
+						case hashCode:
+						case "":
+							h.Set(file, hashCode)
+							shouldSync = true
+						default:
+							err = enew(h.Name + " mismatched")
+							fatal = true
+							return
+						}
+					}
+				}
+
 				contentDisposition := resp.Header.Get("Content-Disposition")
 				if contentDisposition != "" {
 					if contentDisposition != file.ContentDisposition() {
 						file.SetContentDisposition(contentDisposition)
 						shouldSync = true
-					}
-				}
-
-				contentMD5 := strings.ToLower(resp.Header.Get("Content-MD5"))
-				if len(contentMD5) == 32 {
-					switch file.ContentMD5() {
-					case contentMD5:
-					case "":
-						file.SetContentMD5(contentMD5)
-						shouldSync = true
-					default:
-						err = enew("Content-MD5 mismatched")
-						fatal = true
-						return
 					}
 				}
 
@@ -1347,13 +1382,8 @@ func (app *App) alloc(mainCtx context.Context, file *DataFile) error {
 }
 
 func (app *App) status(file *DataFile, writer io.Writer) {
-	var (
-		contentSize        = file.ContentSize()
-		completeSize       = file.CompleteSize()
-		contentDisposition = file.ContentDisposition()
-		contentMD5         = file.ContentMD5()
-		entityTag          = file.EntityTag()
-	)
+	contentSize := file.ContentSize()
+	completeSize := file.CompleteSize()
 	if contentSize > 0 {
 		progress := int(float64(completeSize) / float64(contentSize) * 100)
 		fprintln(writer, "Size:", contentSize)
@@ -1379,13 +1409,16 @@ func (app *App) status(file *DataFile, writer io.Writer) {
 	if len(items) > 0 {
 		fprintln(writer, "Incomplete(MiB):", strings.Join(items, ","))
 	}
-	if contentDisposition != "" {
+	for _, h := range supportedHashMethods {
+		hashCode := h.Get(file)
+		if hashCode != "" {
+			fprintln(writer, h.Name+":", hashCode)
+		}
+	}
+	if contentDisposition := file.ContentDisposition(); contentDisposition != "" {
 		fprintln(writer, "Content-Disposition:", contentDisposition)
 	}
-	if contentMD5 != "" {
-		fprintln(writer, "Content-MD5:", contentMD5)
-	}
-	if entityTag != "" {
+	if entityTag := file.EntityTag(); entityTag != "" {
 		fprintln(writer, "ETag:", entityTag)
 	}
 }
