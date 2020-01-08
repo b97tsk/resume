@@ -76,6 +76,7 @@ type Configure struct {
 	MinSplitSize          uint          `mapstructure:"min-split" yaml:"min-split"`
 	OutputFile            string        `mapstructure:"output" yaml:"output"`
 	PerUserAgentLimit     uint          `mapstructure:"per-user-agent-limit" yaml:"per-user-agent-limit"`
+	Proxy                 string        `mapstructure:"proxy" yaml:"proxy"`
 	Range                 string        `mapstructure:"range" yaml:"range"`
 	ReadTimeout           time.Duration `mapstructure:"read-timeout" yaml:"read-timeout"`
 	Referer               string        `mapstructure:"referer" yaml:"referer"`
@@ -125,6 +126,7 @@ func main() {
 	flags.StringVar(&app.CookieFile, "cookie", "", "cookie file")
 	flags.StringVarP(&app.ListenAddress, "listen", "L", "", "HTTP listen address for remote control")
 	flags.StringVarP(&app.OutputFile, "output", "o", "", "output file")
+	flags.StringVarP(&app.Proxy, "proxy", "x", "", "a shorthand for setting http(s)_proxy environment variables")
 	flags.StringVarP(&app.Range, "range", "r", "", "request range (MiB), e.g., 0-1023")
 	flags.StringVarP(&app.Referer, "referer", "R", "", "referer url")
 	flags.StringVarP(&app.UserAgent, "user-agent", "A", "", "user agent")
@@ -331,6 +333,18 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	if app.showStatus {
 		app.status(file, os.Stdout)
 		return 0
+	}
+
+	if app.Proxy != "" {
+		if strings.ToLower(app.Proxy) == "direct" {
+			os.Unsetenv("http_proxy")
+			os.Unsetenv("HTTP_PROXY")
+		} else {
+			os.Setenv("http_proxy", app.Proxy)
+			os.Setenv("HTTP_PROXY", app.Proxy)
+		}
+		os.Unsetenv("https_proxy")
+		os.Unsetenv("HTTPS_PROXY")
 	}
 
 	if app.Range != "" {

@@ -49,6 +49,7 @@ A configure file is an YAML document that can specify following options:
 - `min-split` minimal split size (MiB).
 - `output` output file.
 - `per-user-agent-limit` limit per user agent connections.
+- `proxy` a shorthand for setting http(s)\_proxy environment variables.
 - `range` request range (MiB).
 - `read-timeout` read timeout.
 - `referer` referer url.
