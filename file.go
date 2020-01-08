@@ -31,14 +31,14 @@ type DataFile struct {
 }
 
 type HashInfo struct {
-	Pieces             []PieceInfo
-	ContentSize        int64
-	ContentMD5         string
-	ContentSHA1        string
-	ContentSHA256      string
-	ContentDisposition string
-	EntityTag          string
-	LastModified       string
+	Pieces        []PieceInfo
+	ContentSize   int64
+	ContentMD5    string
+	ContentSHA1   string
+	ContentSHA256 string
+	EntityTag     string
+	LastModified  string
+	Filename      string
 }
 
 type PieceInfo struct {
@@ -253,18 +253,6 @@ func (f *DataFile) ContentSHA256() string {
 	return f.hash.ContentSHA256
 }
 
-func (f *DataFile) SetContentDisposition(contentDisposition string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.hash.ContentDisposition = contentDisposition
-}
-
-func (f *DataFile) ContentDisposition() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.hash.ContentDisposition
-}
-
 func (f *DataFile) SetEntityTag(entityTag string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -287,6 +275,18 @@ func (f *DataFile) LastModified() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.hash.LastModified
+}
+
+func (f *DataFile) SetFilename(filename string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hash.Filename = filename
+}
+
+func (f *DataFile) Filename() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hash.Filename
 }
 
 func (f *DataFile) SetRange(s RangeSet) {

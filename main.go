@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -1144,14 +1145,6 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					}
 				}
 
-				contentDisposition := resp.Header.Get("Content-Disposition")
-				if contentDisposition != "" {
-					if contentDisposition != file.ContentDisposition() {
-						file.SetContentDisposition(contentDisposition)
-						shouldSync = true
-					}
-				}
-
 				eTag := resp.Header.Get("ETag")
 				if eTag != "" {
 					switch file.EntityTag() {
@@ -1180,6 +1173,17 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 							err = enew("Last-Modified mismatched")
 							fatal = true
 							return
+						}
+					}
+				}
+
+				contentDisposition := resp.Header.Get("Content-Disposition")
+				if contentDisposition != "" {
+					_, params, _ := mime.ParseMediaType(contentDisposition)
+					if filename := params["filename"]; filename != "" {
+						if filename != file.Filename() {
+							file.SetFilename(filename)
+							shouldSync = true
 						}
 					}
 				}
@@ -1415,11 +1419,14 @@ func (app *App) status(file *DataFile, writer io.Writer) {
 			fprintln(writer, h.Name+":", hashCode)
 		}
 	}
-	if contentDisposition := file.ContentDisposition(); contentDisposition != "" {
-		fprintln(writer, "Content-Disposition:", contentDisposition)
-	}
 	if entityTag := file.EntityTag(); entityTag != "" {
 		fprintln(writer, "ETag:", entityTag)
+	}
+	if lastModified := file.LastModified(); lastModified != "" {
+		fprintln(writer, "Last-Modified:", lastModified)
+	}
+	if filename := file.Filename(); filename != "" {
+		fprintln(writer, "Filename:", filename)
 	}
 }
 
