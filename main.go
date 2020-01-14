@@ -26,7 +26,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/b97tsk/rxgo/observable"
+	"github.com/b97tsk/rx"
+	"github.com/b97tsk/rx/operators"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"golang.org/x/net/publicsuffix"
@@ -121,8 +122,6 @@ type Configure struct {
 	UserAgent             string        `mapstructure:"user-agent" yaml:"user-agent"`
 	Verify                bool          `mapstructure:"verify" yaml:"verify"`
 }
-
-var operators observable.Operators
 
 func main() {
 	var app App
@@ -495,8 +494,8 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				app.status(file, w)
 			},
 		))
-		streamNotify := observable.NewSubject()
-		streamCounter := observable.NewBehaviorSubject(0)
+		streamNotify := rx.NewSubject()
+		streamCounter := rx.NewBehaviorSubject(0)
 		streamNotify.Pipe(
 			operators.Scan(
 				func(acc, val interface{}, idx int) interface{} {
@@ -564,8 +563,8 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 						},
 					),
 					operators.SwitchMapTo(
-						observable.Race(
-							observable.Interval(N*time.Second).Pipe(operators.MapTo(nil)),
+						rx.Race(
+							rx.Timer(N*time.Second).Pipe(operators.MapTo(nil)),
 							streamCounter.Pipe(
 								operators.Exclude(
 									func(val interface{}, idx int) bool {
@@ -769,9 +768,9 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	dlCtx := context.Background() // dlCtx never cancels.
 
-	byteIntervals := observable.NewSubject()
-	_, speedUpdateCancel := observable.Create(
-		func(ctx context.Context, sink observable.Observer) (context.Context, context.CancelFunc) {
+	byteIntervals := rx.NewSubject()
+	_, speedUpdateCancel := rx.Create(
+		func(ctx context.Context, sink rx.Observer) {
 			const N = 5
 			skipZeros := byteIntervals.Pipe(
 				operators.SkipWhile(
@@ -795,12 +794,12 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					},
 				),
 				operators.Take(N),
-			).Subscribe(ctx, observable.NopObserver)
-			return skipZeros.Pipe(
-				observable.BufferCountConfig{
+			).Subscribe(ctx, rx.Noop)
+			skipZeros.Pipe(
+				operators.BufferCountConfigure{
 					BufferSize:       N,
 					StartBufferEvery: 1,
-				}.MakeFunc(),
+				}.Use(),
 				operators.Skip(1),
 				operators.Map(
 					func(val interface{}, idx int) interface{} {
@@ -827,8 +826,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						return val.(int64) > 0
 					},
 				),
-				operators.Finally(
-					func() {
+				operators.DoAtLast(
+					func(error) {
 						emaValue, emaSpeed = 0, 0
 					},
 				),
@@ -836,13 +835,13 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		},
 	).Pipe(
 		operators.Repeat(-1),
-	).Subscribe(dlCtx, observable.NopObserver)
+	).Subscribe(dlCtx, rx.Noop)
 	defer speedUpdateCancel()
 
-	queuedMessages := observable.NewSubject()
+	queuedMessages := rx.NewSubject()
 	queuedMessagesCtx, _ := queuedMessages.
 		Pipe(operators.Congest(int(app.Connections*3))).
-		Subscribe(dlCtx, func(t observable.Notification) {
+		Subscribe(dlCtx, func(t rx.Notification) {
 			shouldPrint := false
 			switch {
 			case t.HasValue:
@@ -911,16 +910,16 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	}()
 
 	{
-		_, cancel := observable.Interval(measureInterval).
+		_, cancel := rx.Ticker(measureInterval).
 			Pipe(operators.MapTo(MeasureMessage{})).
 			Subscribe(dlCtx, queuedMessages.Observer)
 		defer cancel()
 	}
 
-	queuedWrites := observable.NewSubject()
+	queuedWrites := rx.NewSubject()
 	queuedWritesCtx, _ := queuedWrites.
 		Pipe(operators.Congest(int(app.Connections*3))).
-		Subscribe(dlCtx, func(t observable.Notification) {
+		Subscribe(dlCtx, func(t rx.Notification) {
 			if t.HasValue {
 				t.Value.(func())()
 			}
@@ -977,7 +976,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	messages := make(chan interface{}, app.Connections)
 
-	activeTasks := observable.NewSubject()
+	activeTasks := rx.NewSubject()
 	activeTasksCtx, _ := activeTasks.
 		Pipe(operators.MergeAll()).
 		Subscribe(dlCtx, queuedMessages.Observer)
@@ -1078,12 +1077,11 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				userAgent = userAgents[0]
 			}
 
-			cr := func(parent context.Context, sink observable.Observer) (ctx context.Context, cancel context.CancelFunc) {
-				// Note that parent will never be canceled, because
-				// subscription to activeTasks uses context.Background().
-				ctx, cancel = context.WithCancel(mainCtx) // Not parent.
-
-				sink = observable.Finally(sink, cancel)
+			cr := func(parent context.Context, sink rx.Observer) {
+				// Note that parent context will never be canceled, because
+				// subscription to activeTasks uses dlCtx and dlCtx never
+				// cancels.
+				reqCtx, reqCancel := context.WithCancel(mainCtx) // Not parent.
 
 				var (
 					err   error
@@ -1094,6 +1092,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						returnIncomplete(offset, size)
 						sink.Next(CompleteMessage{err, fatal, false})
 						sink.Complete()
+						reqCancel()
 					}
 				}()
 
@@ -1116,13 +1115,12 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 				req.Header.Set("User-Agent", userAgent)
 
-				req = req.WithContext(ctx)
+				req = req.WithContext(reqCtx)
 
 				resp, err := client.Do(req)
 				if err != nil {
 					return
 				}
-
 				defer func() {
 					if err != nil {
 						resp.Body.Close()
@@ -1266,7 +1264,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				go func() (err error) {
 					var (
 						readTimeout      = app.ReadTimeout
-						readTimer        = time.AfterFunc(readTimeout, cancel)
+						readTimer        = time.AfterFunc(readTimeout, reqCancel)
 						shouldResetTimer bool
 						shouldWaitWrite  bool
 					)
@@ -1279,6 +1277,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						returnIncomplete(offset, size)
 						sink.Next(CompleteMessage{err, false, true})
 						sink.Complete()
+						reqCancel()
 					}()
 
 					for {
@@ -1301,11 +1300,9 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						}
 					}
 				}()
-
-				return
 			}
 
-			do := func(t observable.Notification) {
+			do := func(t rx.Notification) {
 				if t.HasValue {
 					switch t.Value.(type) {
 					case ProgressMessage:
@@ -1323,7 +1320,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			pauseNewTask = true
 			delayNewTask = time.After(app.Interval)
 
-			activeTasks.Next(observable.Create(cr).Pipe(operators.Do(do)))
+			activeTasks.Next(rx.Create(cr).Pipe(operators.Do(do)))
 		}
 
 		select {
