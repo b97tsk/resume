@@ -41,16 +41,45 @@ const (
 )
 
 var supportedHashMethods = [...]struct {
-	Name   string
-	Length int
-	New    func() hash.Hash
-	Get    func(*DataFile) string
-	Set    func(*DataFile, string)
+	Name    string
+	IsAlias bool
+	Length  int
+	New     func() hash.Hash
+	Get     func(*DataFile) string
+	Set     func(*DataFile, string)
 }{
-	{"MD5", md5.Size * 2, md5.New, (*DataFile).ContentMD5, (*DataFile).SetContentMD5},
-	{"SHA1", sha1.Size * 2, sha1.New, (*DataFile).ContentSHA1, (*DataFile).SetContentSHA1},
-	{"SHA2", sha256.Size * 2, sha256.New, (*DataFile).ContentSHA256, (*DataFile).SetContentSHA256},
-	{"SHA256", sha256.Size * 2, sha256.New, (*DataFile).ContentSHA256, (*DataFile).SetContentSHA256},
+	{
+		Name:    "MD5",
+		IsAlias: false,
+		Length:  md5.Size * 2,
+		New:     md5.New,
+		Get:     (*DataFile).ContentMD5,
+		Set:     (*DataFile).SetContentMD5,
+	},
+	{
+		Name:    "SHA1",
+		IsAlias: false,
+		Length:  sha1.Size * 2,
+		New:     sha1.New,
+		Get:     (*DataFile).ContentSHA1,
+		Set:     (*DataFile).SetContentSHA1,
+	},
+	{
+		Name:    "SHA2",
+		IsAlias: true,
+		Length:  sha256.Size * 2,
+		New:     sha256.New,
+		Get:     (*DataFile).ContentSHA256,
+		Set:     (*DataFile).SetContentSHA256,
+	},
+	{
+		Name:    "SHA256",
+		IsAlias: false,
+		Length:  sha256.Size * 2,
+		New:     sha256.New,
+		Get:     (*DataFile).ContentSHA256,
+		Set:     (*DataFile).SetContentSHA256,
+	},
 }
 
 type App struct {
@@ -628,6 +657,9 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}
 		var digests map[string]DigestInfo
 		for _, h := range supportedHashMethods {
+			if h.IsAlias {
+				continue
+			}
 			hashCode := h.Get(file)
 			if hashCode != "" {
 				if digests == nil {
@@ -1428,6 +1460,9 @@ func (app *App) status(file *DataFile, writer io.Writer) {
 		fprintln(writer, "Incomplete(MiB):", strings.Join(items, ","))
 	}
 	for _, h := range supportedHashMethods {
+		if h.IsAlias {
+			continue
+		}
 		hashCode := h.Get(file)
 		if hashCode != "" {
 			fprintln(writer, h.Name+":", hashCode)
