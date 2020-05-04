@@ -756,11 +756,14 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	reportStatus := func() {
 		timeUsed := time.Since(firstRecvTime)
+		if timeUsed < time.Second {
+			timeUsed = time.Second
+		}
 		eprint("\033[1K\r")
 		log.Printf(
 			"recv %vB in %v, %vB/s, %v%% completed\n",
 			formatBytes(totalReceived),
-			strings.TrimSuffix(timeUsed.Round(time.Minute).String(), "0s"),
+			formatTimeUsed(timeUsed),
 			formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
 			int(float64(file.CompleteSize())/float64(file.ContentSize())*100),
 		)
@@ -891,7 +894,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					remaining := float64(file.IncompleteSize())
 					seconds := int64(math.Ceil(remaining / float64(emaSpeed)))
 					eprintf(" DL:%vB/s", formatBytes(emaSpeed))
-					eprintf(" ETA:%v", formatDuration(time.Duration(seconds)*time.Second))
+					eprintf(" ETA:%v", formatETA(time.Duration(seconds)*time.Second))
 				}
 
 				if !t.HasValue {
@@ -1491,7 +1494,23 @@ func formatBytes(n int64) string {
 	return strconv.FormatInt(megabytes, 10) + "Mi"
 }
 
-func formatDuration(d time.Duration) (s string) {
+func formatTimeUsed(d time.Duration) (s string) {
+	switch {
+	case d < time.Minute:
+		s = d.Round(time.Second).String()
+	default:
+		s = d.Round(time.Minute).String()
+	}
+	if strings.HasSuffix(s, "m0s") {
+		s = s[:len(s)-2]
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = s[:len(s)-2]
+	}
+	return
+}
+
+func formatETA(d time.Duration) (s string) {
 	switch {
 	case d < time.Minute:
 		s = d.Round(time.Second).String()
