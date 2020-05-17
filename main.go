@@ -1130,28 +1130,36 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					}
 				}()
 
-				if resp.StatusCode == 200 {
-					err = enew("this server does not support partial requests")
-					fatal = true
-					return
-				}
-
-				if resp.StatusCode != 206 {
+				var contentSize int64
+				switch resp.StatusCode {
+				case http.StatusOK:
+					if offset > 0 {
+						err = enew("this server does not support partial requests")
+						fatal = true
+						return
+					}
+					contentSize = resp.ContentLength
+				case http.StatusPartialContent:
+					contentRange := resp.Header.Get("Content-Range")
+					if contentRange == "" {
+						err = enew("Content-Range not found")
+						fatal = true
+						return
+					}
+					re := regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+)$`)
+					slice := re.FindStringSubmatch(contentRange)
+					if slice == nil {
+						err = errorf("Content-Range unrecognized: %v", contentRange)
+						fatal = true
+						return
+					}
+					contentSize, _ = strconv.ParseInt(slice[3], 10, 64)
+				default:
 					err = enew(resp.Status)
 					return
 				}
-
-				contentRange := resp.Header.Get("Content-Range")
-				if contentRange == "" {
-					err = enew("Content-Range not found")
-					fatal = true
-					return
-				}
-
-				re := regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+)$`)
-				slice := re.FindStringSubmatch(contentRange)
-				if slice == nil {
-					err = errorf("Content-Range unrecognized: %v", contentRange)
+				if contentSize <= 0 {
+					err = enew("Content-Length unknown or zero")
 					fatal = true
 					return
 				}
@@ -1159,7 +1167,6 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				shouldAlloc := false
 				shouldSync := false
 
-				contentSize, _ := strconv.ParseInt(slice[3], 10, 64)
 				switch file.ContentSize() {
 				case contentSize:
 				case 0:
