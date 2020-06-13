@@ -59,6 +59,7 @@ A configure file is an YAML document that can specify following options:
 - `stream-rate` maximum number of stream rate.
 - `sync-period` sync-to-disk period.
 - `timeout` if positive, all timeouts default to this value.
+- `timeout-intolerant` treat timeouts as errors.
 - `tls-handshake-timeout` tls handshake timeout.
 - `truncate` truncate output file before the first write.
 - `url` the URL to download.

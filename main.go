@@ -116,6 +116,7 @@ type Configure struct {
 	StreamRate            uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
 	SyncPeriod            time.Duration `mapstructure:"sync-period" yaml:"sync-period"`
 	Timeout               time.Duration `mapstructure:"timeout" yaml:"timeout"`
+	TimeoutIntolerant     bool          `mapstructure:"timeout-intolerant" yaml:"timeout-intolerant"`
 	TLSHandshakeTimeout   time.Duration `mapstructure:"tls-handshake-timeout" yaml:"tls-handshake-timeout"`
 	Truncate              bool          `mapstructure:"truncate" yaml:"truncate"`
 	URL                   string        `mapstructure:"url" yaml:"url"`
@@ -139,6 +140,7 @@ func main() {
 
 	flags.BoolVar(&app.Alloc, "alloc", false, "alloc disk space before the first write")
 	flags.BoolVar(&app.Autoremove, "autoremove", false, "auto remove .resume file after successfully verified")
+	flags.BoolVar(&app.TimeoutIntolerant, "timeout-intolerant", false, "treat timeouts as errors")
 	flags.BoolVar(&app.Truncate, "truncate", false, "truncate output file before the first write")
 	flags.BoolVar(&app.Verify, "verify", true, "verify output file after download completes")
 	flags.BoolVarP(&app.SkipETag, "skip-etag", "E", false, "skip unreliable ETag field")
@@ -1048,11 +1050,11 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					userAgents = append(userAgents, allUserAgents[userAgentIndex:]...)
 					userAgents = append(userAgents, allUserAgents[:userAgentIndex]...)
 				}
-				if activeCount == 0 {
-					// We tested all user agents, failed to start any download.
-					return // Give up.
-				}
 				if currentURL == app.URL {
+					if activeCount == 0 {
+						// We tested all user agents, failed to start any download.
+						return // Give up.
+					}
 					// We tested all user agents and successfully started
 					// some downloads, but now we are going to assume this
 					// is all we can do so far.
@@ -1375,36 +1377,36 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}
 			case CompleteMessage:
 				activeCount--
-				if !e.Responsed {
-					pauseNewTask = false
-					errorCount++ // There must be an error if no response.
-				}
-				if e.Err != nil && e.Fatal {
-					fatalErrors = true
-				}
 				if e.Responsed && len(allUserAgents) > 1 {
 					// Prepare to test all user agents again.
 					userAgents = newUserAgents
 					userAgents = append(userAgents, allUserAgents[userAgentIndex:]...)
 					userAgents = append(userAgents, allUserAgents[:userAgentIndex]...)
 				}
-				if e.Err != nil && !e.Responsed {
-					unwrappedErr := e.Err
-					switch e := unwrappedErr.(type) {
-					case *net.OpError:
-						unwrappedErr = e.Err
-					case *url.Error:
-						unwrappedErr = e.Err
+				if !e.Responsed { // There must be an error if no response.
+					pauseNewTask = false
+					if app.TimeoutIntolerant || !os.IsTimeout(e.Err) {
+						errorCount++
+						if e.Fatal {
+							fatalErrors = true
+						}
+						err := e.Err
+						switch e := err.(type) {
+						case *net.OpError:
+							err = e.Err
+						case *url.Error:
+							err = e.Err
+						}
+						message := err.Error()
+						if len(allUserAgents) > 1 {
+							message = sprintf(
+								"UserAgent #%v: %v",
+								userAgentIndex+1,
+								message,
+							)
+						}
+						queuedMessages.Next(message)
 					}
-					message := unwrappedErr.Error()
-					if len(allUserAgents) > 1 {
-						message = sprintf(
-							"UserAgent #%v: %v",
-							userAgentIndex+1,
-							message,
-						)
-					}
-					queuedMessages.Next(message)
 				}
 			}
 		case <-syncTicker.C:
