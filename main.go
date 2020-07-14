@@ -681,6 +681,28 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			return 0
 		}
 
+		vs := rx.NewSubject()
+		vs.Pipe(
+			operators.SkipUntil(rx.Timer(time.Second)),
+		).Subscribe(
+			mainCtx,
+			func(t rx.Notification) {
+				switch {
+				case t.HasValue:
+					eprint("\033[1K\r")
+					switch t.Value.(type) {
+					case int64:
+						eprintf("verifying...%v%%", t.Value)
+					default:
+						eprintf("verifying...%v\n", t.Value)
+					}
+				case t.HasError:
+					eprint("\033[1K\r")
+					eprintf("verifying...%v\n", t.Error)
+				}
+			},
+		)
+
 		p := int64(0)
 		s := int64(0)
 		w := func(b []byte) (n int, err error) {
@@ -694,29 +716,25 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			s += int64(n)
 			if s*100 >= (p+1)*contentSize {
 				p = s * 100 / contentSize
-				eprint("\033[1K\r")
-				eprintf("verifying...%v%%", p)
+				vs.Next(p)
 			}
 			return
 		}
 
-		eprintf("verifying...%v%%", p)
 		err := file.Verify(mainCtx, WriterFunc(w))
-		eprint("\033[1K\r")
-		eprint("verifying...")
 		if err != nil {
-			eprintln(err)
+			vs.Error(err)
 			return 1
 		}
 
 		if file.CompleteSize() != contentSize {
-			eprintln("BAD: file corrupted")
+			vs.Error(enew("BAD: file corrupted"))
 			continue
 		}
 
 		for hashCode, digest := range digests {
 			if hashCode != hex.EncodeToString(digest.Hash.Sum(nil)) {
-				eprintf("BAD: %v mismatched\n", digest.Name)
+				vs.Error(errorf("BAD: %v mismatched\n", digest.Name))
 				return 1
 			}
 		}
@@ -725,7 +743,8 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			os.Remove(file.HashFile())
 		}
 
-		eprintln("OK")
+		vs.Next("OK")
+		vs.Complete()
 		return 0
 	}
 
