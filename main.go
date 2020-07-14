@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -90,6 +91,7 @@ type App struct {
 	showStatus     bool
 	showConfigure  bool
 	streamToStdout bool
+	streamOffset   *int64
 }
 
 type Configure struct {
@@ -113,6 +115,7 @@ type Configure struct {
 	ResponseHeaderTimeout time.Duration `mapstructure:"response-header-timeout" yaml:"response-header-timeout"`
 	SkipETag              bool          `mapstructure:"skip-etag" yaml:"skip-etag"`
 	SkipLastModified      bool          `mapstructure:"skip-last-modified" yaml:"skip-last-modified"`
+	StreamCache           uint          `mapstructure:"stream-cache" yaml:"stream-cache"`
 	StreamRate            uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
 	SyncPeriod            time.Duration `mapstructure:"sync-period" yaml:"sync-period"`
 	Timeout               time.Duration `mapstructure:"timeout" yaml:"timeout"`
@@ -198,7 +201,9 @@ func main() {
 	{
 		flags := streamCmd.PersistentFlags()
 		flags.UintVar(&app.StreamRate, "rate", 12, "maximum number of stream rate (MiB/s)")
+		flags.UintVarP(&app.StreamCache, "cache", "k", 0, "stream cache size (MiB), 0 means unlimited")
 		viper.BindPFlag("stream-rate", flags.Lookup("rate"))
+		viper.BindPFlag("stream-cache", flags.Lookup("cache"))
 	}
 	rootCmd.AddCommand(streamCmd)
 
@@ -352,7 +357,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 					filename = filepath.Join(app.workdir, filename)
 				}
 				eprintf("\"%v\" already exists.\n", filename)
-				eprintln("If you do want to redownload it, remove it first.")
 				return 1
 			}
 			eprintln(err)
@@ -429,6 +433,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		streamDone chan struct{}
 	)
 	if app.streamToStdout {
+		app.streamOffset = new(int64)
 		streamRest = make(chan struct{})
 		streamDone = make(chan struct{})
 		defer func() {
@@ -451,7 +456,9 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				case <-streamTicker.C:
 					if n, err := file.ReadAt(streamBuffer, streamOffset); err == nil {
 						streamOffset += int64(n)
+						atomic.StoreInt64(app.streamOffset, streamOffset)
 						if _, err := os.Stdout.Write(streamBuffer[:n]); err != nil {
+							mainCancel() // Exiting.
 							return
 						}
 					}
@@ -557,7 +564,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			if streamCounter.Value().(int) > 0 {
 				// Wait until `streamCounter` remains zero for N seconds.
 				const N = 5
-				eprintln("Waiting for remote streaming to complete...")
+				eprintln("waiting for remote streaming to complete...")
 				streamCounter.Pipe(
 					operators.Filter(
 						func(val interface{}, idx int) bool {
@@ -637,7 +644,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}
 
 		if app.streamToStdout {
-			eprint("streaming...")
 			app.streamToStdout = false
 			close(streamRest)
 			select {
@@ -645,7 +651,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				return 1
 			case <-streamDone:
 			}
-			eprint("\033[1K\r")
 		}
 
 		if !app.Verify {
@@ -998,16 +1003,16 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	}()
 
 	var (
-		activeCount  uint
-		pauseNewTask bool
-		delayNewTask <-chan time.Time
-		errorCount   uint
-		fatalErrors  bool
+		activeCount     uint
+		pauseNewTask    bool
+		delayNewTask    <-chan time.Time
+		streamCacheFull chan struct{}
+		fatalErrors     bool
+		errorCount      uint
+
 		maxDownloads = app.Connections
 		currentURL   = app.URL
-	)
 
-	var (
 		allUserAgents  = strings.Split(strings.TrimSuffix(app.UserAgent, "\n"), "\n")
 		newUserAgents  = make([]string, 0, len(allUserAgents))
 		userAgents     = allUserAgents
@@ -1030,6 +1035,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		case activeCount >= maxDownloads:
 		case pauseNewTask:
 		case delayNewTask != nil:
+		case streamCacheFull != nil:
 		case fatalErrors:
 			if activeCount == 0 {
 				return
@@ -1075,6 +1081,33 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					return
 				}
 				break
+			}
+
+			if app.streamToStdout && app.StreamCache > 0 {
+				streamCacheSize := int64(app.StreamCache) * 1024 * 1024
+				streamOffset := atomic.LoadInt64(app.streamOffset)
+				if offset >= streamOffset+streamCacheSize {
+					returnIncomplete(offset, size)
+					streamCacheFull = make(chan struct{})
+					offset := offset
+					go func() {
+						defer close(streamCacheFull)
+						ticker := time.NewTicker(time.Second)
+						defer ticker.Stop()
+						for {
+							select {
+							case <-mainDone:
+								return
+							case <-ticker.C:
+								streamOffset := atomic.LoadInt64(app.streamOffset)
+								if offset < streamOffset+streamCacheSize {
+									return
+								}
+							}
+						}
+					}()
+					break
+				}
 			}
 
 			var userAgent string
@@ -1340,6 +1373,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			return
 		case <-delayNewTask:
 			delayNewTask = nil
+		case <-streamCacheFull:
+			streamCacheFull = nil
 		case e := <-messages:
 			switch e := e.(type) {
 			case ResponseMessage:

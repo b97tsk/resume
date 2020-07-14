@@ -56,6 +56,7 @@ A configure file is an YAML document that can specify following options:
 - `response-header-timeout` response header timeout.
 - `skip-etag` skip unreliable ETag field or not.
 - `skip-last-modified` skip unreliable Last-Modified field or not.
+- `stream-cache` stream cache size (MiB).
 - `stream-rate` maximum number of stream rate.
 - `sync-period` sync-to-disk period.
 - `timeout` if positive, all timeouts default to this value.
