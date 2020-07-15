@@ -88,6 +88,7 @@ type App struct {
 	Configure
 	workdir        string
 	conffile       string
+	noUserConfig   bool
 	showStatus     bool
 	showConfigure  bool
 	streamToStdout bool
@@ -170,6 +171,7 @@ func main() {
 
 	viper.BindPFlags(flags)
 
+	flags.BoolVarP(&app.noUserConfig, "no-user-config", "n", false, "do not load .resumerc file")
 	flags.StringVarP(&app.workdir, "workdir", "w", ".", "working directory")
 	flags.StringVarP(&app.conffile, "conf", "f", "resume.yaml", "configure file")
 
@@ -222,6 +224,16 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	}
 
 	os.Setenv("ConfigDir", filepath.Dir(app.conffile))
+
+	if !app.noUserConfig {
+		if dir, err := os.UserHomeDir(); err == nil {
+			viper.SetConfigFile(filepath.Join(dir, ".resumerc"))
+			viper.SetConfigType("yaml")
+			if err := viper.ReadInConfig(); err == nil {
+				viper.Unmarshal(&app.Configure)
+			}
+		}
+	}
 
 	if app.conffile != "" {
 		viper.SetConfigFile(app.conffile)
