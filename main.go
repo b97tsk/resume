@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"hash"
 	"io"
-	"log"
 	"math"
 	"mime"
 	"net"
@@ -214,8 +213,6 @@ func main() {
 }
 
 func (app *App) Main(cmd *cobra.Command, args []string) int {
-	log.SetFlags(log.Ltime)
-
 	if app.workdir != "." {
 		err := os.Chdir(app.workdir)
 		if err != nil {
@@ -756,7 +753,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			os.Remove(file.HashFile())
 		}
 
-		vs.Next("OK")
+		vs.Next("DONE")
 		vs.Complete()
 		return 0
 	}
@@ -783,35 +780,12 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		}
 	)
 
-	var (
-		firstRecvTime  time.Time
-		nextReportTime time.Time
-		totalReceived  int64
-		recentReceived int64
-		emaValue       int64
-		emaSpeed       int64
-		connections    int
-	)
-
-	reportStatus := func() {
-		timeUsed := time.Since(firstRecvTime)
-		if timeUsed < time.Second {
-			timeUsed = time.Second
-		}
-		eprint("\033[1K\r")
-		log.Printf(
-			"recv %vB in %v, %vB/s, %v%% completed\n",
-			formatBytes(totalReceived),
-			formatTimeUsed(timeUsed),
-			formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
-			int(float64(file.CompleteSize())/float64(file.ContentSize())*100),
-		)
-	}
-
 	dlCtx := context.Background() // dlCtx never cancels.
 
 	speedUpdateCtx, speedUpdateCancel := context.WithCancel(dlCtx)
 	defer speedUpdateCancel()
+
+	var emaValue, emaSpeed int64
 
 	byteIntervals := subject.NewSubject()
 	rx.Observable(
@@ -882,15 +856,23 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		operators.RepeatForever(),
 	).Subscribe(speedUpdateCtx, rx.Noop)
 
+	var (
+		firstRecvTime  time.Time
+		nextReportTime time.Time
+		totalReceived  int64
+		recentReceived int64
+		connections    int
+		statusLine     string
+	)
+
 	handleMessagesCtx, handleMessagesCancel := context.WithCancel(dlCtx)
 	queuedMessages := subject.NewSubject()
 	queuedMessages.Pipe(
 		operators.Congest(int(app.Connections*3)),
 		operators.DoAtLast(func(error) { handleMessagesCancel() }),
 	).Subscribe(handleMessagesCtx, func(t rx.Notification) {
-		shouldPrint := false
-		switch {
-		case t.HasValue:
+		if t.HasValue {
+			shouldPrint := false
 			switch v := t.Value.(type) {
 			case ProgressMessage:
 				if totalReceived == 0 {
@@ -899,55 +881,64 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}
 				totalReceived += int64(v.Just)
 				recentReceived += int64(v.Just)
-
 			case MeasureMessage:
 				byteIntervals.Next(recentReceived)
 				recentReceived = 0
-				shouldPrint = totalReceived > 0
-
+				shouldPrint = file.ContentSize() > 0
 			case ResponseMessage:
 				connections++
-
 			case CompleteMessage:
 				if v.Responsed {
 					connections--
 				}
-
 			case string:
 				eprint("\033[1K\r")
-				log.Println(v)
-				shouldPrint = totalReceived > 0
+				eprintln(v)
+				statusLine = ""
+				shouldPrint = file.ContentSize() > 0
 			}
-		default:
-			shouldPrint = totalReceived > 0
-		}
-		if shouldPrint {
-			eprint("\033[1K\r")
-
-			contentSize := file.ContentSize()
-			completeSize := file.CompleteSize()
-
-			progress := int(float64(completeSize) / float64(contentSize) * 100)
-			eprintf("%v%%", progress)
-			eprintf(" %vB", formatBytes(completeSize))
-			eprintf("/%vB", formatBytes(contentSize))
-			eprintf(" CN:%v", connections)
-
-			if emaSpeed > 0 {
-				remaining := float64(file.IncompleteSize())
-				seconds := int64(math.Ceil(remaining / float64(emaSpeed)))
-				eprintf(" DL:%vB/s", formatBytes(emaSpeed))
-				eprintf(" ETA:%v", formatETA(time.Duration(seconds)*time.Second))
-			}
-
-			if !t.HasValue {
-				// about to exit, keep this status line
-				eprintln()
+			if shouldPrint {
+				var b strings.Builder
+				contentSize := file.ContentSize()
+				completeSize := file.CompleteSize()
+				progress := int(float64(completeSize) / float64(contentSize) * 100)
+				b.WriteString(sprintf("%v%%", progress))
+				b.WriteString(sprintf(" %v", formatBytes(completeSize, "B")))
+				b.WriteString(sprintf("/%v", formatBytes(contentSize, "B")))
+				if connections > 0 {
+					b.WriteString(sprintf(" CN:%v", connections))
+					if emaSpeed > 0 {
+						remaining := float64(file.IncompleteSize())
+						seconds := int64(math.Ceil(remaining / float64(emaSpeed)))
+						b.WriteString(sprintf(" DL:%v", formatBytes(emaSpeed, "B/s")))
+						b.WriteString(sprintf(" ETA:%v", formatETA(time.Duration(seconds)*time.Second)))
+					}
+				}
+				if s := b.String(); s != statusLine {
+					statusLine = s
+					eprint("\033[1K\r")
+					eprint(s)
+				}
 			}
 		}
 		if totalReceived > 0 && (!t.HasValue || time.Now().After(nextReportTime)) {
 			nextReportTime = nextReportTime.Add(reportInterval)
-			reportStatus()
+			statusLine = ""
+			timeUsed := time.Since(firstRecvTime)
+			if timeUsed < time.Second {
+				timeUsed = time.Second
+			}
+			eprint("\033[1K\r")
+			eprintf(
+				"recv %v in %v, %v, %v%% completed\n",
+				formatBytes(totalReceived, "B"),
+				formatTimeUsed(timeUsed),
+				formatBytes(int64(float64(totalReceived)/timeUsed.Seconds()), "B/s"),
+				int(float64(file.CompleteSize())/float64(file.ContentSize())*100),
+			)
+		}
+		if !t.HasValue && statusLine != "" {
+			eprintln()
 		}
 	})
 	defer func() {
@@ -1559,19 +1550,22 @@ func (app *App) status(file *DataFile, writer io.Writer) {
 	}
 }
 
-func formatBytes(n int64) string {
+func formatBytes(n int64, unit string) string {
+	if n == 0 {
+		return "0"
+	}
 	if n < 1024 {
-		return strconv.FormatInt(n, 10)
+		return strconv.FormatInt(n, 10) + unit
 	}
 	kilobytes := int64(math.Ceil(float64(n) / 1024))
 	if kilobytes < 1000 {
-		return strconv.FormatInt(kilobytes, 10) + "Ki"
+		return strconv.FormatInt(kilobytes, 10) + "Ki" + unit
 	}
 	if kilobytes < 102400 {
-		return strconv.FormatFloat(float64(n)/(1024*1024), 'f', 1, 64) + "Mi"
+		return strconv.FormatFloat(float64(n)/(1024*1024), 'f', 1, 64) + "Mi" + unit
 	}
 	megabytes := int64(math.Ceil(float64(n) / (1024 * 1024)))
-	return strconv.FormatInt(megabytes, 10) + "Mi"
+	return strconv.FormatInt(megabytes, 10) + "Mi" + unit
 }
 
 func formatTimeUsed(d time.Duration) (s string) {
