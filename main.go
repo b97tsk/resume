@@ -29,6 +29,7 @@ import (
 
 	"github.com/b97tsk/rx"
 	"github.com/b97tsk/rx/operators"
+	"github.com/b97tsk/rx/subject"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"golang.org/x/net/publicsuffix"
@@ -515,8 +516,8 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				app.status(file, w)
 			},
 		))
-		streamNotify := rx.NewSubject()
-		streamCounter := rx.NewBehaviorSubject(0)
+		streamNotify := subject.NewSubject()
+		streamCounter := subject.NewBehaviorSubject(0)
 		streamNotify.Pipe(
 			operators.Scan(
 				func(acc, val interface{}, idx int) interface{} {
@@ -693,7 +694,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			return 0
 		}
 
-		vs := rx.NewSubject()
+		vs := subject.NewSubject()
 		vs.Pipe(
 			operators.SkipUntil(rx.Timer(time.Second)),
 		).Subscribe(
@@ -809,8 +810,11 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	dlCtx := context.Background() // dlCtx never cancels.
 
-	byteIntervals := rx.NewSubject()
-	_, speedUpdateCancel := rx.Create(
+	speedUpdateCtx, speedUpdateCancel := context.WithCancel(dlCtx)
+	defer speedUpdateCancel()
+
+	byteIntervals := subject.NewSubject()
+	rx.Observable(
 		func(ctx context.Context, sink rx.Observer) {
 			const N = 5
 			skipZeros := byteIntervals.Pipe(
@@ -840,7 +844,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				operators.BufferCountConfigure{
 					BufferSize:       N,
 					StartBufferEvery: 1,
-				}.Use(),
+				}.Make(),
 				operators.Skip(1),
 				operators.Map(
 					func(val interface{}, idx int) interface{} {
@@ -875,99 +879,101 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			).Subscribe(ctx, sink)
 		},
 	).Pipe(
-		operators.Repeat(-1),
-	).Subscribe(dlCtx, rx.Noop)
-	defer speedUpdateCancel()
+		operators.RepeatForever(),
+	).Subscribe(speedUpdateCtx, rx.Noop)
 
-	queuedMessages := rx.NewSubject()
-	queuedMessagesCtx, _ := queuedMessages.
-		Pipe(operators.Congest(int(app.Connections*3))).
-		Subscribe(dlCtx, func(t rx.Notification) {
-			shouldPrint := false
-			switch {
-			case t.HasValue:
-				switch v := t.Value.(type) {
-				case ProgressMessage:
-					if totalReceived == 0 {
-						firstRecvTime = time.Now()
-						nextReportTime = firstRecvTime.Add(reportInterval)
-					}
-					totalReceived += int64(v.Just)
-					recentReceived += int64(v.Just)
-
-				case MeasureMessage:
-					byteIntervals.Next(recentReceived)
-					recentReceived = 0
-					shouldPrint = totalReceived > 0
-
-				case ResponseMessage:
-					connections++
-
-				case CompleteMessage:
-					if v.Responsed {
-						connections--
-					}
-
-				case string:
-					eprint("\033[1K\r")
-					log.Println(v)
-					shouldPrint = totalReceived > 0
+	handleMessagesCtx, handleMessagesCancel := context.WithCancel(dlCtx)
+	queuedMessages := subject.NewSubject()
+	queuedMessages.Pipe(
+		operators.Congest(int(app.Connections*3)),
+		operators.DoAtLast(func(error) { handleMessagesCancel() }),
+	).Subscribe(handleMessagesCtx, func(t rx.Notification) {
+		shouldPrint := false
+		switch {
+		case t.HasValue:
+			switch v := t.Value.(type) {
+			case ProgressMessage:
+				if totalReceived == 0 {
+					firstRecvTime = time.Now()
+					nextReportTime = firstRecvTime.Add(reportInterval)
 				}
-			default:
+				totalReceived += int64(v.Just)
+				recentReceived += int64(v.Just)
+
+			case MeasureMessage:
+				byteIntervals.Next(recentReceived)
+				recentReceived = 0
+				shouldPrint = totalReceived > 0
+
+			case ResponseMessage:
+				connections++
+
+			case CompleteMessage:
+				if v.Responsed {
+					connections--
+				}
+
+			case string:
+				eprint("\033[1K\r")
+				log.Println(v)
 				shouldPrint = totalReceived > 0
 			}
-			if shouldPrint {
-				eprint("\033[1K\r")
+		default:
+			shouldPrint = totalReceived > 0
+		}
+		if shouldPrint {
+			eprint("\033[1K\r")
 
-				contentSize := file.ContentSize()
-				completeSize := file.CompleteSize()
+			contentSize := file.ContentSize()
+			completeSize := file.CompleteSize()
 
-				progress := int(float64(completeSize) / float64(contentSize) * 100)
-				eprintf("%v%%", progress)
-				eprintf(" %vB", formatBytes(completeSize))
-				eprintf("/%vB", formatBytes(contentSize))
-				eprintf(" CN:%v", connections)
+			progress := int(float64(completeSize) / float64(contentSize) * 100)
+			eprintf("%v%%", progress)
+			eprintf(" %vB", formatBytes(completeSize))
+			eprintf("/%vB", formatBytes(contentSize))
+			eprintf(" CN:%v", connections)
 
-				if emaSpeed > 0 {
-					remaining := float64(file.IncompleteSize())
-					seconds := int64(math.Ceil(remaining / float64(emaSpeed)))
-					eprintf(" DL:%vB/s", formatBytes(emaSpeed))
-					eprintf(" ETA:%v", formatETA(time.Duration(seconds)*time.Second))
-				}
-
-				if !t.HasValue {
-					// about to exit, keep this status line
-					eprintln()
-				}
+			if emaSpeed > 0 {
+				remaining := float64(file.IncompleteSize())
+				seconds := int64(math.Ceil(remaining / float64(emaSpeed)))
+				eprintf(" DL:%vB/s", formatBytes(emaSpeed))
+				eprintf(" ETA:%v", formatETA(time.Duration(seconds)*time.Second))
 			}
-			if totalReceived > 0 && (!t.HasValue || time.Now().After(nextReportTime)) {
-				nextReportTime = nextReportTime.Add(reportInterval)
-				reportStatus()
+
+			if !t.HasValue {
+				// about to exit, keep this status line
+				eprintln()
 			}
-		})
+		}
+		if totalReceived > 0 && (!t.HasValue || time.Now().After(nextReportTime)) {
+			nextReportTime = nextReportTime.Add(reportInterval)
+			reportStatus()
+		}
+	})
 	defer func() {
 		queuedMessages.Complete()
-		<-queuedMessagesCtx.Done()
+		<-handleMessagesCtx.Done()
 	}()
 
-	{
-		_, cancel := rx.Ticker(measureInterval).
-			Pipe(operators.MapTo(MeasureMessage{})).
-			Subscribe(dlCtx, queuedMessages.Observer)
-		defer cancel()
-	}
+	measureCtx, measureCancel := context.WithCancel(dlCtx)
+	rx.Ticker(measureInterval).Pipe(
+		operators.MapTo(MeasureMessage{}),
+	).Subscribe(measureCtx, queuedMessages.Observer)
+	defer measureCancel()
 
-	queuedWrites := rx.NewSubject()
-	queuedWritesCtx, _ := queuedWrites.
-		Pipe(operators.Congest(int(app.Connections*3))).
-		Subscribe(dlCtx, func(t rx.Notification) {
-			if t.HasValue {
-				t.Value.(func())()
-			}
-		})
+	handleWritesCtx, handleWritesCancel := context.WithCancel(dlCtx)
+	queuedWrites := subject.NewSubject()
+	queuedWrites.Pipe(
+		operators.Congest(int(app.Connections*3)),
+		operators.DoAtLast(func(error) { handleWritesCancel() }),
+	).Subscribe(handleWritesCtx, func(t rx.Notification) {
+		if t.HasValue {
+			t.Value.(func())()
+		}
+	})
 	defer func() {
 		queuedWrites.Complete()
-		<-queuedWritesCtx.Done()
+		<-handleWritesCtx.Done()
 		file.Sync()
 	}()
 
@@ -1017,13 +1023,15 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	messages := make(chan interface{}, app.Connections)
 
-	activeTasks := rx.NewSubject()
-	activeTasksCtx, _ := activeTasks.
-		Pipe(operators.MergeAll()).
-		Subscribe(dlCtx, queuedMessages.Observer)
+	handleTasksCtx, handleTasksCancel := context.WithCancel(dlCtx)
+	activeTasks := subject.NewSubject()
+	activeTasks.Pipe(
+		operators.MergeAll(),
+		operators.DoAtLast(func(error) { handleTasksCancel() }),
+	).Subscribe(handleTasksCtx, queuedMessages.Observer)
 	defer func() {
 		activeTasks.Complete()
-		done := activeTasksCtx.Done()
+		done := handleTasksCtx.Done()
 		for {
 			select {
 			case <-done:
@@ -1147,9 +1155,6 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			}
 
 			cr := func(parent context.Context, sink rx.Observer) {
-				// Note that parent context will never be canceled, because
-				// subscription to activeTasks uses dlCtx and dlCtx never
-				// cancels.
 				reqCtx, reqCancel := context.WithCancel(mainCtx) // Not parent.
 
 				var (
@@ -1396,7 +1401,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			pauseNewTask = true
 			delayNewTask = time.After(app.Interval)
 
-			activeTasks.Next(rx.Create(cr).Pipe(operators.Do(do)))
+			activeTasks.Next(rx.Observable(cr).Pipe(operators.Do(do)))
 		}
 
 		select {
