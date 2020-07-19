@@ -439,14 +439,19 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	}()
 
 	var (
-		streamRest chan struct{}
 		streamDone chan struct{}
+		streamRest chan struct{}
 	)
 	if app.streamToStdout {
 		app.streamOffset = new(int64)
-		streamRest = make(chan struct{})
 		streamDone = make(chan struct{})
+		streamRest = make(chan struct{})
 		defer func() {
+			select {
+			case <-streamRest:
+			default:
+				close(streamRest)
+			}
 			<-streamDone
 		}()
 		go func() {
@@ -654,12 +659,15 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}
 
 		if app.streamToStdout {
-			app.streamToStdout = false
-			close(streamRest)
 			select {
-			case <-mainDone:
-				return 1
-			case <-streamDone:
+			case <-streamRest:
+			default:
+				close(streamRest)
+				select {
+				case <-mainDone:
+					return 1
+				case <-streamDone:
+				}
 			}
 		}
 
