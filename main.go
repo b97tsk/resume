@@ -763,6 +763,8 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client) {
 	type (
+		Status int
+
 		MeasureMessage struct{}
 
 		ResponseMessage struct {
@@ -778,6 +780,15 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			Fatal     bool
 			Responsed bool
 		}
+
+		StatusChangedMessage struct {
+			Status Status
+		}
+	)
+
+	const (
+		StatusDownloading Status = iota
+		StatusWaitStreaming
 	)
 
 	dlCtx := context.Background() // dlCtx never cancels.
@@ -862,6 +873,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		totalReceived  int64
 		recentReceived int64
 		connections    int
+		status         Status
 		statusLine     string
 	)
 
@@ -891,6 +903,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				if v.Responsed {
 					connections--
 				}
+			case StatusChangedMessage:
+				status = v.Status
 			case string:
 				eprint("\033[1K\r")
 				eprintln(v)
@@ -905,7 +919,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				b.WriteString(sprintf("%v%%", progress))
 				b.WriteString(sprintf(" %v", formatBytes(completeSize, "B")))
 				b.WriteString(sprintf("/%v", formatBytes(contentSize, "B")))
-				if connections > 0 {
+				switch {
+				case connections > 0:
 					b.WriteString(sprintf(" CN:%v", connections))
 					if emaSpeed > 0 {
 						remaining := float64(file.IncompleteSize())
@@ -913,6 +928,10 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						b.WriteString(sprintf(" DL:%v", formatBytes(emaSpeed, "B/s")))
 						b.WriteString(sprintf(" ETA:%v", formatETA(time.Duration(seconds)*time.Second)))
 					}
+				case status == StatusDownloading:
+					b.WriteString(" connecting...")
+				case status == StatusWaitStreaming:
+					b.WriteString(" streaming...")
 				}
 				if s := b.String(); s != statusLine {
 					statusLine = s
@@ -1119,6 +1138,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				if offset >= streamOffset+streamCacheSize {
 					returnIncomplete(offset, size)
 					streamCacheFull = make(chan struct{})
+					queuedMessages.Next(StatusChangedMessage{StatusWaitStreaming})
 					offset := offset
 					go func() {
 						defer close(streamCacheFull)
@@ -1402,6 +1422,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			delayNewTask = nil
 		case <-streamCacheFull:
 			streamCacheFull = nil
+			queuedMessages.Next(StatusChangedMessage{StatusDownloading})
 		case e := <-messages:
 			switch e := e.(type) {
 			case ResponseMessage:
