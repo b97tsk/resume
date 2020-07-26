@@ -288,7 +288,13 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		return 0
 	}
 
-	var cookieJar http.CookieJar
+	cookieJar, err := cookiejar.New(&cookiejar.Options{
+		PublicSuffixList: publicsuffix.List,
+	})
+	if err != nil {
+		eprintln(err)
+		return 1
+	}
 
 	if !app.showStatus {
 		if app.URL == "" {
@@ -313,13 +319,10 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}
 		if app.CookieFile != "" {
 			cookiefile := os.ExpandEnv(app.CookieFile)
-			jar, err := loadCookies(cookiefile)
+			err := loadCookies(cookiefile, cookieJar)
 			if err != nil && !os.IsNotExist(err) {
 				eprintln(err)
 				return 1
-			}
-			if err == nil {
-				cookieJar = jar
 			}
 		}
 	}
@@ -1652,7 +1655,7 @@ func sanitizeFilename(name string) string {
 	return re.ReplaceAllString(name, "_")
 }
 
-func loadCookies(name string) (jar http.CookieJar, err error) {
+func loadCookies(name string, jar http.CookieJar) (err error) {
 	file, err := os.Open(name)
 	if err != nil {
 		return
@@ -1700,14 +1703,6 @@ func loadCookies(name string) (jar http.CookieJar, err error) {
 			host = host[1:]
 		}
 
-		if jar == nil {
-			jar, err = cookiejar.New(&cookiejar.Options{
-				PublicSuffixList: publicsuffix.List,
-			})
-			if err != nil {
-				return nil, err
-			}
-		}
 		jar.SetCookies(
 			&url.URL{Scheme: scheme, Host: host},
 			[]*http.Cookie{&cookie},
