@@ -1024,7 +1024,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	}
 
 	takeIncomplete := func() (offset, size int64) {
-		splitSize := uint(0)
+		splitSize := app.MinSplitSize
 		if incompleteSize := file.IncompleteSize(); incompleteSize > 0 {
 			average := float64(incompleteSize) / float64(app.Connections)
 			splitSize = uint(math.Ceil(average / (1024 * 1024)))
@@ -1088,6 +1088,9 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	syncTicker := time.NewTicker(syncPeriod)
 	defer syncTicker.Stop()
 
+	re1 := regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+)$`)
+	re2 := regexp.MustCompile(`^bytes \*/(\d+)$`)
+	errTryAgain := enew("try again")
 	mainDone := mainCtx.Done()
 
 	for {
@@ -1197,13 +1200,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					return
 				}
 
-				shouldLimitSize := false
-				if file.ContentSize() > 0 {
-					req.Header.Set("Range", sprintf("bytes=%v-%v", offset, offset+size-1))
-				} else {
-					req.Header.Set("Range", sprintf("bytes=%v-", offset))
-					shouldLimitSize = true
-				}
+				req.Header.Set("Range", sprintf("bytes=%v-%v", offset, offset+size-1))
 
 				if app.Referer != "" {
 					req.Header.Set("Referer", app.Referer)
@@ -1239,14 +1236,29 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						fatal = true
 						return
 					}
-					re := regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+)$`)
-					slice := re.FindStringSubmatch(contentRange)
+					slice := re1.FindStringSubmatch(contentRange)
 					if slice == nil {
 						err = errorf("Content-Range unrecognized: %v", contentRange)
 						fatal = true
 						return
 					}
 					contentSize, _ = strconv.ParseInt(slice[3], 10, 64)
+				case http.StatusRequestedRangeNotSatisfiable:
+					contentRange := resp.Header.Get("Content-Range")
+					if contentRange != "" && file.ContentSize() == 0 {
+						slice := re2.FindStringSubmatch(contentRange)
+						if slice != nil {
+							contentSize, _ = strconv.ParseInt(slice[1], 10, 64)
+							if contentSize > 0 {
+								file.SetContentSize(contentSize)
+								err = errTryAgain
+								return
+							}
+						}
+					}
+					err = enew(resp.Status)
+					fatal = true
+					return
 				default:
 					err = enew(resp.Status)
 					return
@@ -1351,17 +1363,6 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					file.SyncNow()
 				}
 
-				body := io.Reader(resp.Body)
-				if shouldLimitSize {
-					returnIncomplete(offset, size)
-					previousOffset := offset
-					offset, size = takeIncomplete()
-					if offset != previousOffset {
-						panic("offset != previousOffset")
-					}
-					body = io.LimitReader(body, size)
-				}
-
 				sink.Next(ResponseMessage{resp.Request.URL.String()})
 
 				go func() (err error) {
@@ -1387,7 +1388,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						if shouldResetTimer {
 							readTimer.Reset(readTimeout)
 						}
-						n, err := readAndWrite(body, offset)
+						n, err := readAndWrite(resp.Body, offset)
 						readTimer.Stop()
 						shouldResetTimer = true
 						if n > 0 {
@@ -1471,15 +1472,18 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}
 			case CompleteMessage:
 				activeCount--
-				if e.Responsed && len(allUserAgents) > 1 {
-					// Prepare to test all user agents again.
-					userAgents = newUserAgents
-					userAgents = append(userAgents, allUserAgents[userAgentIndex:]...)
-					userAgents = append(userAgents, allUserAgents[:userAgentIndex]...)
-				}
-				if !e.Responsed { // There must be an error if no response.
+				if e.Responsed {
+					if len(allUserAgents) > 1 {
+						// Prepare to test all user agents again.
+						userAgents = newUserAgents
+						userAgents = append(userAgents, allUserAgents[userAgentIndex:]...)
+						userAgents = append(userAgents, allUserAgents[:userAgentIndex]...)
+					}
+				} else { // There must be an error if no response.
 					pauseNewTask = false
-					if app.TimeoutIntolerant || !os.IsTimeout(e.Err) {
+					switch {
+					case e.Err == errTryAgain:
+					case app.TimeoutIntolerant || !os.IsTimeout(e.Err):
 						errorCount++
 						if e.Fatal {
 							fatalErrors = true
