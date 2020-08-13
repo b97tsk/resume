@@ -28,7 +28,6 @@ import (
 
 	"github.com/b97tsk/rx"
 	"github.com/b97tsk/rx/operators"
-	"github.com/b97tsk/rx/subject"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"golang.org/x/net/publicsuffix"
@@ -521,8 +520,9 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				app.status(file, w)
 			},
 		))
-		streamNotify := subject.NewSubject()
-		streamCounter := subject.NewBehaviorSubject(0)
+		streamCounter := rx.MulticastReplay(&rx.ReplayOptions{BufferSize: 1})
+		streamCounter.Next(0)
+		streamNotify := rx.Unicast()
 		streamNotify.Pipe(
 			operators.Scan(
 				func(acc, val interface{}, idx int) interface{} {
@@ -579,7 +579,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		))
 		srv := &http.Server{}
 		defer func() {
-			if streamCounter.Value().(int) > 0 {
+			if streamCounter.BlockingFirstOrDefault(mainCtx, 0).(int) > 0 {
 				// Wait until `streamCounter` remains zero for N seconds.
 				const N = 5
 				eprintln("waiting for remote streaming to complete...")
@@ -702,7 +702,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			return 0
 		}
 
-		vs := subject.NewSubject()
+		vs := rx.Unicast()
 		vs.Pipe(
 			operators.SkipUntil(rx.Timer(time.Second)),
 		).Subscribe(
@@ -809,7 +809,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	var emaValue, emaSpeed int64
 
-	byteIntervals := subject.NewSubject()
+	byteIntervals := rx.Multicast()
 	rx.Observable(
 		func(ctx context.Context, sink rx.Observer) {
 			const N = 5
@@ -889,7 +889,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	)
 
 	handleMessagesCtx, handleMessagesCancel := context.WithCancel(dlCtx)
-	queuedMessages := subject.NewSubject()
+	queuedMessages := rx.Unicast()
 	queuedMessages.Pipe(
 		operators.Congest(int(app.Connections*3)),
 		operators.DoAtLast(func(error) { handleMessagesCancel() }),
@@ -983,7 +983,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	defer measureCancel()
 
 	handleWritesCtx, handleWritesCancel := context.WithCancel(dlCtx)
-	queuedWrites := subject.NewSubject()
+	queuedWrites := rx.Unicast()
 	queuedWrites.Pipe(
 		operators.Congest(int(app.Connections*3)),
 		operators.DoAtLast(func(error) { handleWritesCancel() }),
@@ -1045,7 +1045,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	messages := make(chan interface{}, app.Connections)
 
 	handleTasksCtx, handleTasksCancel := context.WithCancel(dlCtx)
-	activeTasks := subject.NewSubject()
+	activeTasks := rx.Unicast()
 	activeTasks.Pipe(
 		operators.MergeAll(),
 		operators.DoAtLast(func(error) { handleTasksCancel() }),
