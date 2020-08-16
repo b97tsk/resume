@@ -1093,7 +1093,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	errTryAgain := enew("try again")
 	mainDone := mainCtx.Done()
 
-	for {
+	for activeCount > 0 || file.HasIncomplete() {
 		switch {
 		case activeCount >= maxDownloads:
 		case pauseNewTask:
