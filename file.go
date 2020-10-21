@@ -65,7 +65,7 @@ func init() {
 }
 
 func openDataFile(name string) (f *DataFile, err error) {
-	file, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE, 0666)
+	file, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE, 0600)
 	if err == nil {
 		f = &DataFile{name: name, file: file}
 		f.incomplete.AddRange(0, math.MaxInt64)
