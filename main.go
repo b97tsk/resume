@@ -1023,16 +1023,15 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		file.Sync()
 	}()
 
+	type buffer [readBufferSize]byte
+
 	bufferPool := sync.Pool{
-		New: func() interface{} {
-			buf := make([]byte, readBufferSize)
-			return &buf
-		},
+		New: func() interface{} { return new(buffer) },
 	}
 
 	readAndWrite := func(body io.Reader, offset int64) (n int, err error) {
-		b := bufferPool.Get().(*[]byte)
-		n, err = body.Read(*b)
+		b := bufferPool.Get().(*buffer)
+		n, err = body.Read((*b)[:])
 		if n > 0 {
 			queuedWrites.Next(func() {
 				file.WriteAt((*b)[:n], offset)
