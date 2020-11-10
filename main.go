@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/b97tsk/rx"
 	"github.com/b97tsk/rx/operators"
@@ -1678,6 +1679,9 @@ func guestFilename(rawurl string) (name string) {
 	i := strings.LastIndexAny(rawurl, "/\\?#")
 	if i != -1 && (rawurl[i] == '/' || rawurl[i] == '\\') {
 		name = sanitizeFilename(rawurl[i+1:])
+		if s, err := url.PathUnescape(name); err == nil && utf8.ValidString(s) {
+			name = s
+		}
 	}
 	return
 }
