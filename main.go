@@ -508,6 +508,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			eprintln(err)
 			return 1
 		}
+
 		exitHandler := http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
 				mainCancel()
@@ -515,15 +516,22 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		)
 		http.Handle("/exit", exitHandler)
 		http.Handle("/quit", exitHandler)
+
 		http.Handle("/status", http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
 				app.status(file, w)
 			},
 		))
+
 		streamCounter := rx.MulticastReplay(&rx.ReplayOptions{BufferSize: 1})
 		streamCounter.Next(0)
-		streamNotify := rx.Unicast()
-		streamNotify.Pipe(
+
+		streamNotify := rx.Observer(rx.Noop)
+		rx.Observable(
+			func(ctx context.Context, sink rx.Observer) {
+				streamNotify = sink.Mutex()
+			},
+		).Pipe(
 			operators.Scan(
 				func(acc, val interface{}, idx int) interface{} {
 					return acc.(int) + val.(int)
@@ -533,6 +541,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			context.Background(),
 			streamCounter.Observer,
 		)
+
 		http.Handle("/stream", http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
 				streamNotify.Next(1)
@@ -577,6 +586,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				http.ServeContent(w, r, filepath.Base(filename), time.Time{}, content)
 			},
 		))
+
 		srv := &http.Server{}
 		defer func() {
 			if streamCounter.BlockingFirstOrDefault(mainCtx, 0).(int) > 0 {
@@ -604,7 +614,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 							operators.Take(1),
 							operators.Filter(
 								func(val interface{}, idx int) bool {
-									// Check if this is the value from `Interval`.
+									// Check if this is the value from `rx.Timer`.
 									return val == nil
 								},
 							),
@@ -626,6 +636,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				close(timeout)
 			}
 		}()
+
 		go srv.Serve(l)
 	}
 
@@ -702,8 +713,12 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			return 0
 		}
 
-		vs := rx.Unicast()
-		vs.Pipe(
+		vs := rx.Observer(rx.Noop)
+		rx.Observable(
+			func(ctx context.Context, sink rx.Observer) {
+				vs = sink
+			},
+		).Pipe(
 			operators.SkipUntil(rx.Timer(time.Second)),
 		).Subscribe(
 			mainCtx,
@@ -889,8 +904,13 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	)
 
 	handleMessagesCtx, handleMessagesCancel := context.WithCancel(dlCtx)
-	queuedMessages := rx.Unicast()
-	queuedMessages.Pipe(
+	queuedMessages := rx.Observer(rx.Noop)
+	rx.Observable(
+		func(ctx context.Context, sink rx.Observer) {
+			// Since `Congest` is goroutine-safe, `sink.Mutex()` is not needed.
+			queuedMessages = sink
+		},
+	).Pipe(
 		operators.Congest(int(app.Connections*3)),
 		operators.DoAtLast(func(error) { handleMessagesCancel() }),
 	).Subscribe(handleMessagesCtx, func(t rx.Notification) {
@@ -979,12 +999,17 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	measureCtx, measureCancel := context.WithCancel(dlCtx)
 	rx.Ticker(measureInterval).Pipe(
 		operators.MapTo(MeasureMessage{}),
-	).Subscribe(measureCtx, queuedMessages.Observer)
+	).Subscribe(measureCtx, queuedMessages)
 	defer measureCancel()
 
 	handleWritesCtx, handleWritesCancel := context.WithCancel(dlCtx)
-	queuedWrites := rx.Unicast()
-	queuedWrites.Pipe(
+	queuedWrites := rx.Observer(rx.Noop)
+	rx.Observable(
+		func(ctx context.Context, sink rx.Observer) {
+			// Since `Congest` is goroutine-safe, `sink.Mutex()` is not needed.
+			queuedWrites = sink
+		},
+	).Pipe(
 		operators.Congest(int(app.Connections*3)),
 		operators.DoAtLast(func(error) { handleWritesCancel() }),
 	).Subscribe(handleWritesCtx, func(t rx.Notification) {
@@ -1045,11 +1070,15 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	messages := make(chan interface{}, app.Connections)
 
 	handleTasksCtx, handleTasksCancel := context.WithCancel(dlCtx)
-	activeTasks := rx.Unicast()
-	activeTasks.Pipe(
+	activeTasks := rx.Observer(rx.Noop)
+	rx.Observable(
+		func(ctx context.Context, sink rx.Observer) {
+			activeTasks = sink
+		},
+	).Pipe(
 		operators.MergeAll(),
 		operators.DoAtLast(func(error) { handleTasksCancel() }),
-	).Subscribe(handleTasksCtx, queuedMessages.Observer)
+	).Subscribe(handleTasksCtx, queuedMessages)
 	defer func() {
 		activeTasks.Complete()
 		done := handleTasksCtx.Done()
