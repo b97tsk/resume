@@ -883,10 +883,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						return val.(int64) > 0
 					},
 				),
-				operators.DoAtLast(
-					func(error) {
-						emaValue, emaSpeed = 0, 0
-					},
+				operators.DoAfterErrorOrComplete(
+					func() { emaValue, emaSpeed = 0, 0 },
 				),
 			).Subscribe(ctx, sink)
 		},
@@ -908,12 +906,12 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	queuedMessages := rx.Observer(rx.Noop)
 	rx.Observable(
 		func(ctx context.Context, sink rx.Observer) {
-			// Since `Congest` is goroutine-safe, `sink.Mutex()` is not needed.
+			// Since `Cache` is concurrency-safe, `sink.Mutex()` is not needed.
 			queuedMessages = sink
 		},
 	).Pipe(
-		operators.Congest(int(app.Connections*3)),
-		operators.DoAtLast(func(error) { handleMessagesCancel() }),
+		operators.Cache(int(app.Connections*3)),
+		operators.DoAfterErrorOrComplete(handleMessagesCancel),
 	).Subscribe(handleMessagesCtx, func(t rx.Notification) {
 		if t.HasValue {
 			shouldPrint := false
@@ -1007,12 +1005,12 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	queuedWrites := rx.Observer(rx.Noop)
 	rx.Observable(
 		func(ctx context.Context, sink rx.Observer) {
-			// Since `Congest` is goroutine-safe, `sink.Mutex()` is not needed.
+			// Since `Cache` is concurrency-safe, `sink.Mutex()` is not needed.
 			queuedWrites = sink
 		},
 	).Pipe(
-		operators.Congest(int(app.Connections*3)),
-		operators.DoAtLast(func(error) { handleWritesCancel() }),
+		operators.Cache(int(app.Connections*3)),
+		operators.DoAfterErrorOrComplete(handleWritesCancel),
 	).Subscribe(handleWritesCtx, func(t rx.Notification) {
 		if t.HasValue {
 			t.Value.(func())()
@@ -1076,8 +1074,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			activeTasks = sink
 		},
 	).Pipe(
-		operators.MergeAll(),
-		operators.DoAtLast(func(error) { handleTasksCancel() }),
+		operators.MergeAll(-1),
+		operators.DoAfterErrorOrComplete(handleTasksCancel),
 	).Subscribe(handleTasksCtx, queuedMessages)
 	defer func() {
 		activeTasks.Complete()
