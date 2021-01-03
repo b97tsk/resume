@@ -56,20 +56,23 @@ func init() {
 	if unsafe.Offsetof(f.ignoreSize)%8 != 0 {
 		panic("offset of DataFile.ignoreSize must be multiple of 8")
 	}
+
 	if unsafe.Offsetof(f.completeSize)%8 != 0 {
 		panic("offset of DataFile.completeSize must be multiple of 8")
 	}
+
 	if (unsafe.Offsetof(f.hash)+unsafe.Offsetof(f.hash.ContentSize))%8 != 0 {
 		panic("offset of DataFile.hash.ContentSize must be multiple of 8")
 	}
 }
 
 func openDataFile(name string) (f *DataFile, err error) {
-	file, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE, 0600)
+	file, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE, 0o600)
 	if err == nil {
 		f = &DataFile{name: name, file: file}
 		f.incomplete.AddRange(0, math.MaxInt64)
 	}
+
 	return
 }
 
@@ -112,19 +115,22 @@ func (f *DataFile) LoadHashFile() (err error) {
 	defer rc.Close()
 
 	var hash HashInfo
-	err = gob.NewDecoder(rc).Decode(&hash)
-	if err != nil {
+
+	if err := gob.NewDecoder(rc).Decode(&hash); err != nil {
 		return errorf("open %v: tampered", f.HashFile())
 	}
 
 	var completed RangeSet
+
 	for i := range hash.Pieces {
 		p := &hash.Pieces[i]
 		if p.Size > 0 && p.Size <= pieceSize && p.HashCode > 0 {
 			offset := pieceSize * int64(i)
 			completed.AddRange(offset, offset+int64(p.Size))
+
 			continue
 		}
+
 		p.Reset()
 	}
 
@@ -136,12 +142,14 @@ func (f *DataFile) LoadHashFile() (err error) {
 	if hash.ContentSize > 0 {
 		f.setContentSizeLocked(hash.ContentSize)
 	}
+
 	return
 }
 
 func (f *DataFile) Incomplete() RangeSet {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	return f.getIncompleteLocked()
 }
 
@@ -150,6 +158,7 @@ func (f *DataFile) getIncompleteLocked() RangeSet {
 	if f.hash.ContentSize > 0 {
 		high = f.hash.ContentSize
 	}
+
 	return RangeSet{{0, high}}.Intersect(f.completed.Complement())
 }
 
@@ -158,6 +167,7 @@ func (f *DataFile) IncompleteSize() int64 {
 	if contentSize > 0 {
 		return contentSize - f.CompleteSize() - f.IgnoreSize()
 	}
+
 	return -1
 }
 
@@ -191,10 +201,12 @@ func (f *DataFile) setContentSizeLocked(size int64) {
 
 func (f *DataFile) updateIgnoreSizeLocked() {
 	ignoreSize := int64(0)
+
 	if f.requested != nil {
 		ignored := f.getIncompleteLocked().Intersect(f.requested.Complement())
 		ignoreSize = int64(ignored.Sum())
 	}
+
 	atomic.StoreInt64(&f.ignoreSize, int64(ignoreSize))
 }
 
@@ -226,6 +238,7 @@ func (f *DataFile) SetContentMD5(contentMD5 string) {
 func (f *DataFile) ContentMD5() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	return f.hash.ContentMD5
 }
 
@@ -238,6 +251,7 @@ func (f *DataFile) SetContentSHA1(contentSHA1 string) {
 func (f *DataFile) ContentSHA1() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	return f.hash.ContentSHA1
 }
 
@@ -250,6 +264,7 @@ func (f *DataFile) SetContentSHA256(contentSHA256 string) {
 func (f *DataFile) ContentSHA256() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	return f.hash.ContentSHA256
 }
 
@@ -262,6 +277,7 @@ func (f *DataFile) SetEntityTag(entityTag string) {
 func (f *DataFile) EntityTag() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	return f.hash.EntityTag
 }
 
@@ -274,6 +290,7 @@ func (f *DataFile) SetLastModified(lastModified string) {
 func (f *DataFile) LastModified() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	return f.hash.LastModified
 }
 
@@ -286,14 +303,17 @@ func (f *DataFile) SetFilename(filename string) {
 func (f *DataFile) Filename() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	return f.hash.Filename
 }
 
 func (f *DataFile) SetRange(s RangeSet) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	f.incomplete = f.incomplete.Intersect(s)
 	f.requested = append(RangeSet{}, f.incomplete...)
+
 	if f.hash.ContentSize > 0 {
 		f.updateIgnoreSizeLocked()
 	}
@@ -302,34 +322,44 @@ func (f *DataFile) SetRange(s RangeSet) {
 func (f *DataFile) HasIncomplete() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	return len(f.incomplete) > 0
 }
 
 func (f *DataFile) TakeIncomplete(max int64) (offset, size int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	if len(f.incomplete) == 0 {
 		return
 	}
+
 	if max < pieceSize {
 		max = pieceSize
 	}
+
 	r := f.incomplete[0]
+
 	low, high := r.Low, (r.Low+max)/pieceSize*pieceSize
 	if low >= high {
 		return
 	}
+
 	if high > r.High {
 		high = r.High
 	}
+
 	f.incomplete.DeleteRange(low, high)
+
 	return low, high - low
 }
 
 func (f *DataFile) ReturnIncomplete(offset, size int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	f.incomplete.AddRange(offset, offset+size)
+
 	if f.hash.ContentSize > 0 {
 		f.incomplete.DeleteRange(f.hash.ContentSize, math.MaxInt64)
 	}
@@ -338,16 +368,20 @@ func (f *DataFile) ReturnIncomplete(offset, size int64) {
 func (f *DataFile) ReadAt(b []byte, offset int64) (n int, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	i := sort.Search(len(f.completed), func(i int) bool {
 		return f.completed[i].High > offset
 	})
+
 	if i < len(f.completed) && f.completed[i].Low <= offset {
 		available := int(f.completed[i].High - offset)
 		if available < len(b) {
 			b = b[:available]
 		}
+
 		return f.file.ReadAt(b, offset)
 	}
+
 	return 0, ErrIncomplete
 }
 
@@ -362,6 +396,7 @@ func (f *DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 
 	i := int(offset / pieceSize)
 	p := &f.hash.Pieces[i]
+
 	if offset != pieceSize*int64(i)+int64(p.Size) {
 		panic("WriteAt failed")
 	}
@@ -370,6 +405,7 @@ func (f *DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 	f.incomplete.DeleteRange(offset, offset+int64(n))
 
 	completeSize := f.completeSize
+
 	defer func() {
 		f.recentIncrement += f.completeSize - completeSize
 		if f.autoSyncSize > 0 && f.recentIncrement >= f.autoSyncSize {
@@ -381,8 +417,10 @@ func (f *DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 	pieceSizeRequired := pieceSize - int(p.Size)
 	if n < pieceSizeRequired {
 		atomic.AddInt64(&f.completeSize, int64(n))
+
 		p.HashCode = crc32.Update(p.HashCode, crc32.IEEETable, b)
 		p.Size += uint32(n)
+
 		return
 	}
 
@@ -398,6 +436,7 @@ func (f *DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 			p.HashCode = crc32.ChecksumIEEE(b[:pieceSize])
 			p.Size = pieceSize
 		}
+
 		b, i = b[pieceSize:], i+1
 	}
 
@@ -416,23 +455,30 @@ func (f *DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 func (f *DataFile) Alloc(ctx context.Context, progress chan<- int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	const NB = 1024 * 1024
 	buf := make([]byte, NB)
 	done := ctx.Done()
+
 	for _, r := range f.incomplete {
 		if r.High == math.MaxInt64 {
 			break
 		}
+
 		offset := r.Low
 		f.file.Seek(offset, io.SeekStart)
+
 		size := r.High - r.Low
+
 		for size > NB {
 			n, err := f.file.Write(buf)
 			if err != nil {
 				return err
 			}
+
 			size -= int64(n)
 			offset += int64(n)
+
 			select {
 			case <-done:
 				return ctx.Err()
@@ -440,10 +486,12 @@ func (f *DataFile) Alloc(ctx context.Context, progress chan<- int64) error {
 			default:
 			}
 		}
+
 		_, err := f.file.Write(buf[:size])
 		if err != nil {
 			return err
 		}
+
 		select {
 		case <-done:
 			return ctx.Err()
@@ -451,6 +499,7 @@ func (f *DataFile) Alloc(ctx context.Context, progress chan<- int64) error {
 		default:
 		}
 	}
+
 	return nil
 }
 
@@ -471,6 +520,7 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 		} else {
 			n, err = len(b), nil
 		}
+
 		if err != nil {
 			return
 		}
@@ -482,15 +532,18 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 		}
 
 		i := int(offset / pieceSize)
+
 		pieceSizeRequired := int(pieceSize*int64(i+1) - offset)
 		if n < pieceSizeRequired {
 			offset += int64(n)
 			hashCode = crc32.Update(hashCode, crc32.IEEETable, b)
+
 			return
 		}
 
-		p := &f.hash.Pieces[i]
 		hashCode = crc32.Update(hashCode, crc32.IEEETable, b[:pieceSizeRequired])
+
+		p := &f.hash.Pieces[i]
 		if hashCode != p.HashCode {
 			offset := pieceSize * int64(i)
 			f.completed.DeleteRange(offset, offset+int64(p.Size))
@@ -498,11 +551,13 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 			atomic.AddInt64(&f.completeSize, -int64(p.Size))
 			p.Reset()
 		}
+
 		b, i = b[pieceSizeRequired:], i+1
 
 		for len(b) >= pieceSize {
-			p := &f.hash.Pieces[i]
 			hashCode = crc32.ChecksumIEEE(b[:pieceSize])
+
+			p := &f.hash.Pieces[i]
 			if hashCode != p.HashCode {
 				offset := pieceSize * int64(i)
 				f.completed.DeleteRange(offset, offset+int64(p.Size))
@@ -510,11 +565,13 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 				atomic.AddInt64(&f.completeSize, -int64(p.Size))
 				p.Reset()
 			}
+
 			b, i = b[pieceSize:], i+1
 		}
 
 		offset += int64(n)
 		hashCode = crc32.ChecksumIEEE(b)
+
 		return
 	}
 
@@ -523,6 +580,7 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 
 	if err == nil && hashCode > 0 {
 		i := int(offset / pieceSize)
+
 		p := &f.hash.Pieces[i]
 		if hashCode != p.HashCode {
 			offset := pieceSize * int64(i)
@@ -539,16 +597,19 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 func (f *DataFile) Sync() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	if f.recentIncrement > 0 {
 		f.recentIncrement = 0
 		return f.syncLocked()
 	}
+
 	return nil
 }
 
 func (f *DataFile) SyncNow() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	return f.syncLocked()
 }
 
@@ -559,22 +620,28 @@ func (f *DataFile) syncLocked() error {
 	if err != nil {
 		return err
 	}
+
 	defer os.Remove(f.TempHashFile())
 
 	zw := zip.NewWriter(file)
+
 	w, err := zw.Create("HASH")
 	if err == nil {
 		err = gob.NewEncoder(w).Encode(&f.hash)
 	}
+
 	if cerr := zw.Close(); err == nil {
 		err = cerr
 	}
+
 	if err == nil {
 		err = file.Sync()
 	}
+
 	if cerr := file.Close(); err == nil {
 		err = cerr
 	}
+
 	if err != nil {
 		return err
 	}
@@ -595,6 +662,7 @@ func (f *DataFile) Close() error {
 	defer f.mu.Unlock()
 
 	var serr error
+
 	if f.recentIncrement > 0 {
 		f.recentIncrement = 0
 		serr = f.syncLocked()
@@ -605,6 +673,7 @@ func (f *DataFile) Close() error {
 	if serr != nil {
 		return serr
 	}
+
 	return cerr
 }
 

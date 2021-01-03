@@ -7,6 +7,7 @@ import (
 
 func TestRangeSet(t *testing.T) {
 	equals := func(a, b RangeSet) bool { return a.Equals(b) }
+
 	t.Run("TestAdd", func(t *testing.T) {
 		addRange := func(s RangeSet, r Range) RangeSet {
 			s.AddRange(r.Low, r.High)

@@ -227,6 +227,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		if dir, err := os.UserHomeDir(); err == nil {
 			viper.SetConfigFile(filepath.Join(dir, ".resumerc"))
 			viper.SetConfigType("yaml")
+
 			if err := viper.ReadInConfig(); err == nil {
 				viper.Unmarshal(&app.Configure)
 			}
@@ -236,20 +237,24 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	if app.conffile != "" {
 		viper.SetConfigFile(app.conffile)
 		viper.SetConfigType("yaml")
+
 		if err := viper.ReadInConfig(); err != nil {
 			if cmd.Flags().Changed("conf") || !os.IsNotExist(err) && !isDir(app.conffile) {
 				eprintln(err)
 				return 1
 			}
 		}
+
 		viper.Unmarshal(&app.Configure)
 	}
 
 	if app.Connections == 0 {
 		eprintln("Zero connections are not allowed.")
+
 		if viper.InConfig("connections") && !cmd.Flags().Changed("connections") {
 			eprintln("Please check your configure file.")
 		}
+
 		return 1
 	}
 
@@ -260,16 +265,19 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				app.DialTimeout = app.Timeout
 			}
 		}
+
 		if !cmd.Flags().Changed("read-timeout") {
 			if timeoutFlagProvided || !viper.InConfig("read-timeout") {
 				app.ReadTimeout = app.Timeout
 			}
 		}
+
 		if !cmd.Flags().Changed("response-header-timeout") {
 			if timeoutFlagProvided || !viper.InConfig("response-header-timeout") {
 				app.ResponseHeaderTimeout = app.Timeout
 			}
 		}
+
 		if !cmd.Flags().Changed("tls-handshake-timeout") {
 			if timeoutFlagProvided || !viper.InConfig("tls-handshake-timeout") {
 				app.TLSHandshakeTimeout = app.Timeout
@@ -285,6 +293,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		enc := yaml.NewEncoder(os.Stdout)
 		enc.Encode(&app.Configure)
 		enc.Close()
+
 		return 0
 	}
 
@@ -301,15 +310,18 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			if stat, _ := os.Stdin.Stat(); (stat.Mode() & os.ModeCharDevice) != 0 {
 				eprint("Enter url: ")
 			}
+
 			stdin := bufio.NewScanner(os.Stdin)
 			if !stdin.Scan() {
 				return 1
 			}
+
 			app.URL = strings.TrimSpace(stdin.Text())
 			if app.URL == "" {
 				return 1
 			}
 		}
+
 		if u, err := url.Parse(app.URL); err != nil {
 			eprintln(err)
 			return 1
@@ -317,8 +329,10 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			eprintf("unsupported protocol scheme \"%v\"\n", u.Scheme)
 			return 1
 		}
+
 		if app.CookieFile != "" {
 			cookiefile := os.ExpandEnv(app.CookieFile)
+
 			err := loadCookies(cookiefile, cookieJar)
 			if err != nil && !os.IsNotExist(err) {
 				eprintln(err)
@@ -350,11 +364,13 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		eprintln(err)
 		return 1
 	}
+
 	defer func() {
 		err := file.Close()
 		if err != nil {
 			eprintln(err)
 		}
+
 		completeSize := file.CompleteSize()
 		if completeSize == 0 && !fileexists {
 			os.Remove(filename)
@@ -369,10 +385,14 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				if !filepath.IsAbs(filename) {
 					filename = filepath.Join(app.workdir, filename)
 				}
+
 				eprintf("\"%v\" already exists.\n", filename)
+
 				return 1
 			}
+
 			eprintln(err)
+
 			return 1
 		}
 	}
@@ -390,50 +410,62 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			os.Setenv("http_proxy", app.Proxy)
 			os.Setenv("HTTP_PROXY", app.Proxy)
 		}
+
 		os.Unsetenv("https_proxy")
 		os.Unsetenv("HTTPS_PROXY")
 	}
 
 	if app.Range != "" {
 		var sections RangeSet
+
 		for _, r := range strings.Split(app.Range, ",") {
 			r := strings.Split(r, "-")
 			if len(r) > 2 {
 				eprintln("request range is invalid")
 				return 1
 			}
+
 			i, err := strconv.ParseInt(r[0], 10, 32)
 			if err != nil {
 				eprintln("request range is invalid")
 				return 1
 			}
+
 			if len(r) == 1 {
 				sections.AddRange(i*1024*1024, (i+1)*1024*1024)
 				continue
 			}
+
 			if r[1] == "" {
 				sections.AddRange(i*1024*1024, math.MaxInt64)
 				continue
 			}
+
 			j, err := strconv.ParseInt(r[1], 10, 32)
 			if err != nil || j < i {
 				eprintln("request range is invalid")
 				return 1
 			}
+
 			sections.AddRange(i*1024*1024, (j+1)*1024*1024)
 		}
+
 		if len(sections) > 0 {
 			file.SetRange(sections)
 		}
 	}
 
 	mainCtx, mainCancel := context.WithCancel(context.Background())
-	mainDone := mainCtx.Done()
 	defer mainCancel()
+
+	mainDone := mainCtx.Done()
+
 	go func() {
 		interrupt := make(chan os.Signal, 1)
-		signal.Notify(interrupt, syscall.SIGINT, syscall.SIGTERM)
 		defer signal.Stop(interrupt)
+
+		signal.Notify(interrupt, syscall.SIGINT, syscall.SIGTERM)
+
 		select {
 		case <-interrupt:
 			mainCancel()
@@ -445,10 +477,12 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		streamDone chan struct{}
 		streamRest chan struct{}
 	)
+
 	if app.streamToStdout {
 		app.streamOffset = new(int64)
 		streamDone = make(chan struct{})
 		streamRest = make(chan struct{})
+
 		defer func() {
 			select {
 			case <-streamRest:
@@ -457,16 +491,21 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			}
 			<-streamDone
 		}()
+
 		go func() {
 			defer close(streamDone)
+
 			streamInterval := time.Second / 12
 			if app.StreamRate > 0 {
 				streamInterval = time.Second / time.Duration(app.StreamRate)
 			}
+
 			streamBuffer := make([]byte, 1024*1024)
 			streamOffset := int64(0)
+
 			streamTicker := time.NewTicker(streamInterval)
 			defer streamTicker.Stop()
+
 			for {
 				select {
 				case <-mainDone:
@@ -475,6 +514,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 					if n, err := file.ReadAt(streamBuffer, streamOffset); err == nil {
 						streamOffset += int64(n)
 						atomic.StoreInt64(app.streamOffset, streamOffset)
+
 						if _, err := os.Stdout.Write(streamBuffer[:n]); err != nil {
 							mainCancel() // Exiting.
 							return
@@ -485,6 +525,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 					for streamOffset < contentSize {
 						if n, err := file.ReadAt(streamBuffer, streamOffset); err == nil {
 							streamOffset += int64(n)
+
 							if _, err := os.Stdout.Write(streamBuffer[:n]); err != nil {
 								return
 							}
@@ -497,6 +538,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 						default:
 						}
 					}
+
 					return
 				}
 			}
@@ -547,6 +589,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			func(w http.ResponseWriter, r *http.Request) {
 				streamNotify.Next(1)
 				defer streamNotify.Next(-1)
+
 				done := r.Context().Done()
 				currentOffset := int64(0)
 				content := struct {
@@ -556,6 +599,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 					ReaderFunc(
 						func(p []byte) (n int, err error) {
 							n, err = file.ReadAt(p, currentOffset)
+
 							for err == ErrIncomplete {
 								select {
 								case <-done:
@@ -566,7 +610,9 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 									n, err = file.ReadAt(p, currentOffset)
 								}
 							}
+
 							currentOffset += int64(n)
+
 							return
 						},
 					),
@@ -589,11 +635,14 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		))
 
 		srv := &http.Server{}
+
 		defer func() {
 			if streamCounter.BlockingFirstOrDefault(mainCtx, 0).(int) > 0 {
 				// Wait until `streamCounter` remains zero for N seconds.
 				const N = 5
+
 				eprintln("waiting for remote streaming to complete...")
+
 				streamCounter.Pipe(
 					operators.Filter(
 						func(val interface{}, idx int) bool {
@@ -624,8 +673,10 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 					operators.Take(1),
 				).BlockingSingle(mainCtx)
 			}
+
 			timeout := make(chan bool, 1)
 			timeout <- true
+
 			time.AfterFunc(time.Second, func() {
 				if <-timeout {
 					eprintln("shuting down remote control server...")
@@ -633,6 +684,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				}
 			})
 			srv.Shutdown(mainCtx)
+
 			if <-timeout {
 				close(timeout)
 			}
@@ -661,14 +713,18 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	for i := 0; i < 2; i++ {
 		contentSize := file.ContentSize()
 		completeSize := file.CompleteSize()
+
 		if contentSize == 0 || completeSize != contentSize {
 			app.dl(mainCtx, file, client)
+
 			contentSize = file.ContentSize()
 			completeSize = file.CompleteSize()
+
 			if contentSize == 0 || completeSize != contentSize {
 				if file.HasIncomplete() {
 					return 1
 				}
+
 				return 0 // Successfully downloaded specified range.
 			}
 		}
@@ -694,16 +750,20 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			Name string
 			Hash hash.Hash
 		}
+
 		var digests map[string]DigestInfo
+
 		for _, h := range supportedHashMethods {
 			if h.IsAlias {
 				continue
 			}
+
 			hashCode := h.Get(file)
 			if hashCode != "" {
 				if digests == nil {
 					digests = make(map[string]DigestInfo)
 				}
+
 				digests[hashCode] = DigestInfo{h.Name, h.New()}
 				eprintln(h.Name+":", hashCode)
 			}
@@ -750,11 +810,13 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 					break
 				}
 			}
+
 			s += int64(n)
 			if s*100 >= (p+1)*contentSize {
 				p = s * 100 / contentSize
 				vs.Next(p)
 			}
+
 			return
 		}
 
@@ -782,6 +844,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 		vs.Next("DONE")
 		vs.Complete()
+
 		return 0
 	}
 
@@ -847,6 +910,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						// For the first `N * measureInterval`, we average the speed.
 						emaValue = val.(int64) / int64(idx+1)
 						emaSpeed = int64(float64(emaValue) / measureIntervalMultiple)
+
 						return val
 					},
 				),
@@ -861,10 +925,12 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				operators.Map(
 					func(val interface{}, idx int) interface{} {
 						values := val.([]interface{})
+
 						sum := int64(0)
 						for _, v := range values {
 							sum += v.(int64)
 						}
+
 						return sum / int64(len(values))
 					},
 				),
@@ -875,6 +941,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						const ia = 5 // Inverse of alpha.
 						emaValue = (val.(int64) + (ia-1)*emaValue) / ia
 						emaSpeed = int64(float64(emaValue) / measureIntervalMultiple)
+
 						return val
 					},
 				),
@@ -915,16 +982,19 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	).Subscribe(handleMessagesCtx, func(t rx.Notification) {
 		if t.HasValue {
 			shouldPrint := false
+
 			switch v := t.Value.(type) {
 			case ProgressMessage:
 				if totalReceived == 0 {
 					firstRecvTime = time.Now()
 					nextReportTime = firstRecvTime.Add(reportInterval)
 				}
+
 				totalReceived += int64(v.Just)
 				recentReceived += int64(v.Just)
 			case MeasureMessage:
 				byteIntervals.Next(recentReceived)
+
 				recentReceived = 0
 				shouldPrint = file.ContentSize() > 0
 			case ResponseMessage:
@@ -938,23 +1008,30 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			case string:
 				eprint("\033[1K\r")
 				eprintln(v)
+
 				statusLine = ""
 				shouldPrint = file.ContentSize() > 0
 			}
+
 			if shouldPrint {
 				var b strings.Builder
+
 				contentSize := file.ContentSize()
 				completeSize := file.CompleteSize()
 				progress := int(float64(completeSize) / float64(contentSize) * 100)
+
 				b.WriteString(sprintf("%v%%", progress))
 				b.WriteString(sprintf(" %v", formatBytes(completeSize, "B")))
 				b.WriteString(sprintf("/%v", formatBytes(contentSize, "B")))
+
 				switch {
 				case connections > 0:
 					b.WriteString(sprintf(" CN:%v", connections))
+
 					if emaSpeed > 0 {
 						remaining := float64(file.IncompleteSize())
 						seconds := int64(math.Ceil(remaining / float64(emaSpeed)))
+
 						b.WriteString(sprintf(" DL:%v", formatBytes(emaSpeed, "B/s")))
 						b.WriteString(sprintf(" ETA:%v", formatETA(time.Duration(seconds)*time.Second)))
 					}
@@ -963,20 +1040,25 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				case status == StatusWaitStreaming:
 					b.WriteString(" streaming...")
 				}
+
 				if s := b.String(); s != statusLine {
 					statusLine = s
+
 					eprint("\033[1K\r")
 					eprint(s)
 				}
 			}
 		}
+
 		if totalReceived > 0 && (!t.HasValue || time.Now().After(nextReportTime)) {
 			nextReportTime = nextReportTime.Add(reportInterval)
 			statusLine = ""
+
 			timeUsed := time.Since(firstRecvTime)
 			if timeUsed < time.Second {
 				timeUsed = time.Second
 			}
+
 			eprint("\033[1K\r")
 			eprintf(
 				"recv %v in %v, %v, %v%% completed\n",
@@ -986,20 +1068,23 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				int(float64(file.CompleteSize())/float64(file.ContentSize())*100),
 			)
 		}
+
 		if !t.HasValue && statusLine != "" {
 			eprintln()
 		}
 	})
+
 	defer func() {
 		queuedMessages.Complete()
 		<-handleMessagesCtx.Done()
 	}()
 
 	measureCtx, measureCancel := context.WithCancel(dlCtx)
+	defer measureCancel()
+
 	rx.Ticker(measureInterval).Pipe(
 		operators.MapTo(MeasureMessage{}),
 	).Subscribe(measureCtx, queuedMessages)
-	defer measureCancel()
 
 	handleWritesCtx, handleWritesCancel := context.WithCancel(dlCtx)
 	queuedWrites := rx.Observer(rx.Noop)
@@ -1016,6 +1101,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			t.Value.(func())()
 		}
 	})
+
 	defer func() {
 		queuedWrites.Complete()
 		<-handleWritesCtx.Done()
@@ -1030,6 +1116,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	readAndWrite := func(body io.Reader, offset int64) (n int, err error) {
 		b := bufferPool.Get().(*buffer)
+
 		n, err = body.Read((*b)[:])
 		if n > 0 {
 			queuedWrites.Next(func() {
@@ -1037,20 +1124,25 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				bufferPool.Put(b)
 			})
 		}
+
 		return
 	}
 
 	waitWriteDone := func() {
 		q := make(chan struct{})
+
 		queuedWrites.Next(func() { close(q) })
+
 		<-q
 	}
 
 	takeIncomplete := func() (offset, size int64) {
 		splitSize := app.MinSplitSize
+
 		if incompleteSize := file.IncompleteSize(); incompleteSize > 0 {
 			average := float64(incompleteSize) / float64(app.Connections)
 			splitSize = uint(math.Ceil(average / (1024 * 1024)))
+
 			switch {
 			case splitSize > app.MaxSplitSize && app.MaxSplitSize > 0:
 				splitSize = app.MaxSplitSize
@@ -1058,6 +1150,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				splitSize = app.MinSplitSize
 			}
 		}
+
 		return file.TakeIncomplete(int64(splitSize) * 1024 * 1024)
 	}
 
@@ -1077,9 +1170,12 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		operators.MergeAll(-1),
 		operators.DoAfterErrorOrComplete(handleTasksCancel),
 	).Subscribe(handleTasksCtx, queuedMessages)
+
 	defer func() {
 		activeTasks.Complete()
+
 		done := handleTasksCtx.Done()
+
 		for {
 			select {
 			case <-done:
@@ -1160,9 +1256,11 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					break
 				}
 			}
+
 			currentURL = app.URL
 			maxDownloads = app.Connections
 			errorCount = 0
+
 			fallthrough
 		default:
 			offset, size := takeIncomplete()
@@ -1170,21 +1268,29 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				if activeCount == 0 {
 					return
 				}
+
 				break
 			}
 
 			if app.streamToStdout && app.StreamCache > 0 {
 				streamCacheSize := int64(app.StreamCache) * 1024 * 1024
 				streamOffset := atomic.LoadInt64(app.streamOffset)
+
 				if offset >= streamOffset+streamCacheSize {
 					returnIncomplete(offset, size)
+
 					streamCacheFull = make(chan struct{})
+
 					queuedMessages.Next(StatusChangedMessage{StatusWaitStreaming})
+
 					offset := offset
+
 					go func() {
 						defer close(streamCacheFull)
+
 						ticker := time.NewTicker(time.Second)
 						defer ticker.Stop()
+
 						for {
 							select {
 							case <-mainDone:
@@ -1197,6 +1303,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 							}
 						}
 					}()
+
 					break
 				}
 			}
@@ -1213,6 +1320,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					err   error
 					fatal bool
 				)
+
 				defer func() {
 					if err != nil {
 						returnIncomplete(offset, size)
@@ -1241,6 +1349,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				if err != nil {
 					return
 				}
+
 				defer func() {
 					if err != nil {
 						resp.Body.Close()
@@ -1248,27 +1357,34 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}()
 
 				var contentSize int64
+
 				switch resp.StatusCode {
 				case http.StatusOK:
 					if offset > 0 {
 						err = enew("this server does not support partial requests")
 						fatal = true
+
 						return
 					}
+
 					contentSize = resp.ContentLength
 				case http.StatusPartialContent:
 					contentRange := resp.Header.Get("Content-Range")
 					if contentRange == "" {
 						err = enew("Content-Range not found")
 						fatal = true
+
 						return
 					}
+
 					slice := re1.FindStringSubmatch(contentRange)
 					if slice == nil {
 						err = errorf("Content-Range unrecognized: %v", contentRange)
 						fatal = true
+
 						return
 					}
+
 					contentSize, _ = strconv.ParseInt(slice[3], 10, 64)
 				case http.StatusRequestedRangeNotSatisfiable:
 					contentRange := resp.Header.Get("Content-Range")
@@ -1278,21 +1394,27 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 							contentSize, _ = strconv.ParseInt(slice[1], 10, 64)
 							if contentSize > 0 {
 								file.SetContentSize(contentSize)
+
 								err = errTryAgain
+
 								return
 							}
 						}
 					}
+
 					err = enew(resp.Status)
 					fatal = true
+
 					return
 				default:
 					err = enew(resp.Status)
 					return
 				}
+
 				if contentSize <= 0 {
 					err = enew("Content-Length unknown or zero")
 					fatal = true
+
 					return
 				}
 
@@ -1303,11 +1425,13 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				case contentSize:
 				case 0:
 					file.SetContentSize(contentSize)
+
 					shouldAlloc = app.Alloc
 					shouldSync = true
 				default:
 					err = enew("Content-Length mismatched")
 					fatal = true
+
 					return
 				}
 
@@ -1316,16 +1440,20 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					if hashCode == "" {
 						hashCode = resp.Header.Get("X-Checksum-" + h.Name)
 					}
+
 					if len(hashCode) == h.Length {
 						hashCode = strings.ToLower(hashCode)
+
 						switch h.Get(file) {
 						case hashCode:
 						case "":
 							h.Set(file, hashCode)
+
 							shouldSync = true
 						default:
 							err = enew(h.Name + " mismatched")
 							fatal = true
+
 							return
 						}
 					}
@@ -1337,11 +1465,13 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					case eTag:
 					case "":
 						file.SetEntityTag(eTag)
+
 						shouldSync = true
 					default:
 						if !app.SkipETag {
 							err = enew("ETag mismatched")
 							fatal = true
+
 							return
 						}
 					}
@@ -1353,11 +1483,13 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					case lastModified:
 					case "":
 						file.SetLastModified(lastModified)
+
 						shouldSync = true
 					default:
 						if !app.SkipLastModified {
 							err = enew("Last-Modified mismatched")
 							fatal = true
+
 							return
 						}
 					}
@@ -1369,6 +1501,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					if filename := params["filename"]; filename != "" {
 						if filename != file.Filename() {
 							file.SetFilename(filename)
+
 							shouldSync = true
 						}
 					}
@@ -1402,9 +1535,11 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 					defer func() {
 						resp.Body.Close()
+
 						if shouldWaitWrite {
 							waitWriteDone()
 						}
+
 						returnIncomplete(offset, size)
 						sink.Next(CompleteMessage{err, false, true})
 						sink.Complete()
@@ -1415,18 +1550,25 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						if shouldResetTimer {
 							readTimer.Reset(readTimeout)
 						}
+
 						n, err := readAndWrite(resp.Body, offset)
+
 						readTimer.Stop()
+
 						shouldResetTimer = true
+
 						if n > 0 {
 							offset, size = offset+int64(n), size-int64(n)
 							shouldWaitWrite = true
+
 							sink.Next(ProgressMessage{n})
 						}
+
 						if err != nil {
 							if err == io.EOF {
 								return nil
 							}
+
 							return err
 						}
 					}
@@ -1437,10 +1579,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				if t.HasValue {
 					switch t.Value.(type) {
 					case ProgressMessage:
-
 					case ResponseMessage:
 						messages <- t.Value
-
 					case CompleteMessage:
 						messages <- t.Value
 					}
@@ -1448,6 +1588,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			}
 
 			activeCount++
+
 			pauseNewTask = true
 			delayNewTask = time.After(app.Interval)
 
@@ -1461,6 +1602,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			delayNewTask = nil
 		case <-streamCacheFull:
 			streamCacheFull = nil
+
 			queuedMessages.Next(StatusChangedMessage{StatusDownloading})
 		case e := <-messages:
 			switch e := e.(type) {
@@ -1469,6 +1611,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				currentURL = e.URL // Save the redirected one if redirection happens.
 				maxDownloads = app.Connections
 				errorCount = 0
+
 				if len(allUserAgents) > 1 {
 					queuedMessages.Next(
 						sprintf(
@@ -1476,7 +1619,9 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 							userAgentIndex+1,
 						),
 					)
+
 					userAgentConns++
+
 					switch userAgentConns {
 					case app.PerUserAgentLimit:
 						// We successfully started some downloads with current
@@ -1499,6 +1644,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}
 			case CompleteMessage:
 				activeCount--
+
 				if e.Responsed {
 					if len(allUserAgents) > 1 {
 						// Prepare to test all user agents again.
@@ -1508,20 +1654,25 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					}
 				} else { // There must be an error if no response.
 					pauseNewTask = false
+
 					switch {
 					case e.Err == errTryAgain:
 					case app.TimeoutIntolerant || !os.IsTimeout(e.Err):
 						errorCount++
+
 						if e.Fatal {
 							fatalErrors = true
 						}
+
 						err := e.Err
+
 						switch e := err.(type) {
 						case *net.OpError:
 							err = e.Err
 						case *url.Error:
 							err = e.Err
 						}
+
 						message := err.Error()
 						if len(allUserAgents) > 1 {
 							message = sprintf(
@@ -1542,32 +1693,42 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 func (app *App) alloc(mainCtx context.Context, file *DataFile) error {
 	done := make(chan struct{})
+
 	defer func() {
 		<-done
 		eprint("\033[1K\r")
 	}()
+
 	progress := make(chan int64, 1)
 	defer close(progress)
+
 	contentSize := file.ContentSize()
+
 	go func() {
 		p := int64(0)
+
 		eprint("\033[1K\r")
 		eprintf("allocating...%v%%", p)
+
 		for s := range progress {
 			if s*100 >= (p+1)*contentSize {
 				p = s * 100 / contentSize
+
 				eprint("\033[1K\r")
 				eprintf("allocating...%v%%", p)
 			}
 		}
+
 		close(done)
 	}()
+
 	return file.Alloc(mainCtx, progress)
 }
 
 func (app *App) status(file *DataFile, writer io.Writer) {
 	contentSize := file.ContentSize()
 	completeSize := file.CompleteSize()
+
 	if contentSize > 0 {
 		progress := int(float64(completeSize) / float64(contentSize) * 100)
 		fprintln(writer, "Size:", contentSize)
@@ -1576,38 +1737,49 @@ func (app *App) status(file *DataFile, writer io.Writer) {
 		fprintln(writer, "Size: unknown")
 		fprintln(writer, "Completed:", completeSize)
 	}
+
 	var items []string
+
 	for _, r := range file.Incomplete() {
 		i := int(r.Low / (1024 * 1024))
+
 		if r.High == math.MaxInt64 {
 			items = append(items, sprintf("%v-", i))
 			break
 		}
+
 		j := int(math.Ceil(float64(r.High)/(1024*1024))) - 1
 		if i == j {
 			items = append(items, itoa(i))
 			continue
 		}
+
 		items = append(items, sprintf("%v-%v", i, j))
 	}
+
 	if len(items) > 0 {
 		fprintln(writer, "Incomplete(MiB):", strings.Join(items, ","))
 	}
+
 	for _, h := range supportedHashMethods {
 		if h.IsAlias {
 			continue
 		}
+
 		hashCode := h.Get(file)
 		if hashCode != "" {
 			fprintln(writer, h.Name+":", hashCode)
 		}
 	}
+
 	if entityTag := file.EntityTag(); entityTag != "" {
 		fprintln(writer, "ETag:", entityTag)
 	}
+
 	if lastModified := file.LastModified(); lastModified != "" {
 		fprintln(writer, "Last-Modified:", lastModified)
 	}
+
 	if filename := file.Filename(); filename != "" {
 		fprintln(writer, "Filename:", filename)
 	}
@@ -1617,17 +1789,22 @@ func formatBytes(n int64, unit string) string {
 	if n == 0 {
 		return "0"
 	}
+
 	if n < 1024 {
 		return strconv.FormatInt(n, 10) + unit
 	}
+
 	kilobytes := int64(math.Ceil(float64(n) / 1024))
 	if kilobytes < 1000 {
 		return strconv.FormatInt(kilobytes, 10) + "Ki" + unit
 	}
+
 	if kilobytes < 102400 {
 		return strconv.FormatFloat(float64(n)/(1024*1024), 'f', 1, 64) + "Mi" + unit
 	}
+
 	megabytes := int64(math.Ceil(float64(n) / (1024 * 1024)))
+
 	return strconv.FormatInt(megabytes, 10) + "Mi" + unit
 }
 
@@ -1638,12 +1815,15 @@ func formatTimeUsed(d time.Duration) (s string) {
 	default:
 		s = d.Round(time.Minute).String()
 	}
+
 	if strings.HasSuffix(s, "m0s") {
 		s = s[:len(s)-2]
 	}
+
 	if strings.HasSuffix(s, "h0m") {
 		s = s[:len(s)-2]
 	}
+
 	return
 }
 
@@ -1656,12 +1836,15 @@ func formatETA(d time.Duration) (s string) {
 	default:
 		s = d.Round(time.Hour).String()
 	}
+
 	if strings.HasSuffix(s, "m0s") {
 		s = s[:len(s)-2]
 	}
+
 	if strings.HasSuffix(s, "h0m") {
 		s = s[:len(s)-2]
 	}
+
 	return
 }
 
@@ -1670,6 +1853,7 @@ func isDir(name string) bool {
 	if err != nil {
 		return false
 	}
+
 	return stat.IsDir()
 }
 
@@ -1681,6 +1865,7 @@ func guestFilename(rawurl string) (name string) {
 			name = s
 		}
 	}
+
 	return
 }
 
@@ -1730,9 +1915,11 @@ func loadCookies(name string, jar http.CookieJar) (err error) {
 
 		scheme := "http"
 		host := cookie.Domain
+
 		if cookie.Secure {
 			scheme = "https"
 		}
+
 		if host != "" && host[0] == '.' {
 			host = host[1:]
 		}
@@ -1742,5 +1929,6 @@ func loadCookies(name string, jar http.CookieJar) (err error) {
 			[]*http.Cookie{&cookie},
 		)
 	}
+
 	return
 }
