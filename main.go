@@ -412,16 +412,15 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	}
 
 	if app.Proxy != "" {
-		if strings.ToLower(app.Proxy) == "direct" {
-			os.Unsetenv("http_proxy")
-			os.Unsetenv("HTTP_PROXY")
-		} else {
-			os.Setenv("http_proxy", app.Proxy)
-			os.Setenv("HTTP_PROXY", app.Proxy)
-		}
-
+		os.Unsetenv("http_proxy")
+		os.Unsetenv("HTTP_PROXY")
 		os.Unsetenv("https_proxy")
 		os.Unsetenv("HTTPS_PROXY")
+
+		if strings.ToUpper(app.Proxy) != "DIRECT" {
+			os.Setenv("HTTP_PROXY", app.Proxy)
+			os.Setenv("HTTPS_PROXY", app.Proxy)
+		}
 	}
 
 	if app.Range != "" {
