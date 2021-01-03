@@ -468,12 +468,12 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 	mainDone := mainCtx.Done()
 
+	interrupt := make(chan os.Signal, 1)
+	defer signal.Stop(interrupt)
+
+	signal.Notify(interrupt, syscall.SIGINT, syscall.SIGTERM)
+
 	go func() {
-		interrupt := make(chan os.Signal, 1)
-		defer signal.Stop(interrupt)
-
-		signal.Notify(interrupt, syscall.SIGINT, syscall.SIGTERM)
-
 		select {
 		case <-interrupt:
 			mainCancel()
