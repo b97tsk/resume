@@ -195,6 +195,8 @@ func TestRangeSet(t *testing.T) {
 }
 
 func assert(t *testing.T, message string, ok bool) {
+	t.Helper()
+
 	if !ok {
 		t.Fatal(message)
 	}

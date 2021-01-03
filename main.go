@@ -140,6 +140,13 @@ func main() {
 		},
 	}
 
+	must := func(err error) {
+		if err != nil {
+			eprintln(err)
+			os.Exit(1)
+		}
+	}
+
 	flags := rootCmd.PersistentFlags()
 
 	flags.BoolVar(&app.Alloc, "alloc", false, "alloc disk space before the first write")
@@ -169,7 +176,7 @@ func main() {
 	flags.UintVarP(&app.MaxSplitSize, "max-split", "s", 0, "maximal split size (MiB), 0 means use maximum possible")
 	flags.UintVarP(&app.MinSplitSize, "min-split", "p", 0, "minimal split size (MiB), even smaller value may be used")
 
-	viper.BindPFlags(flags)
+	must(viper.BindPFlags(flags))
 
 	flags.BoolVarP(&app.noUserConfig, "no-user-config", "n", false, "do not load .resumerc file")
 	flags.StringVarP(&app.workdir, "workdir", "w", ".", "working directory")
@@ -204,12 +211,12 @@ func main() {
 		flags := streamCmd.PersistentFlags()
 		flags.UintVar(&app.StreamRate, "rate", 12, "maximum number of stream rate (MiB/s)")
 		flags.UintVarP(&app.StreamCache, "cache", "k", 0, "stream cache size (MiB), 0 means unlimited")
-		viper.BindPFlag("stream-rate", flags.Lookup("rate"))
-		viper.BindPFlag("stream-cache", flags.Lookup("cache"))
+		must(viper.BindPFlag("stream-rate", flags.Lookup("rate")))
+		must(viper.BindPFlag("stream-cache", flags.Lookup("cache")))
 	}
 	rootCmd.AddCommand(streamCmd)
 
-	rootCmd.Execute()
+	_ = rootCmd.Execute()
 }
 
 func (app *App) Main(cmd *cobra.Command, args []string) int {
@@ -229,7 +236,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			viper.SetConfigType("yaml")
 
 			if err := viper.ReadInConfig(); err == nil {
-				viper.Unmarshal(&app.Configure)
+				_ = viper.Unmarshal(&app.Configure)
 			}
 		}
 	}
@@ -245,7 +252,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			}
 		}
 
-		viper.Unmarshal(&app.Configure)
+		_ = viper.Unmarshal(&app.Configure)
 	}
 
 	if app.Connections == 0 {
@@ -291,7 +298,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 	if app.showConfigure {
 		enc := yaml.NewEncoder(os.Stdout)
-		enc.Encode(&app.Configure)
+		_ = enc.Encode(&app.Configure)
 		enc.Close()
 
 		return 0
@@ -643,7 +650,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 				eprintln("waiting for remote streaming to complete...")
 
-				streamCounter.Pipe(
+				_, _ = streamCounter.Pipe(
 					operators.Filter(
 						func(val interface{}, idx int) bool {
 							return val == 0
@@ -683,14 +690,15 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 					close(timeout)
 				}
 			})
-			srv.Shutdown(mainCtx)
+
+			_ = srv.Shutdown(mainCtx)
 
 			if <-timeout {
 				close(timeout)
 			}
 		}()
 
-		go srv.Serve(l)
+		go func() { _ = srv.Serve(l) }()
 	}
 
 	client := &http.Client{
@@ -1105,7 +1113,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	defer func() {
 		queuedWrites.Complete()
 		<-handleWritesCtx.Done()
-		file.Sync()
+
+		_ = file.Sync()
 	}()
 
 	type buffer [readBufferSize]byte
@@ -1120,7 +1129,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		n, err = body.Read((*b)[:])
 		if n > 0 {
 			queuedWrites.Next(func() {
-				file.WriteAt((*b)[:n], offset)
+				_, _ = file.WriteAt((*b)[:n], offset)
 				bufferPool.Put(b)
 			})
 		}
@@ -1516,16 +1525,18 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}
 
 				if app.Truncate {
-					file.Truncate(contentSize)
+					_ = file.Truncate(contentSize)
 				}
 
 				if shouldSync {
-					file.SyncNow()
+					_ = file.SyncNow()
 				}
 
 				sink.Next(ResponseMessage{resp.Request.URL.String()})
 
-				go func() (err error) {
+				go func() {
+					var result error
+
 					var (
 						readTimeout      = app.ReadTimeout
 						readTimer        = time.AfterFunc(readTimeout, reqCancel)
@@ -1541,7 +1552,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						}
 
 						returnIncomplete(offset, size)
-						sink.Next(CompleteMessage{err, false, true})
+						sink.Next(CompleteMessage{result, false, true})
 						sink.Complete()
 						reqCancel()
 					}()
@@ -1566,10 +1577,12 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 						if err != nil {
 							if err == io.EOF {
-								return nil
+								return
 							}
 
-							return err
+							result = err
+
+							return
 						}
 					}
 				}()
@@ -1686,7 +1699,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}
 			}
 		case <-syncTicker.C:
-			file.Sync()
+			_ = file.Sync()
 		}
 	}
 }

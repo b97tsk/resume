@@ -207,15 +207,18 @@ func (f *DataFile) updateIgnoreSizeLocked() {
 		ignoreSize = int64(ignored.Sum())
 	}
 
-	atomic.StoreInt64(&f.ignoreSize, int64(ignoreSize))
+	atomic.StoreInt64(&f.ignoreSize, ignoreSize)
 }
 
 func (f *DataFile) Truncate(size int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	curoffset, _ := f.file.Seek(0, io.SeekCurrent)
-	defer f.file.Seek(curoffset, io.SeekStart)
+	offsetSave, _ := f.file.Seek(0, io.SeekCurrent)
+
+	defer func() {
+		_, _ = f.file.Seek(offsetSave, io.SeekStart)
+	}()
 
 	fileSize, _ := f.file.Seek(0, io.SeekEnd)
 	if size == fileSize {
@@ -410,7 +413,7 @@ func (f *DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 		f.recentIncrement += f.completeSize - completeSize
 		if f.autoSyncSize > 0 && f.recentIncrement >= f.autoSyncSize {
 			f.recentIncrement = 0
-			f.syncLocked()
+			_ = f.syncLocked()
 		}
 	}()
 
@@ -466,7 +469,7 @@ func (f *DataFile) Alloc(ctx context.Context, progress chan<- int64) error {
 		}
 
 		offset := r.Low
-		f.file.Seek(offset, io.SeekStart)
+		_, _ = f.file.Seek(offset, io.SeekStart)
 
 		size := r.High - r.Low
 
@@ -575,7 +578,7 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 		return
 	}
 
-	f.file.Seek(0, io.SeekStart)
+	_, _ = f.file.Seek(0, io.SeekStart)
 	_, err := io.Copy(WriterFunc(w), f.file)
 
 	if err == nil && hashCode > 0 {
@@ -646,7 +649,9 @@ func (f *DataFile) syncLocked() error {
 		return err
 	}
 
-	os.Rename(f.TempHashFile(), f.HashFile())
+	if err := os.Rename(f.TempHashFile(), f.HashFile()); err != nil {
+		return err
+	}
 
 	return serr
 }

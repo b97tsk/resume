@@ -11,12 +11,12 @@ type Range struct {
 
 type RangeSet []Range
 
-func (p *RangeSet) Add(single int64) {
-	p.AddRange(single, single+1)
+func (set *RangeSet) Add(single int64) {
+	set.AddRange(single, single+1)
 }
 
-func (p *RangeSet) AddRange(low, high int64) {
-	s := *p
+func (set *RangeSet) AddRange(low, high int64) {
+	s := *set
 	i := sort.Search(len(s), func(i int) bool { return s[i].Low > low })
 	j := sort.Search(len(s), func(i int) bool { return s[i].High > high })
 
@@ -39,22 +39,23 @@ func (p *RangeSet) AddRange(low, high int64) {
 			s = append(s, Range{})
 			copy(s[i+1:], s[i:])
 			s[i] = Range{low, high}
-			*p = s
+			*set = s
 		}
 
 		return
 	}
 
 	s[i] = Range{low, high}
-	*p = append(s[:i+1], s[j:]...)
+	s = append(s[:i+1], s[j:]...)
+	*set = s
 }
 
-func (p *RangeSet) Delete(single int64) {
-	p.DeleteRange(single, single+1)
+func (set *RangeSet) Delete(single int64) {
+	set.DeleteRange(single, single+1)
 }
 
-func (p *RangeSet) DeleteRange(low, high int64) {
-	s := *p
+func (set *RangeSet) DeleteRange(low, high int64) {
+	s := *set
 	i := sort.Search(len(s), func(i int) bool { return s[i].High > low })
 	t := s[i:]
 	j := i + sort.Search(len(t), func(i int) bool { return t[i].Low > high })
@@ -71,7 +72,7 @@ func (p *RangeSet) DeleteRange(low, high int64) {
 					copy(s[j:], s[i:])
 					s[i].High = low
 					s[j].Low = high
-					*p = s
+					*set = s
 				}
 			} else {
 				s[i].High = low
@@ -80,7 +81,8 @@ func (p *RangeSet) DeleteRange(low, high int64) {
 			if high < s[i].High {
 				s[i].Low = high
 			} else {
-				*p = append(s[:i], s[j:]...)
+				s = append(s[:i], s[j:]...)
+				*set = s
 			}
 		}
 
@@ -97,32 +99,33 @@ func (p *RangeSet) DeleteRange(low, high int64) {
 		j--
 	}
 
-	*p = append(s[:i], s[j:]...)
+	s = append(s[:i], s[j:]...)
+	*set = s
 }
 
-func (s RangeSet) Contains(single int64) bool {
-	return s.ContainsRange(single, single+1)
+func (set RangeSet) Contains(single int64) bool {
+	return set.ContainsRange(single, single+1)
 }
 
-func (s RangeSet) ContainsRange(low, high int64) bool {
-	i := sort.Search(len(s), func(i int) bool { return s[i].High > low })
-	return i < len(s) && s[i].Low <= low && high <= s[i].High && low < high
+func (set RangeSet) ContainsRange(low, high int64) bool {
+	i := sort.Search(len(set), func(i int) bool { return set[i].High > low })
+	return i < len(set) && set[i].Low <= low && high <= set[i].High && low < high
 }
 
-func (s RangeSet) ContainsAny(low, high int64) bool {
-	i := sort.Search(len(s), func(i int) bool { return s[i].High > low })
-	t := s[i:]
+func (set RangeSet) ContainsAny(low, high int64) bool {
+	i := sort.Search(len(set), func(i int) bool { return set[i].High > low })
+	t := set[i:]
 	j := i + sort.Search(len(t), func(i int) bool { return t[i].Low >= high })
 
 	return i < j && low < high
 }
 
-func (s RangeSet) Equals(other RangeSet) bool {
-	if len(s) != len(other) {
+func (set RangeSet) Equals(other RangeSet) bool {
+	if len(set) != len(other) {
 		return false
 	}
 
-	for i, r := range s {
+	for i, r := range set {
 		if r != other[i] {
 			return false
 		}
@@ -131,15 +134,15 @@ func (s RangeSet) Equals(other RangeSet) bool {
 	return true
 }
 
-func (s RangeSet) Union(other RangeSet) RangeSet {
-	if len(s) < len(other) {
-		s, other = other, s
+func (set RangeSet) Union(other RangeSet) RangeSet {
+	if len(set) < len(other) {
+		set, other = other, set
 	}
 
 	if len(other) == 0 {
 		// Always return a distinct RangeSet.
-		result := make(RangeSet, len(s))
-		copy(result, s)
+		result := make(RangeSet, len(set))
+		copy(result, set)
 
 		return result
 	}
@@ -150,40 +153,40 @@ func (s RangeSet) Union(other RangeSet) RangeSet {
 	other = other[1:]
 
 	for {
-		i := sort.Search(len(s), func(i int) bool { return s[i].Low > r.Low })
-		j := sort.Search(len(s), func(i int) bool { return s[i].High > r.High })
+		i := sort.Search(len(set), func(i int) bool { return set[i].Low > r.Low })
+		j := sort.Search(len(set), func(i int) bool { return set[i].High > r.High })
 
-		if i > 0 && r.Low <= s[i-1].High {
-			r.Low = s[i-1].Low
+		if i > 0 && r.Low <= set[i-1].High {
+			r.Low = set[i-1].Low
 			i--
 		}
 
-		if j < len(s) && r.High >= s[j].Low {
-			r.High = s[j].High
+		if j < len(set) && r.High >= set[j].Low {
+			r.High = set[j].High
 			j++
 		}
 
-		result = append(result, s[:i]...)
+		result = append(result, set[:i]...)
 
 		if len(other) == 0 {
 			result = append(result, r)
-			result = append(result, s[j:]...)
+			result = append(result, set[j:]...)
 
 			break
 		}
 
-		s, other = other, s[j:]
+		set, other = other, set[j:]
 	}
 
 	return result
 }
 
-func (s RangeSet) Intersect(other RangeSet) RangeSet {
+func (set RangeSet) Intersect(other RangeSet) RangeSet {
 	var result RangeSet
 
 	for {
-		if len(s) < len(other) {
-			s, other = other, s
+		if len(set) < len(other) {
+			set, other = other, set
 		}
 
 		if len(other) == 0 {
@@ -191,13 +194,13 @@ func (s RangeSet) Intersect(other RangeSet) RangeSet {
 		}
 
 		r := other[0]
-		i := sort.Search(len(s), func(i int) bool { return s[i].High > r.Low })
-		t := s[i:]
+		i := sort.Search(len(set), func(i int) bool { return set[i].High > r.Low })
+		t := set[i:]
 		j := i + sort.Search(len(t), func(i int) bool { return t[i].Low >= r.High })
 
 		if i < j {
 			start := len(result)
-			result = append(result, s[i:j]...)
+			result = append(result, set[i:j]...)
 
 			if r0 := &result[start]; r0.Low < r.Low {
 				r0.Low = r.Low
@@ -209,20 +212,20 @@ func (s RangeSet) Intersect(other RangeSet) RangeSet {
 			j--
 		}
 
-		s, other = s[j:], other[1:]
+		set, other = set[j:], other[1:]
 	}
 
 	return result
 }
 
-func (s RangeSet) Complement() RangeSet {
-	if len(s) == 0 {
+func (set RangeSet) Complement() RangeSet {
+	if len(set) == 0 {
 		return RangeSet{{math.MinInt64, math.MaxInt64}}
 	}
 
 	var result RangeSet
 
-	r0 := s[0]
+	r0 := set[0]
 
 	if r0.Low > math.MinInt64 {
 		result = append(result, Range{math.MinInt64, r0.Low})
@@ -230,7 +233,7 @@ func (s RangeSet) Complement() RangeSet {
 
 	low := r0.High
 
-	for _, r := range s[1:] {
+	for _, r := range set[1:] {
 		result = append(result, Range{low, r.Low})
 		low = r.High
 	}
@@ -242,9 +245,9 @@ func (s RangeSet) Complement() RangeSet {
 	return result
 }
 
-func (s RangeSet) Sum() uint64 {
+func (set RangeSet) Sum() uint64 {
 	acc := uint64(0)
-	for _, r := range s {
+	for _, r := range set {
 		acc += uint64(r.High - r.Low)
 	}
 
