@@ -3,6 +3,7 @@ module github.com/b97tsk/resume
 go 1.14
 
 require (
+	github.com/b97tsk/rangeset v0.3.0
 	github.com/b97tsk/rx v0.5.0
 	github.com/spf13/cobra v1.0.0
 	github.com/spf13/viper v1.7.0

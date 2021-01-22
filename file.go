@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"unsafe"
+
+	"github.com/b97tsk/rangeset"
 )
 
 const pieceSize = 1024 * 1024
@@ -23,9 +25,9 @@ type DataFile struct {
 	name            string
 	file            *os.File
 	hash            HashInfo
-	completed       RangeSet
-	incomplete      RangeSet
-	requested       RangeSet
+	completed       rangeset.RangeSet
+	incomplete      rangeset.RangeSet
+	requested       rangeset.RangeSet
 	ignoreSize      int64
 	completeSize    int64
 	recentIncrement int64
@@ -122,7 +124,7 @@ func (f *DataFile) LoadHashFile() (err error) {
 		return fmt.Errorf("open %v: tampered", f.HashFile())
 	}
 
-	var completed RangeSet
+	var completed rangeset.RangeSet
 
 	for i := range hash.Pieces {
 		p := &hash.Pieces[i]
@@ -138,8 +140,8 @@ func (f *DataFile) LoadHashFile() (err error) {
 
 	f.hash = hash
 	f.completed = completed
-	f.incomplete = RangeSet{{0, math.MaxInt64}}.Intersect(completed.Complement())
-	atomic.StoreInt64(&f.completeSize, int64(completed.Sum()))
+	f.incomplete = rangeset.FromRange(0, math.MaxInt64).Difference(completed)
+	atomic.StoreInt64(&f.completeSize, int64(completed.Count()))
 
 	if hash.ContentSize > 0 {
 		f.setContentSizeLocked(hash.ContentSize)
@@ -148,20 +150,20 @@ func (f *DataFile) LoadHashFile() (err error) {
 	return
 }
 
-func (f *DataFile) Incomplete() RangeSet {
+func (f *DataFile) Incomplete() rangeset.RangeSet {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	return f.getIncompleteLocked()
 }
 
-func (f *DataFile) getIncompleteLocked() RangeSet {
+func (f *DataFile) getIncompleteLocked() rangeset.RangeSet {
 	high := int64(math.MaxInt64)
 	if f.hash.ContentSize > 0 {
 		high = f.hash.ContentSize
 	}
 
-	return RangeSet{{0, high}}.Intersect(f.completed.Complement())
+	return rangeset.FromRange(0, high).Difference(f.completed)
 }
 
 func (f *DataFile) IncompleteSize() int64 {
@@ -205,8 +207,8 @@ func (f *DataFile) updateIgnoreSizeLocked() {
 	ignoreSize := int64(0)
 
 	if f.requested != nil {
-		ignored := f.getIncompleteLocked().Intersect(f.requested.Complement())
-		ignoreSize = int64(ignored.Sum())
+		ignored := f.getIncompleteLocked().Difference(f.requested)
+		ignoreSize = int64(ignored.Count())
 	}
 
 	atomic.StoreInt64(&f.ignoreSize, ignoreSize)
@@ -312,12 +314,12 @@ func (f *DataFile) Filename() string {
 	return f.hash.Filename
 }
 
-func (f *DataFile) SetRange(s RangeSet) {
+func (f *DataFile) SetRange(s rangeset.RangeSet) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	f.incomplete = f.incomplete.Intersect(s)
-	f.requested = append(RangeSet{}, f.incomplete...)
+	f.incomplete = f.incomplete.Intersection(s)
+	f.requested = append(rangeset.RangeSet{}, f.incomplete...)
 
 	if f.hash.ContentSize > 0 {
 		f.updateIgnoreSizeLocked()

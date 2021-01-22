@@ -29,6 +29,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/b97tsk/rangeset"
 	"github.com/b97tsk/rx"
 	"github.com/b97tsk/rx/operators"
 	"github.com/spf13/cobra"
@@ -424,7 +425,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	}
 
 	if app.Range != "" {
-		var sections RangeSet
+		var sections rangeset.RangeSet
 
 		for _, r := range strings.Split(app.Range, ",") {
 			r := strings.Split(r, "-")
