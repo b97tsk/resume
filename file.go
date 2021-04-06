@@ -18,7 +18,10 @@ import (
 	"github.com/b97tsk/rangeset"
 )
 
-const pieceSize = 1024 * 1024
+const (
+	pieceSize   = 1024 * 1024
+	zipFileName = "e29b33b3-7e9c-40e0-a41b-65cdadf3b068"
+)
 
 type DataFile struct {
 	mu              sync.Mutex
@@ -39,7 +42,10 @@ type HashInfo struct {
 	ContentSize   int64
 	ContentMD5    string
 	ContentSHA1   string
+	ContentSHA224 string
 	ContentSHA256 string
+	ContentSHA384 string
+	ContentSHA512 string
 	EntityTag     string
 	LastModified  string
 	Filename      string
@@ -105,23 +111,23 @@ func (f *DataFile) LoadHashFile() (err error) {
 
 	zr, err := zip.NewReader(file, fi.Size())
 	if err != nil {
-		return fmt.Errorf("open %v: tampered", f.HashFile())
+		return f.loadHashFileFailed()
 	}
 
-	if len(zr.File) != 1 || zr.File[0].Name != "HASH" {
-		return fmt.Errorf("open %v: tampered", f.HashFile())
+	if len(zr.File) != 1 || zr.File[0].Name != zipFileName {
+		return f.loadHashFileFailed()
 	}
 
 	rc, err := zr.File[0].Open()
 	if err != nil {
-		return fmt.Errorf("open %v: tampered", f.HashFile())
+		return f.loadHashFileFailed()
 	}
 	defer rc.Close()
 
 	var hash HashInfo
 
 	if err := gob.NewDecoder(rc).Decode(&hash); err != nil {
-		return fmt.Errorf("open %v: tampered", f.HashFile())
+		return f.loadHashFileFailed()
 	}
 
 	var completed rangeset.RangeSet
@@ -148,6 +154,10 @@ func (f *DataFile) LoadHashFile() (err error) {
 	}
 
 	return
+}
+
+func (f *DataFile) loadHashFileFailed() error {
+	return fmt.Errorf("open %v: tampered or incompatible", f.HashFile())
 }
 
 func (f *DataFile) Incomplete() rangeset.RangeSet {
@@ -262,6 +272,19 @@ func (f *DataFile) ContentSHA1() string {
 	return f.hash.ContentSHA1
 }
 
+func (f *DataFile) SetContentSHA224(contentSHA224 string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hash.ContentSHA224 = contentSHA224
+}
+
+func (f *DataFile) ContentSHA224() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.hash.ContentSHA224
+}
+
 func (f *DataFile) SetContentSHA256(contentSHA256 string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -273,6 +296,32 @@ func (f *DataFile) ContentSHA256() string {
 	defer f.mu.Unlock()
 
 	return f.hash.ContentSHA256
+}
+
+func (f *DataFile) SetContentSHA384(contentSHA384 string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hash.ContentSHA384 = contentSHA384
+}
+
+func (f *DataFile) ContentSHA384() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.hash.ContentSHA384
+}
+
+func (f *DataFile) SetContentSHA512(contentSHA512 string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hash.ContentSHA512 = contentSHA512
+}
+
+func (f *DataFile) ContentSHA512() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.hash.ContentSHA512
 }
 
 func (f *DataFile) SetEntityTag(entityTag string) {
@@ -632,7 +681,7 @@ func (f *DataFile) syncLocked() error {
 
 	zw := zip.NewWriter(file)
 
-	w, err := zw.Create("HASH")
+	w, err := zw.Create(zipFileName)
 	if err == nil {
 		err = gob.NewEncoder(w).Encode(&f.hash)
 	}

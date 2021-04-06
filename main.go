@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -67,11 +68,32 @@ var supportedHashMethods = [...]struct {
 		Set:    (*DataFile).SetContentSHA1,
 	},
 	{
+		Name:   "SHA224",
+		Length: sha256.Size224 * 2,
+		New:    sha256.New224,
+		Get:    (*DataFile).ContentSHA224,
+		Set:    (*DataFile).SetContentSHA224,
+	},
+	{
 		Name:   "SHA256",
 		Length: sha256.Size * 2,
 		New:    sha256.New,
 		Get:    (*DataFile).ContentSHA256,
 		Set:    (*DataFile).SetContentSHA256,
+	},
+	{
+		Name:   "SHA384",
+		Length: sha512.Size384 * 2,
+		New:    sha512.New384,
+		Get:    (*DataFile).ContentSHA384,
+		Set:    (*DataFile).SetContentSHA384,
+	},
+	{
+		Name:   "SHA512",
+		Length: sha512.Size * 2,
+		New:    sha512.New,
+		Get:    (*DataFile).ContentSHA512,
+		Set:    (*DataFile).SetContentSHA512,
 	},
 }
 
@@ -1434,10 +1456,13 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					hashCode := resp.Header.Get("Content-" + h.Name)
 					if hashCode == "" {
 						hashCode = resp.Header.Get("X-Checksum-" + h.Name)
-						if hashCode == "" && h.Name == "SHA256" {
-							hashCode = resp.Header.Get("Content-Sha2")
-							if hashCode == "" {
-								hashCode = resp.Header.Get("X-Checksum-Sha2")
+						if hashCode == "" {
+							switch h.Name {
+							case "SHA224", "SHA256", "SHA384", "SHA512":
+								hashCode = resp.Header.Get("Content-Sha2")
+								if hashCode == "" {
+									hashCode = resp.Header.Get("X-Checksum-Sha2")
+								}
 							}
 						}
 					}
