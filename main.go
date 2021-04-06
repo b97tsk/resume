@@ -46,44 +46,32 @@ const (
 )
 
 var supportedHashMethods = [...]struct {
-	Name    string
-	IsAlias bool
-	Length  int
-	New     func() hash.Hash
-	Get     func(*DataFile) string
-	Set     func(*DataFile, string)
+	Name   string
+	Length int
+	New    func() hash.Hash
+	Get    func(*DataFile) string
+	Set    func(*DataFile, string)
 }{
 	{
-		Name:    "MD5",
-		IsAlias: false,
-		Length:  md5.Size * 2,
-		New:     md5.New,
-		Get:     (*DataFile).ContentMD5,
-		Set:     (*DataFile).SetContentMD5,
+		Name:   "MD5",
+		Length: md5.Size * 2,
+		New:    md5.New,
+		Get:    (*DataFile).ContentMD5,
+		Set:    (*DataFile).SetContentMD5,
 	},
 	{
-		Name:    "SHA1",
-		IsAlias: false,
-		Length:  sha1.Size * 2,
-		New:     sha1.New,
-		Get:     (*DataFile).ContentSHA1,
-		Set:     (*DataFile).SetContentSHA1,
+		Name:   "SHA1",
+		Length: sha1.Size * 2,
+		New:    sha1.New,
+		Get:    (*DataFile).ContentSHA1,
+		Set:    (*DataFile).SetContentSHA1,
 	},
 	{
-		Name:    "SHA2",
-		IsAlias: true,
-		Length:  sha256.Size * 2,
-		New:     sha256.New,
-		Get:     (*DataFile).ContentSHA256,
-		Set:     (*DataFile).SetContentSHA256,
-	},
-	{
-		Name:    "SHA256",
-		IsAlias: false,
-		Length:  sha256.Size * 2,
-		New:     sha256.New,
-		Get:     (*DataFile).ContentSHA256,
-		Set:     (*DataFile).SetContentSHA256,
+		Name:   "SHA256",
+		Length: sha256.Size * 2,
+		New:    sha256.New,
+		Get:    (*DataFile).ContentSHA256,
+		Set:    (*DataFile).SetContentSHA256,
 	},
 }
 
@@ -764,10 +752,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		var digests map[string]DigestInfo
 
 		for _, h := range supportedHashMethods {
-			if h.IsAlias {
-				continue
-			}
-
 			hashCode := h.Get(file)
 			if hashCode != "" {
 				if digests == nil {
@@ -1450,6 +1434,12 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					hashCode := resp.Header.Get("Content-" + h.Name)
 					if hashCode == "" {
 						hashCode = resp.Header.Get("X-Checksum-" + h.Name)
+						if hashCode == "" && h.Name == "SHA256" {
+							hashCode = resp.Header.Get("Content-Sha2")
+							if hashCode == "" {
+								hashCode = resp.Header.Get("X-Checksum-Sha2")
+							}
+						}
 					}
 
 					if len(hashCode) == h.Length {
@@ -1777,10 +1767,6 @@ func (app *App) status(file *DataFile, writer io.Writer) {
 	}
 
 	for _, h := range supportedHashMethods {
-		if h.IsAlias {
-			continue
-		}
-
 		hashCode := h.Get(file)
 		if hashCode != "" {
 			fmt.Fprintln(writer, h.Name+":", hashCode)
