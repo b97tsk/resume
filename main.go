@@ -46,6 +46,22 @@ const (
 	measureIntervalMultiple = float64(measureInterval) / float64(time.Second)
 )
 
+const (
+	exitCodeOK                   = 0
+	exitCodeFatal                = 1
+	exitCodeCanceled             = 2
+	exitCodeIncomplete           = 3
+	exitCodeURLDeficient         = 4
+	exitCodeChecksumFailed       = 5
+	exitCodeChecksumMismatched   = 6
+	exitCodeCorruptionDetected   = 7
+	exitCodeOutputFileExists     = 8
+	exitCodeOpenDataFileFailed   = 9
+	exitCodeLoadHashFileFailed   = 10
+	exitCodeLoadConfigFileFailed = 11
+	exitCodeLoadCookieFileFailed = 12
+)
+
 var supportedHashMethods = [...]struct {
 	Name   string
 	Length int
@@ -156,7 +172,7 @@ func main() {
 	must := func(err error) {
 		if err != nil {
 			println(err)
-			os.Exit(1)
+			os.Exit(exitCodeFatal)
 		}
 	}
 
@@ -237,7 +253,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		err := os.Chdir(app.workdir)
 		if err != nil {
 			println(err)
-			return 1
+			return exitCodeFatal
 		}
 	}
 
@@ -261,7 +277,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		if err := viper.ReadInConfig(); err != nil {
 			if cmd.Flags().Changed("conf") || !os.IsNotExist(err) && !isDir(app.conffile) {
 				println(err)
-				return 1
+				return exitCodeLoadConfigFileFailed
 			}
 		}
 
@@ -275,7 +291,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			println("Please check your configure file.")
 		}
 
-		return 1
+		return exitCodeFatal
 	}
 
 	if app.Timeout > 0 {
@@ -314,7 +330,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		_ = enc.Encode(&app.Configure)
 		enc.Close()
 
-		return 0
+		return exitCodeOK
 	}
 
 	cookieJar, err := cookiejar.New(&cookiejar.Options{
@@ -322,7 +338,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	})
 	if err != nil {
 		println(err)
-		return 1
+		return exitCodeFatal
 	}
 
 	if !app.showStatus {
@@ -333,21 +349,21 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 			stdin := bufio.NewScanner(os.Stdin)
 			if !stdin.Scan() {
-				return 1
+				return exitCodeURLDeficient
 			}
 
 			app.URL = strings.TrimSpace(stdin.Text())
 			if app.URL == "" {
-				return 1
+				return exitCodeURLDeficient
 			}
 		}
 
 		if u, err := url.Parse(app.URL); err != nil {
 			println(err)
-			return 1
+			return exitCodeFatal
 		} else if u.Scheme != "http" && u.Scheme != "https" {
-			printf("unsupported protocol scheme \"%v\"\n", u.Scheme)
-			return 1
+			printf("unsupported scheme \"%v\"\n", u.Scheme)
+			return exitCodeFatal
 		}
 
 		if app.CookieFile != "" {
@@ -356,7 +372,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			err := loadCookies(cookiefile, cookieJar)
 			if err != nil && !os.IsNotExist(err) {
 				println(err)
-				return 1
+				return exitCodeLoadCookieFileFailed
 			}
 		}
 	}
@@ -376,13 +392,13 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		fileexists = true
 	case !os.IsNotExist(err) || app.showStatus:
 		println(err)
-		return 1
+		return exitCodeOpenDataFileFailed
 	}
 
 	file, err := openDataFile(filename)
 	if err != nil {
 		println(err)
-		return 1
+		return exitCodeOpenDataFileFailed
 	}
 
 	defer func() {
@@ -408,18 +424,18 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 				printf("\"%v\" already exists.\n", filename)
 
-				return 1
+				return exitCodeOutputFileExists
 			}
 
 			println(err)
 
-			return 1
+			return exitCodeLoadHashFileFailed
 		}
 	}
 
 	if app.showStatus {
 		app.status(file, os.Stdout)
-		return 0
+		return exitCodeOK
 	}
 
 	if app.Proxy != "" {
@@ -441,13 +457,13 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			r := strings.Split(r, "-")
 			if len(r) > 2 {
 				println("request range is invalid")
-				return 1
+				return exitCodeFatal
 			}
 
 			i, err := strconv.ParseInt(r[0], 10, 32)
 			if err != nil {
 				println("request range is invalid")
-				return 1
+				return exitCodeFatal
 			}
 
 			if len(r) == 1 {
@@ -463,7 +479,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			j, err := strconv.ParseInt(r[1], 10, 32)
 			if err != nil || j < i {
 				println("request range is invalid")
-				return 1
+				return exitCodeFatal
 			}
 
 			sections.AddRange(i*1024*1024, (j+1)*1024*1024)
@@ -568,7 +584,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		l, err := net.Listen("tcp", app.ListenAddress)
 		if err != nil {
 			println(err)
-			return 1
+			return exitCodeFatal
 		}
 
 		exitHandler := http.HandlerFunc(
@@ -730,22 +746,20 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		Jar: cookieJar,
 	}
 
-	for i := 0; i < 2; i++ {
+	{
 		contentSize := file.ContentSize()
 		completeSize := file.CompleteSize()
 
 		if contentSize == 0 || completeSize != contentSize {
-			app.dl(mainCtx, file, client)
+			if exitCode := app.dl(mainCtx, file, client); exitCode != exitCodeOK {
+				return exitCode
+			}
 
 			contentSize = file.ContentSize()
 			completeSize = file.CompleteSize()
 
-			if contentSize == 0 || completeSize != contentSize {
-				if file.HasIncomplete() {
-					return 1
-				}
-
-				return 0 // Successfully downloaded specified range.
+			if completeSize < contentSize {
+				return exitCodeOK // Successfully downloaded specified range.
 			}
 		}
 
@@ -756,14 +770,14 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				close(streamRest)
 				select {
 				case <-mainDone:
-					return 1
+					return exitCodeCanceled
 				case <-streamDone:
 				}
 			}
 		}
 
 		if !app.Verify {
-			return 0
+			return exitCodeOK
 		}
 
 		type DigestInfo struct {
@@ -783,11 +797,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				digests[hashCode] = DigestInfo{h.Name, h.New()}
 				println(h.Name+":", hashCode)
 			}
-		}
-
-		shouldVerify := i == 0 || digests != nil
-		if !shouldVerify {
-			return 0
 		}
 
 		vs := rx.Observer(rx.Noop)
@@ -839,18 +848,23 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		err := file.Verify(mainCtx, WriterFunc(w))
 		if err != nil {
 			vs.Error(err)
-			return 1
+
+			if mainCtx.Err() != nil {
+				return exitCodeCanceled
+			}
+
+			return exitCodeChecksumFailed
 		}
 
 		if file.CompleteSize() != contentSize {
 			vs.Error(errors.New("BAD: file corrupted"))
-			continue
+			return exitCodeCorruptionDetected
 		}
 
 		for hashCode, digest := range digests {
 			if hashCode != hex.EncodeToString(digest.Hash.Sum(nil)) {
 				vs.Error(fmt.Errorf("BAD: %v mismatched", digest.Name))
-				return 1
+				return exitCodeChecksumMismatched
 			}
 		}
 
@@ -860,14 +874,12 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 		vs.Next("DONE")
 		vs.Complete()
-
-		return 0
 	}
 
-	return 1
+	return exitCodeOK
 }
 
-func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client) {
+func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client) int {
 	type (
 		Status int
 
@@ -1241,7 +1253,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		case streamCacheFull != nil:
 		case fatalErrors:
 			if activeCount == 0 {
-				return
+				return exitCodeFatal
 			}
 		case errorCount >= app.Errors:
 			if len(userAgents) > 1 {
@@ -1262,7 +1274,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				if currentURL == app.URL {
 					if activeCount == 0 {
 						// We tested all user agents, failed to start any download.
-						return // Give up.
+						return exitCodeIncomplete // Give up.
 					}
 					// We tested all user agents and successfully started
 					// some downloads, but now we are going to assume this
@@ -1283,7 +1295,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			offset, size := takeIncomplete()
 			if size == 0 {
 				if activeCount == 0 {
-					return
+					return exitCodeOK
 				}
 
 				break
@@ -1627,7 +1639,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 		select {
 		case <-mainDone:
-			return
+			return exitCodeCanceled
 		case <-delayNewTask:
 			delayNewTask = nil
 		case <-streamCacheFull:
@@ -1719,6 +1731,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			_ = file.Sync()
 		}
 	}
+
+	return exitCodeOK
 }
 
 func (app *App) alloc(mainCtx context.Context, file *DataFile) error {
