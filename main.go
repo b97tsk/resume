@@ -362,7 +362,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			println(err)
 			return exitCodeFatal
 		} else if u.Scheme != "http" && u.Scheme != "https" {
-			printf("unsupported scheme \"%v\"\n", u.Scheme)
+			println("unsupported scheme:", u.Scheme)
 			return exitCodeFatal
 		}
 
@@ -422,7 +422,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 					filename = filepath.Join(app.workdir, filename)
 				}
 
-				printf("\"%v\" already exists.\n", filename)
+				println("file already exists:", filename)
 
 				return exitCodeOutputFileExists
 			}
@@ -453,16 +453,16 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	if app.Range != "" {
 		var sections rangeset.RangeSet
 
-		for _, r := range strings.Split(app.Range, ",") {
-			r := strings.Split(r, "-")
+		for _, r0 := range strings.Split(app.Range, ",") {
+			r := strings.Split(r0, "-")
 			if len(r) > 2 {
-				println("request range is invalid")
+				println("invalid range:", r0)
 				return exitCodeFatal
 			}
 
 			i, err := strconv.ParseInt(r[0], 10, 32)
 			if err != nil {
-				println("request range is invalid")
+				println("invalid range:", r0)
 				return exitCodeFatal
 			}
 
@@ -478,7 +478,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 			j, err := strconv.ParseInt(r[1], 10, 32)
 			if err != nil || j < i {
-				println("request range is invalid")
+				println("invalid range:", r0)
 				return exitCodeFatal
 			}
 
@@ -845,8 +845,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			return
 		}
 
-		err := file.Verify(mainCtx, WriterFunc(w))
-		if err != nil {
+		if err := file.Verify(mainCtx, WriterFunc(w)); err != nil {
 			vs.Error(err)
 
 			if mainCtx.Err() != nil {
@@ -1359,7 +1358,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					}
 				}()
 
-				req, err := http.NewRequest(http.MethodGet, currentURL, nil)
+				req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, currentURL, nil)
 				if err != nil {
 					return
 				}
@@ -1371,8 +1370,6 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}
 
 				req.Header.Set("User-Agent", userAgent)
-
-				req = req.WithContext(reqCtx)
 
 				resp, err := client.Do(req)
 				if err != nil {
