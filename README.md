@@ -66,6 +66,7 @@ A configure file is an YAML document that can specify following options:
 - `truncate` truncate output file before the first write.
 - `url` the URL to download.
 - `user-agent` user agent, one for each line.
+- `verbose` write additional information to stderr.
 - `verify` verify output file after download completes.
 
 > Note that command line arguments take precedence over this configure file.

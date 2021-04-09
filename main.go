@@ -157,6 +157,7 @@ type Configure struct {
 	Truncate              bool          `mapstructure:"truncate" yaml:"truncate"`
 	URL                   string        `mapstructure:"url" yaml:"url"`
 	UserAgent             string        `mapstructure:"user-agent" yaml:"user-agent"`
+	Verbose               bool          `mapstructure:"verbose" yaml:"verbose"`
 	Verify                bool          `mapstructure:"verify" yaml:"verify"`
 }
 
@@ -188,6 +189,7 @@ func main() {
 	flags.BoolVar(&app.Verify, "verify", true, "verify output file after download completes")
 	flags.BoolVarP(&app.SkipETag, "skip-etag", "E", false, "skip unreliable ETag field")
 	flags.BoolVarP(&app.SkipLastModified, "skip-last-modified", "M", false, "skip unreliable Last-Modified field")
+	flags.BoolVarP(&app.Verbose, "verbose", "v", false, "write additional information to stderr")
 	flags.DurationVar(&app.DialTimeout, "dial-timeout", 30*time.Second, "dial timeout")
 	flags.DurationVar(&app.KeepAlive, "keep-alive", 30*time.Second, "keep-alive duration")
 	flags.DurationVar(&app.ReadTimeout, "read-timeout", 30*time.Second, "read timeout")
@@ -1065,7 +1067,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				status = v.Status
 			case string:
 				print("\033[1K\r")
-				println(v)
+				println(time.Now().Format("15:04:05"), v)
 
 				statusLine = ""
 				shouldPrint = file.ContentSize() > 0
@@ -1687,12 +1689,14 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				errorCount = 0
 
 				if len(allUserAgents) > 1 {
-					queuedMessages.Next(
-						fmt.Sprintf(
-							"UserAgent #%v: +1 connections",
-							userAgentIndex+1,
-						),
-					)
+					if app.Verbose {
+						queuedMessages.Next(
+							fmt.Sprintf(
+								"UserAgent #%v: +1 connection",
+								userAgentIndex+1,
+							),
+						)
+					}
 
 					userAgentConns++
 
@@ -1738,24 +1742,28 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 							fatalErrors = true
 						}
 
-						err := e.Err
+						if e.Fatal || activeCount == 0 || app.Verbose {
+							err := e.Err
 
-						switch e := err.(type) {
-						case *net.OpError:
-							err = e.Err
-						case *url.Error:
-							err = e.Err
-						}
+							switch e := err.(type) {
+							case *net.OpError:
+								err = e.Err
+							case *url.Error:
+								err = e.Err
+							}
 
-						message := err.Error()
-						if len(allUserAgents) > 1 {
-							message = fmt.Sprintf(
-								"UserAgent #%v: %v",
-								userAgentIndex+1,
-								message,
-							)
+							message := err.Error()
+							if len(allUserAgents) > 1 {
+								if app.Verbose {
+									message = fmt.Sprintf(
+										"UserAgent #%v: %v",
+										userAgentIndex+1,
+										message,
+									)
+								}
+							}
+							queuedMessages.Next(message)
 						}
-						queuedMessages.Next(message)
 					}
 				}
 			}
