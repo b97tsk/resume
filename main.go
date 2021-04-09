@@ -36,6 +36,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"golang.org/x/net/publicsuffix"
+	"golang.org/x/time/rate"
 	"gopkg.in/yaml.v3"
 )
 
@@ -122,6 +123,7 @@ type App struct {
 	showConfigure  bool
 	streamToStdout bool
 	streamOffset   *int64
+	rateLimiter    *rate.Limiter
 }
 
 type Configure struct {
@@ -133,6 +135,7 @@ type Configure struct {
 	Errors                uint          `mapstructure:"errors" yaml:"errors"`
 	Interval              time.Duration `mapstructure:"interval" yaml:"interval"`
 	KeepAlive             time.Duration `mapstructure:"keep-alive" yaml:"keep-alive"`
+	LimitRate             string        `mapstructure:"limit-rate" yaml:"limit-rate"`
 	ListenAddress         string        `mapstructure:"listen" yaml:"listen"`
 	MaxSplitSize          uint          `mapstructure:"max-split" yaml:"max-split"`
 	MinSplitSize          uint          `mapstructure:"min-split" yaml:"min-split"`
@@ -194,6 +197,7 @@ func main() {
 	flags.DurationVarP(&app.Interval, "interval", "i", 2*time.Second, "request interval")
 	flags.DurationVarP(&app.Timeout, "timeout", "t", 0, "if positive, all timeouts default to this value")
 	flags.StringVar(&app.CookieFile, "cookie", "", "cookie file")
+	flags.StringVarP(&app.LimitRate, "limit-rate", "l", "", "limit download rate to this value (B/s), e.g., 32K")
 	flags.StringVarP(&app.ListenAddress, "listen", "L", "", "HTTP listen address for remote control")
 	flags.StringVarP(&app.OutputFile, "output", "o", "", "output file")
 	flags.StringVarP(&app.Proxy, "proxy", "x", "", "a shorthand for setting http(s)_proxy environment variables")
@@ -292,6 +296,33 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}
 
 		return exitCodeFatal
+	}
+
+	if app.LimitRate != "" {
+		s := app.LimitRate
+		n := 0
+
+		switch s[len(s)-1] {
+		case 'K', 'k':
+			n = 10
+		case 'M', 'm':
+			n = 20
+		case 'G', 'g':
+			n = 30
+		}
+
+		s = strings.TrimRight(s, "KkMmGg")
+
+		i, err := strconv.ParseInt(s, 10, 32)
+		if err != nil || i < 0 {
+			println("invalid limit rate:", app.LimitRate)
+			return exitCodeFatal
+		}
+
+		if i > 0 {
+			const rateLimitBurst = readBufferSize
+			app.rateLimiter = rate.NewLimiter(rate.Limit(i<<n), rateLimitBurst)
+		}
 	}
 
 	if app.Timeout > 0 {
@@ -1599,6 +1630,10 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 							shouldWaitWrite = true
 
 							sink.Next(ProgressMessage{n})
+
+							if err == nil && app.rateLimiter != nil {
+								err = app.rateLimiter.WaitN(reqCtx, n)
+							}
 						}
 
 						if err != nil {

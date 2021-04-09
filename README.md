@@ -44,6 +44,7 @@ A configure file is an YAML document that can specify following options:
 - `errors` maximum number of errors.
 - `interval` request interval.
 - `keep-alive` keep-alive duration.
+- `limit-rate` limit download rate to this value.
 - `listen` HTTP listen address for remote control.
 - `max-split` maximal split size (MiB).
 - `min-split` minimal split size (MiB).
