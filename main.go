@@ -124,6 +124,8 @@ type App struct {
 	streamToStdout bool
 	streamOffset   *int64
 	rateLimiter    *rate.Limiter
+	retryCount     uint
+	retryForever   bool
 }
 
 type Configure struct {
@@ -213,9 +215,11 @@ func main() {
 
 	must(viper.BindPFlags(flags))
 
+	flags.BoolVarP(&app.retryForever, "retry-forever", "Y", false, "retry forever")
 	flags.BoolVarP(&app.noUserConfig, "no-user-config", "n", false, "do not load .resumerc file")
 	flags.StringVarP(&app.workdir, "workdir", "w", ".", "working directory")
 	flags.StringVarP(&app.conffile, "conf", "f", "resume.yaml", "configure file")
+	flags.UintVarP(&app.retryCount, "retry", "y", 0, "retry count")
 
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "status",
@@ -779,12 +783,16 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		Jar: cookieJar,
 	}
 
-	{
+	for i := uint(0); i <= app.retryCount || app.retryForever; i++ {
 		contentSize := file.ContentSize()
 		completeSize := file.CompleteSize()
 
 		if contentSize == 0 || completeSize != contentSize {
 			if exitCode := app.dl(mainCtx, file, client); exitCode != exitCodeOK {
+				if exitCode == exitCodeIncomplete {
+					continue
+				}
+
 				return exitCode
 			}
 
@@ -906,9 +914,11 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 		vs.Next("DONE")
 		vs.Complete()
+
+		return exitCodeOK
 	}
 
-	return exitCodeOK
+	return exitCodeIncomplete
 }
 
 func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client) int {
