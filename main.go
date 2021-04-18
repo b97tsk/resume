@@ -177,7 +177,7 @@ func main() {
 
 	must := func(err error) {
 		if err != nil {
-			println(err)
+			println("fatal:", err)
 			os.Exit(exitCodeFatal)
 		}
 	}
@@ -262,7 +262,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	if app.workdir != "." {
 		err := os.Chdir(app.workdir)
 		if err != nil {
-			println(err)
+			println("fatal:", err)
 			return exitCodeFatal
 		}
 	}
@@ -295,12 +295,17 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	}
 
 	if app.Connections == 0 {
-		println("Zero connections are not allowed.")
+		println("fatal: zero connections")
+		return exitCodeFatal
+	}
 
-		if viper.InConfig("connections") && !cmd.Flags().Changed("connections") {
-			println("Please check your configure file.")
-		}
+	if app.Errors == 0 {
+		println("fatal: zero errors")
+		return exitCodeFatal
+	}
 
+	if app.Interval <= 0 {
+		println("fatal: negative or zero interval")
 		return exitCodeFatal
 	}
 
@@ -321,7 +326,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 		i, err := strconv.ParseInt(s, 10, 32)
 		if err != nil || i < 0 {
-			println("invalid limit rate:", app.LimitRate)
+			println("fatal: invalid limit rate:", app.LimitRate)
 			return exitCodeFatal
 		}
 
@@ -374,7 +379,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		PublicSuffixList: publicsuffix.List,
 	})
 	if err != nil {
-		println(err)
+		println("fatal:", err)
 		return exitCodeFatal
 	}
 
@@ -396,10 +401,10 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}
 
 		if u, err := url.Parse(app.URL); err != nil {
-			println(err)
+			println("fatal:", err)
 			return exitCodeFatal
 		} else if u.Scheme != "http" && u.Scheme != "https" {
-			println("unsupported scheme:", u.Scheme)
+			println("fatal: unsupported scheme:", u.Scheme)
 			return exitCodeFatal
 		}
 
@@ -493,13 +498,13 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		for _, r0 := range strings.Split(app.Range, ",") {
 			r := strings.Split(r0, "-")
 			if len(r) > 2 {
-				println("invalid range:", r0)
+				println("fatal: invalid range:", r0)
 				return exitCodeFatal
 			}
 
 			i, err := strconv.ParseInt(r[0], 10, 32)
 			if err != nil {
-				println("invalid range:", r0)
+				println("fatal: invalid range:", r0)
 				return exitCodeFatal
 			}
 
@@ -515,7 +520,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 			j, err := strconv.ParseInt(r[1], 10, 32)
 			if err != nil || j < i {
-				println("invalid range:", r0)
+				println("fatal: invalid range:", r0)
 				return exitCodeFatal
 			}
 
@@ -620,7 +625,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	if app.ListenAddress != "" {
 		l, err := net.Listen("tcp", app.ListenAddress)
 		if err != nil {
-			println(err)
+			println("fatal:", err)
 			return exitCodeFatal
 		}
 
@@ -1432,7 +1437,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				switch resp.StatusCode {
 				case http.StatusOK:
 					if offset > 0 {
-						err = errors.New("this server does not support partial requests")
+						err = errors.New("fatal: this server does not support partial requests")
 						fatal = true
 
 						return
@@ -1442,7 +1447,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				case http.StatusPartialContent:
 					contentRange := resp.Header.Get("Content-Range")
 					if contentRange == "" {
-						err = errors.New("Content-Range not found")
+						err = errors.New("fatal: Content-Range not found in response header")
 						fatal = true
 
 						return
@@ -1450,7 +1455,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 					slice := re1.FindStringSubmatch(contentRange)
 					if slice == nil {
-						err = fmt.Errorf("Content-Range unrecognized: %v", contentRange)
+						err = fmt.Errorf("fatal: Content-Range unrecognized: %v", contentRange)
 						fatal = true
 
 						return
@@ -1473,7 +1478,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						}
 					}
 
-					err = errors.New(resp.Status)
+					err = errors.New("fatal: " + resp.Status)
 					fatal = true
 
 					return
@@ -1483,7 +1488,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}
 
 				if contentSize <= 0 {
-					err = errors.New("Content-Length unknown or zero")
+					err = errors.New("fatal: Content-Length unknown or zero")
 					fatal = true
 
 					return
@@ -1500,7 +1505,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					shouldAlloc = app.Alloc
 					shouldSync = true
 				default:
-					err = errors.New("Content-Length mismatched")
+					err = errors.New("fatal: Content-Length mismatched")
 					fatal = true
 
 					return
@@ -1531,7 +1536,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 							shouldSync = true
 						default:
-							err = errors.New(h.Name + " mismatched")
+							err = errors.New("fatal: " + h.Name + " mismatched")
 							fatal = true
 
 							return
@@ -1549,7 +1554,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						shouldSync = true
 					default:
 						if !app.SkipETag {
-							err = errors.New("ETag mismatched")
+							err = errors.New("fatal: ETag mismatched")
 							fatal = true
 
 							return
@@ -1567,7 +1572,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						shouldSync = true
 					default:
 						if !app.SkipLastModified {
-							err = errors.New("Last-Modified mismatched")
+							err = errors.New("fatal: Last-Modified mismatched")
 							fatal = true
 
 							return
