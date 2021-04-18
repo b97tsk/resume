@@ -123,6 +123,7 @@ type App struct {
 	showConfigure  bool
 	streamToStdout bool
 	streamOffset   *int64
+	canRequest     chan struct{}
 	rateLimiter    *rate.Limiter
 	retryCount     uint
 	retryForever   bool
@@ -771,6 +772,40 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		go func() { _ = srv.Serve(l) }()
 	}
 
+	app.canRequest = make(chan struct{})
+
+	go func() {
+		var (
+			timer  *time.Timer
+			timerC <-chan time.Time
+		)
+		defer func() {
+			if timer != nil {
+				timer.Stop()
+			}
+		}()
+
+		canRequest := app.canRequest
+
+		for {
+			select {
+			case <-mainDone:
+				return
+			case <-timerC:
+				canRequest = app.canRequest
+			case canRequest <- struct{}{}:
+				canRequest = nil
+
+				if timer == nil {
+					timer = time.NewTimer(app.Interval)
+					timerC = timer.C
+				} else {
+					timer.Reset(app.Interval)
+				}
+			}
+		}
+	}()
+
 	client := &http.Client{
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
@@ -1265,11 +1300,10 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	var (
 		activeCount     uint
-		pauseNewTask    bool
-		delayNewTask    <-chan time.Time
-		streamCacheFull chan struct{}
-		fatalErrors     bool
 		errorCount      uint
+		pauseNewTask    bool
+		haveFatalErrors bool
+		streamCacheFull chan struct{}
 
 		maxDownloads = app.Connections
 		currentURL   = app.URL
@@ -1295,12 +1329,10 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	mainDone := mainCtx.Done()
 
 	for activeCount > 0 || file.HasIncomplete() {
+		var canRequest <-chan struct{}
+
 		switch {
-		case activeCount >= maxDownloads:
-		case pauseNewTask:
-		case delayNewTask != nil:
-		case streamCacheFull != nil:
-		case fatalErrors:
+		case haveFatalErrors:
 			if activeCount == 0 {
 				return exitCodeFatal
 			}
@@ -1341,6 +1373,25 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 			fallthrough
 		default:
+			if activeCount >= maxDownloads {
+				break
+			}
+
+			if streamCacheFull != nil {
+				break
+			}
+
+			if pauseNewTask {
+				break
+			}
+
+			canRequest = app.canRequest
+		}
+
+		select {
+		case <-mainDone:
+			return exitCodeCanceled
+		case <-canRequest:
 			offset, size := takeIncomplete()
 			if size == 0 {
 				if activeCount == 0 {
@@ -1683,16 +1734,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			activeCount++
 
 			pauseNewTask = true
-			delayNewTask = time.After(app.Interval)
 
 			activeTasks.Next(rx.Observable(cr).Pipe(operators.Do(do)))
-		}
-
-		select {
-		case <-mainDone:
-			return exitCodeCanceled
-		case <-delayNewTask:
-			delayNewTask = nil
 		case <-streamCacheFull:
 			streamCacheFull = nil
 
@@ -1756,7 +1799,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						errorCount++
 
 						if e.Fatal {
-							fatalErrors = true
+							haveFatalErrors = true
 						}
 
 						if e.Fatal || activeCount == 0 || app.Verbose {
