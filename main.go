@@ -205,13 +205,13 @@ func main() {
 	flags.StringVarP(&app.ListenAddress, "listen", "L", "", "HTTP listen address for remote control")
 	flags.StringVarP(&app.OutputFile, "output", "o", "", "output file")
 	flags.StringVarP(&app.Proxy, "proxy", "x", "", "a shorthand for setting http(s)_proxy environment variables")
-	flags.StringVarP(&app.Range, "range", "r", "", "request range (MiB), e.g., 0-1023")
+	flags.StringVarP(&app.Range, "range", "r", "", "request range (MB), e.g., 0-1023")
 	flags.StringVarP(&app.Referer, "referer", "R", "", "referer url")
 	flags.StringVarP(&app.UserAgent, "user-agent", "A", "", "user agent")
 	flags.UintVarP(&app.Connections, "connections", "c", 4, "maximum number of parallel downloads")
 	flags.UintVarP(&app.Errors, "errors", "e", 3, "maximum number of errors")
-	flags.UintVarP(&app.MaxSplitSize, "max-split", "s", 0, "maximal split size (MiB), 0 means use maximum possible")
-	flags.UintVarP(&app.MinSplitSize, "min-split", "p", 0, "minimal split size (MiB), even smaller value may be used")
+	flags.UintVarP(&app.MaxSplitSize, "max-split", "s", 0, "maximal split size (MB), 0 means use maximum possible")
+	flags.UintVarP(&app.MinSplitSize, "min-split", "p", 0, "minimal split size (MB), even smaller value may be used")
 
 	must(viper.BindPFlags(flags))
 
@@ -248,8 +248,8 @@ func main() {
 	}
 	{
 		flags := streamCmd.PersistentFlags()
-		flags.UintVar(&app.StreamRate, "rate", 12, "maximum number of stream rate (MiB/s)")
-		flags.UintVarP(&app.StreamCache, "cache", "k", 0, "stream cache size (MiB), 0 means unlimited")
+		flags.UintVar(&app.StreamRate, "rate", 12, "maximum number of stream rate (MB/s)")
+		flags.UintVarP(&app.StreamCache, "cache", "k", 0, "stream cache size (MB), 0 means unlimited")
 		must(viper.BindPFlag("stream-rate", flags.Lookup("rate")))
 		must(viper.BindPFlag("stream-cache", flags.Lookup("cache")))
 	}
@@ -1090,20 +1090,21 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				completeSize := file.CompleteSize()
 				progress := int(float64(completeSize) / float64(contentSize) * 100)
 
-				b.WriteString(fmt.Sprintf("%v%%", progress))
-				b.WriteString(fmt.Sprintf(" %v", formatBytes(completeSize, "B")))
-				b.WriteString(fmt.Sprintf("/%v", formatBytes(contentSize, "B")))
+				b.WriteString(time.Now().Format("15:04:05"))
+				b.WriteString(fmt.Sprint(" ", formatBytes(completeSize)))
+				b.WriteString(fmt.Sprint("/", formatBytes(contentSize)))
+				b.WriteString(fmt.Sprint(" ", progress, "%"))
 
 				switch {
 				case connections > 0:
-					b.WriteString(fmt.Sprintf(" CN:%v", connections))
+					b.WriteString(fmt.Sprint(" CN:", connections))
 
 					if emaSpeed > 0 {
 						remaining := float64(file.IncompleteSize())
 						seconds := int64(math.Ceil(remaining / float64(emaSpeed)))
 
-						b.WriteString(fmt.Sprintf(" DL:%v", formatBytes(emaSpeed, "B/s")))
-						b.WriteString(fmt.Sprintf(" ETA:%v", formatETA(time.Duration(seconds)*time.Second)))
+						b.WriteString(fmt.Sprint(" DL:", formatBytes(emaSpeed)))
+						b.WriteString(fmt.Sprint(" ETA:", formatETA(time.Duration(seconds)*time.Second)))
 					}
 				case status == StatusDownloading:
 					b.WriteString(" connecting...")
@@ -1130,11 +1131,12 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			}
 
 			print("\033[1K\r")
+			print(time.Now().Format("15:04:05"))
 			printf(
-				"recv %v in %v, %v, %v%% completed\n",
-				formatBytes(totalReceived, "B"),
+				" recv %vB in %v, %vB/s, %v%% completed\n",
+				formatBytes(totalReceived),
 				formatTimeUsed(timeUsed),
-				formatBytes(int64(float64(totalReceived)/timeUsed.Seconds()), "B/s"),
+				formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
 				int(float64(file.CompleteSize())/float64(file.ContentSize())*100),
 			)
 		}
@@ -1852,7 +1854,7 @@ func (app *App) status(file *DataFile, writer io.Writer) {
 	}
 
 	if len(items) > 0 {
-		fmt.Fprintln(writer, "Incomplete(MiB):", strings.Join(items, ","))
+		fmt.Fprintln(writer, "Incomplete(MB):", strings.Join(items, ","))
 	}
 
 	for _, h := range supportedHashMethods {
@@ -1875,27 +1877,27 @@ func (app *App) status(file *DataFile, writer io.Writer) {
 	}
 }
 
-func formatBytes(n int64, unit string) string {
+func formatBytes(n int64) string {
 	if n == 0 {
 		return "0"
 	}
 
 	if n < 1024 {
-		return strconv.FormatInt(n, 10) + unit
+		return strconv.FormatInt(n, 10)
 	}
 
 	kilobytes := int64(math.Ceil(float64(n) / 1024))
 	if kilobytes < 1000 {
-		return strconv.FormatInt(kilobytes, 10) + "Ki" + unit
+		return strconv.FormatInt(kilobytes, 10) + "K"
 	}
 
 	if kilobytes < 102400 {
-		return strconv.FormatFloat(float64(n)/(1024*1024), 'f', 1, 64) + "Mi" + unit
+		return strconv.FormatFloat(float64(n)/(1024*1024), 'f', 1, 64) + "M"
 	}
 
 	megabytes := int64(math.Ceil(float64(n) / (1024 * 1024)))
 
-	return strconv.FormatInt(megabytes, 10) + "Mi" + unit
+	return strconv.FormatInt(megabytes, 10) + "M"
 }
 
 func formatTimeUsed(d time.Duration) (s string) {
