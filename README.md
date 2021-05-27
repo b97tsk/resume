@@ -1,11 +1,11 @@
 # resume
 
-Splitting download a file.
+A resumable multipart HTTP downloader.
 
 # Install
 
 ```
-go get -u github.com/b97tsk/resume
+go install github.com/b97tsk/resume@latest
 ```
 
 # Usage
@@ -17,11 +17,11 @@ $ resume http://...
 $ resume -o dl.zip http://...
 ### Download with max parallel downloads set to 9.
 $ resume -c9 http://...
-### Download with a configure file (see below).
+### Download with a config file (see below).
 $ resume -f resume.yaml
-### Download with default configure file (i.e. resume.yaml) found in current directory.
+### Download with default config file (i.e. resume.yaml) found in current directory.
 $ resume
-### Print configure to standard output.
+### Print config to standard output.
 $ resume config
 ### Print status to standard output.
 $ resume status
@@ -29,12 +29,14 @@ $ resume status
 $ resume stream | mpv -
 ```
 
-# Configure File
+For a list of command-line flags, type `resume --help`.
+
+# Config File
 
 By default, a file named `resume.yaml` is read when the program starts, if it exists.
-You can specify the path of this configure file by using command line flag `-f`.
+You can specify the path of this config file by using command-line flag `-f`.
 
-A configure file is an YAML document that can specify following options:
+A config file is an YAML document that can specify following options:
 
 - `alloc` alloc disk space before the first write.
 - `autoremove` auto remove .resume file after successfully verified.
@@ -69,4 +71,11 @@ A configure file is an YAML document that can specify following options:
 - `verbose` write additional information to stderr.
 - `verify` verify output file after download completes.
 
-> Note that command line arguments take precedence over this configure file.
+Note that command-line arguments take precedence over this config file.
+
+### Global Config File
+
+In addition to this config file (`resume.yaml`), the program also tries to read
+a global config file named `.resumerc` located at your home directory if it exists.
+Options specified by this global config file have the lowest priority and therefore
+can be overrided by `resume.yaml` or command-line arguments. The file format is the same.
