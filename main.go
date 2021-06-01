@@ -1227,15 +1227,25 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		New: func() interface{} { return new(buffer) },
 	}
 
-	readAndWrite := func(body io.Reader, offset int64) (n int, err error) {
+	readAndWrite := func(body io.Reader, offset, size int64) (n int, err error) {
+		if size == 0 {
+			return 0, io.EOF
+		}
+
+		if size > readBufferSize {
+			size = readBufferSize
+		}
+
 		b := bufferPool.Get().(*buffer)
 
-		n, err = body.Read((*b)[:])
+		n, err = body.Read((*b)[:size])
 		if n > 0 {
 			queuedWrites.Next(func() {
 				_, _ = file.WriteAt((*b)[:n], offset)
 				bufferPool.Put(b)
 			})
+		} else {
+			bufferPool.Put(b)
 		}
 
 		return
@@ -1689,7 +1699,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 							readTimer.Reset(readTimeout)
 						}
 
-						n, err := readAndWrite(resp.Body, offset)
+						n, err := readAndWrite(resp.Body, offset, size)
 
 						readTimer.Stop()
 
