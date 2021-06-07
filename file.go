@@ -24,7 +24,6 @@ const (
 
 type DataFile struct {
 	mu              sync.Mutex
-	name            string
 	file            *os.File
 	hash            HashInfo
 	completed       rangeset.RangeSet
@@ -70,7 +69,6 @@ func openDataFile(name string) (f *DataFile, err error) {
 	var ints [3]int64 // Ensure 64-bit alignment for atomic operations.
 
 	f = &DataFile{
-		name:         name,
 		file:         file,
 		incomplete:   rangeset.FromRange(0, math.MaxInt64),
 		ignoreSize:   &ints[0],
@@ -82,11 +80,11 @@ func openDataFile(name string) (f *DataFile, err error) {
 }
 
 func (f *DataFile) HashFile() string {
-	return f.name + ".resume"
+	return f.file.Name() + ".resume"
 }
 
 func (f *DataFile) TempHashFile() string {
-	return f.name + ".resume~"
+	return f.file.Name() + ".resume~"
 }
 
 func (f *DataFile) LoadHashFile() (err error) {
