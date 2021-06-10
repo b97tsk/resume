@@ -135,7 +135,9 @@ type Configure struct {
 	Connections           uint          `mapstructure:"connections" yaml:"connections"`
 	CookieFile            string        `mapstructure:"cookie" yaml:"cookie"`
 	DialTimeout           time.Duration `mapstructure:"dial-timeout" yaml:"dial-timeout"`
+	DisableKeepAlives     bool          `mapstructure:"disable-keep-alives" yaml:"disable-keep-alives"`
 	Errors                uint          `mapstructure:"errors" yaml:"errors"`
+	ForceAttemptHTTP2     bool          `mapstructure:"force-http2" yaml:"force-http2"`
 	Interval              time.Duration `mapstructure:"interval" yaml:"interval"`
 	KeepAlive             time.Duration `mapstructure:"keep-alive" yaml:"keep-alive"`
 	LimitRate             string        `mapstructure:"limit-rate" yaml:"limit-rate"`
@@ -187,9 +189,11 @@ func main() {
 
 	flags.BoolVar(&app.Alloc, "alloc", false, "alloc disk space before the first write")
 	flags.BoolVar(&app.Autoremove, "autoremove", false, "auto remove .resume file after successfully verified")
+	flags.BoolVar(&app.ForceAttemptHTTP2, "force-http2", true, "force attempt HTTP/2")
 	flags.BoolVar(&app.TimeoutIntolerant, "timeout-intolerant", false, "treat timeouts as errors")
 	flags.BoolVar(&app.Truncate, "truncate", false, "truncate output file before the first write")
 	flags.BoolVar(&app.Verify, "verify", true, "verify output file after download completes")
+	flags.BoolVarP(&app.DisableKeepAlives, "disable-keep-alives", "D", false, "disable HTTP keep alives")
 	flags.BoolVarP(&app.SkipETag, "skip-etag", "E", false, "skip unreliable ETag field")
 	flags.BoolVarP(&app.SkipLastModified, "skip-last-modified", "M", false, "skip unreliable Last-Modified field")
 	flags.BoolVarP(&app.Verbose, "verbose", "v", false, "write additional information to stderr")
@@ -206,13 +210,13 @@ func main() {
 	flags.StringVarP(&app.ListenAddress, "listen", "L", "", "HTTP listen address for remote control")
 	flags.StringVarP(&app.OutputFile, "output", "o", "", "output file")
 	flags.StringVarP(&app.Proxy, "proxy", "x", "", "a shorthand for setting http(s)_proxy environment variables")
-	flags.StringVarP(&app.Range, "range", "r", "", "request range (MB), e.g., 0-1023")
+	flags.StringVarP(&app.Range, "range", "r", "", "request range (MiB), e.g., 0-1023")
 	flags.StringVarP(&app.Referer, "referer", "R", "", "referer url")
 	flags.StringVarP(&app.UserAgent, "user-agent", "A", "", "user agent")
 	flags.UintVarP(&app.Connections, "connections", "c", 4, "maximum number of parallel downloads")
 	flags.UintVarP(&app.Errors, "errors", "e", 3, "maximum number of errors")
-	flags.UintVarP(&app.MaxSplitSize, "max-split", "s", 0, "maximal split size (MB), 0 means use maximum possible")
-	flags.UintVarP(&app.MinSplitSize, "min-split", "p", 0, "minimal split size (MB), even smaller value may be used")
+	flags.UintVarP(&app.MaxSplitSize, "max-split", "s", 0, "maximal split size (MiB), 0 means use maximum possible")
+	flags.UintVarP(&app.MinSplitSize, "min-split", "p", 0, "minimal split size (MiB), even smaller value may be used")
 
 	must(viper.BindPFlags(flags))
 
@@ -249,8 +253,8 @@ func main() {
 	}
 	{
 		flags := streamCmd.PersistentFlags()
-		flags.UintVar(&app.StreamRate, "rate", 12, "maximum number of stream rate (MB/s)")
-		flags.UintVarP(&app.StreamCache, "cache", "k", 0, "stream cache size (MB), 0 means unlimited")
+		flags.UintVar(&app.StreamRate, "rate", 12, "maximum number of stream rate (MiB/s)")
+		flags.UintVarP(&app.StreamCache, "cache", "k", 0, "stream cache size (MiB), 0 means unlimited")
 		must(viper.BindPFlag("stream-rate", flags.Lookup("rate")))
 		must(viper.BindPFlag("stream-cache", flags.Lookup("cache")))
 	}
@@ -779,6 +783,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			timer  *time.Timer
 			timerC <-chan time.Time
 		)
+
 		defer func() {
 			if timer != nil {
 				timer.Stop()
@@ -814,6 +819,8 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				KeepAlive: app.KeepAlive,
 				DualStack: true,
 			}).DialContext,
+			DisableKeepAlives:     app.DisableKeepAlives,
+			ForceAttemptHTTP2:     app.ForceAttemptHTTP2,
 			MaxIdleConns:          100,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   app.TLSHandshakeTimeout,
@@ -1912,7 +1919,7 @@ func (app *App) status(file *DataFile, writer io.Writer) {
 	}
 
 	if len(items) > 0 {
-		fmt.Fprintln(writer, "Incomplete(MB):", strings.Join(items, ","))
+		fmt.Fprintln(writer, "Incomplete(MiB):", strings.Join(items, ","))
 	}
 
 	for _, h := range supportedHashMethods {

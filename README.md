@@ -40,36 +40,38 @@ A config file is an YAML document that can specify following options:
 
 - `alloc` alloc disk space before the first write.
 - `autoremove` auto remove .resume file after successfully verified.
-- `connections` maximum number of parallel downloads.
+- `connections` maximum number of parallel downloads (Default: 4).
 - `cookie` cookie file. The file format is [Netscape format](https://unix.stackexchange.com/a/210282).
-- `dial-timeout` dial timeout.
-- `errors` maximum number of errors.
-- `interval` request interval.
-- `keep-alive` keep-alive duration.
+- `dial-timeout` dial timeout (Default: 30s).
+- `disable-keep-alives` disable HTTP keep alives, one request per connection.
+- `errors` maximum number of errors (Default: 3).
+- `force-http2` force attempt HTTP/2 (Default: true).
+- `interval` request interval (Default: 2s).
+- `keep-alive` keep-alive duration (Default: 30s).
 - `limit-rate` limit download rate to this value.
 - `listen` HTTP listen address for remote control.
-- `max-split` maximal split size (MB).
-- `min-split` minimal split size (MB).
+- `max-split` maximal split size (MiB).
+- `min-split` minimal split size (MiB).
 - `output` output file.
 - `per-user-agent-limit` limit per user agent connections.
 - `proxy` a shorthand for setting http(s)\_proxy environment variables.
-- `range` request range (MB).
-- `read-timeout` read timeout.
+- `range` request range (MiB).
+- `read-timeout` read timeout (Default: 30s).
 - `referer` referer url.
-- `response-header-timeout` response header timeout.
+- `response-header-timeout` response header timeout (Default: 10s).
 - `skip-etag` skip unreliable ETag field or not.
 - `skip-last-modified` skip unreliable Last-Modified field or not.
-- `stream-cache` stream cache size (MB).
-- `stream-rate` maximum number of stream rate.
-- `sync-period` sync-to-disk period.
+- `stream-cache` stream cache size (MiB).
+- `stream-rate` maximum number of stream rate (MiB/s) (Default: 12).
+- `sync-period` sync-to-disk period (Default: 10m).
 - `timeout` if positive, all timeouts default to this value.
 - `timeout-intolerant` treat timeouts as errors.
-- `tls-handshake-timeout` tls handshake timeout.
+- `tls-handshake-timeout` tls handshake timeout (Default: 10s).
 - `truncate` truncate output file before the first write.
 - `url` the URL to download.
 - `user-agent` user agent, one for each line.
 - `verbose` write additional information to stderr.
-- `verify` verify output file after download completes.
+- `verify` verify output file after download completes (Default: true).
 
 Note that command-line arguments take precedence over this config file.
 
