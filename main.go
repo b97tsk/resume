@@ -61,6 +61,8 @@ const (
 	exitCodeLoadHashFileFailed   = 10
 	exitCodeLoadConfigFileFailed = 11
 	exitCodeLoadCookieFileFailed = 12
+	exitCodeTruncateFailed       = 13
+	exitCodeSyncFailed           = 14
 )
 
 var supportedHashMethods = [...]struct {
@@ -984,7 +986,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 		CompleteMessage struct {
 			Err       error
-			Fatal     bool
+			Fatal     int
 			Responsed bool
 		}
 
@@ -1318,8 +1320,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	var (
 		activeCount     uint
 		errorCount      uint
+		fatalCode       int
 		pauseNewTask    bool
-		haveFatalErrors bool
 		streamCacheFull chan struct{}
 
 		maxDownloads = app.Connections
@@ -1349,9 +1351,9 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		var canRequest <-chan struct{}
 
 		switch {
-		case haveFatalErrors:
+		case fatalCode != 0:
 			if activeCount == 0 {
-				return exitCodeFatal
+				return fatalCode
 			}
 		case errorCount >= app.Errors:
 			if len(userAgents) > 1 {
@@ -1464,7 +1466,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 				var (
 					err   error
-					fatal bool
+					fatal int
 				)
 
 				defer func() {
@@ -1506,7 +1508,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				case http.StatusOK:
 					if offset > 0 {
 						err = errors.New("fatal: this server does not support partial requests")
-						fatal = true
+						fatal = exitCodeFatal
 
 						return
 					}
@@ -1516,7 +1518,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					contentRange := resp.Header.Get("Content-Range")
 					if contentRange == "" {
 						err = errors.New("fatal: Content-Range not found in response header")
-						fatal = true
+						fatal = exitCodeFatal
 
 						return
 					}
@@ -1524,7 +1526,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					slice := re1.FindStringSubmatch(contentRange)
 					if slice == nil {
 						err = fmt.Errorf("fatal: Content-Range unrecognized: %v", contentRange)
-						fatal = true
+						fatal = exitCodeFatal
 
 						return
 					}
@@ -1547,7 +1549,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					}
 
 					err = errors.New("fatal: " + resp.Status)
-					fatal = true
+					fatal = exitCodeFatal
 
 					return
 				default:
@@ -1557,7 +1559,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 				if contentSize <= 0 {
 					err = errors.New("fatal: Content-Length unknown or zero")
-					fatal = true
+					fatal = exitCodeFatal
 
 					return
 				}
@@ -1574,7 +1576,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					shouldSync = true
 				default:
 					err = errors.New("fatal: Content-Length mismatched")
-					fatal = true
+					fatal = exitCodeFatal
 
 					return
 				}
@@ -1605,7 +1607,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 							shouldSync = true
 						default:
 							err = errors.New("fatal: " + h.Name + " mismatched")
-							fatal = true
+							fatal = exitCodeFatal
 
 							return
 						}
@@ -1623,7 +1625,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					default:
 						if !app.SkipETag {
 							err = errors.New("fatal: ETag mismatched")
-							fatal = true
+							fatal = exitCodeFatal
 
 							return
 						}
@@ -1641,7 +1643,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					default:
 						if !app.SkipLastModified {
 							err = errors.New("fatal: Last-Modified mismatched")
-							fatal = true
+							fatal = exitCodeFatal
 
 							return
 						}
@@ -1663,17 +1665,29 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				if shouldAlloc {
 					err = app.alloc(mainCtx, file)
 					if err != nil {
-						fatal = true
+						fatal = exitCodeFatal
 						return
 					}
 				}
 
 				if app.Truncate {
-					_ = file.Truncate(contentSize)
+					err = file.Truncate(contentSize)
+					if err != nil {
+						err = fmt.Errorf("truncate failed: %w", err)
+						fatal = exitCodeTruncateFailed
+
+						return
+					}
 				}
 
 				if shouldSync {
-					_ = file.SyncNow()
+					err = file.SyncNow()
+					if err != nil {
+						err = fmt.Errorf("sync failed: %w", err)
+						fatal = exitCodeSyncFailed
+
+						return
+					}
 				}
 
 				sink.Next(ResponseMessage{resp.Request.URL.String()})
@@ -1696,7 +1710,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						}
 
 						returnIncomplete(offset, size)
-						sink.Next(CompleteMessage{result, false, true})
+						sink.Next(CompleteMessage{result, 0, true})
 						sink.Complete()
 						reqCancel()
 					}()
@@ -1815,11 +1829,11 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					case app.TimeoutIntolerant || !os.IsTimeout(e.Err):
 						errorCount++
 
-						if e.Fatal {
-							haveFatalErrors = true
+						if e.Fatal != 0 {
+							fatalCode = e.Fatal
 						}
 
-						if e.Fatal || activeCount == 0 || app.Verbose {
+						if e.Fatal != 0 || activeCount == 0 || app.Verbose {
 							err := e.Err
 
 							switch e := err.(type) {
@@ -1845,7 +1859,9 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}
 			}
 		case <-syncTicker.C:
-			_ = file.Sync()
+			if err := file.Sync(); err != nil {
+				queuedMessages.Next(fmt.Sprintf("sync failed: %v", err))
+			}
 		}
 	}
 
