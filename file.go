@@ -625,8 +625,18 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 		return
 	}
 
-	_, _ = f.file.Seek(0, io.SeekStart)
-	_, err := io.Copy(WriterFunc(w), f.file)
+	var err error
+
+	for _, r := range f.completed {
+		offset, hashCode = r.Low, 0
+
+		_, _ = f.file.Seek(offset, io.SeekStart)
+
+		_, err = io.Copy(WriterFunc(w), io.LimitReader(f.file, r.High-r.Low))
+		if err != nil {
+			break
+		}
+	}
 
 	if err == nil && hashCode > 0 {
 		i := int(offset / pieceSize)

@@ -123,6 +123,8 @@ type App struct {
 	noUserConfig   bool
 	showStatus     bool
 	showConfigure  bool
+	verifyOnly     bool
+	fixCorrupted   bool
 	streamToStdout bool
 	streamOffset   *int64
 	canRequest     chan struct{}
@@ -261,6 +263,20 @@ func main() {
 		must(viper.BindPFlag("stream-cache", flags.Lookup("cache")))
 	}
 	rootCmd.AddCommand(streamCmd)
+
+	verifyCmd := &cobra.Command{
+		Use:   "verify",
+		Short: "Verify downloaded parts",
+		Run: func(cmd *cobra.Command, args []string) {
+			app.verifyOnly = true
+			os.Exit(app.Main(cmd, args))
+		},
+	}
+	{
+		flags := verifyCmd.PersistentFlags()
+		flags.BoolVar(&app.fixCorrupted, "fix", false, "mark corrupted parts as not downloaded")
+	}
+	rootCmd.AddCommand(verifyCmd)
 
 	_ = rootCmd.Execute()
 }
@@ -439,7 +455,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	switch _, err := os.Stat(filename); {
 	case err == nil:
 		fileexists = true
-	case !os.IsNotExist(err) || app.showStatus:
+	case !os.IsNotExist(err) || app.showStatus || app.verifyOnly:
 		println(err)
 		return exitCodeOpenDataFileFailed
 	}
@@ -556,6 +572,10 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		case <-mainDone:
 		}
 	}()
+
+	if app.verifyOnly {
+		return app.verify(mainCtx, file)
+	}
 
 	var (
 		streamDone chan struct{}
@@ -870,101 +890,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			return exitCodeOK
 		}
 
-		type DigestInfo struct {
-			Name string
-			Hash hash.Hash
-		}
-
-		var digests map[string]DigestInfo
-
-		for _, h := range supportedHashMethods {
-			hashCode := h.Get(file)
-			if hashCode != "" {
-				if digests == nil {
-					digests = make(map[string]DigestInfo)
-				}
-
-				digests[hashCode] = DigestInfo{h.Name, h.New()}
-				println(h.Name+":", hashCode)
-			}
-		}
-
-		vs := rx.Observer(rx.Noop)
-		rx.Observable(
-			func(ctx context.Context, sink rx.Observer) {
-				vs = sink
-			},
-		).Pipe(
-			operators.SkipUntil(rx.Timer(time.Second)),
-		).Subscribe(
-			mainCtx,
-			func(t rx.Notification) {
-				switch {
-				case t.HasValue:
-					print("\033[1K\r")
-					switch t.Value.(type) {
-					case int64:
-						printf("verifying...%v%%", t.Value)
-					default:
-						printf("verifying...%v\n", t.Value)
-					}
-				case t.HasError:
-					print("\033[1K\r")
-					printf("verifying...%v\n", t.Error)
-				}
-			},
-		)
-
-		p := int64(0)
-		s := int64(0)
-		w := func(b []byte) (n int, err error) {
-			n = len(b)
-			for _, digest := range digests {
-				n, err = digest.Hash.Write(b)
-				if err != nil {
-					break
-				}
-			}
-
-			s += int64(n)
-			if s*100 >= (p+1)*contentSize {
-				p = s * 100 / contentSize
-				vs.Next(p)
-			}
-
-			return
-		}
-
-		if err := file.Verify(mainCtx, WriterFunc(w)); err != nil {
-			vs.Error(err)
-
-			if mainCtx.Err() != nil {
-				return exitCodeCanceled
-			}
-
-			return exitCodeChecksumFailed
-		}
-
-		if file.CompleteSize() != contentSize {
-			vs.Error(errors.New("BAD: file corrupted"))
-			return exitCodeCorruptionDetected
-		}
-
-		for hashCode, digest := range digests {
-			if hashCode != hex.EncodeToString(digest.Hash.Sum(nil)) {
-				vs.Error(fmt.Errorf("BAD: %v mismatched", digest.Name))
-				return exitCodeChecksumMismatched
-			}
-		}
-
-		if app.Autoremove {
-			os.Remove(file.HashFile())
-		}
-
-		vs.Next("DONE")
-		vs.Complete()
-
-		return exitCodeOK
+		return app.verify(mainCtx, file)
 	}
 
 	return exitCodeIncomplete
@@ -1864,6 +1790,128 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			}
 		}
 	}
+
+	return exitCodeOK
+}
+
+func (app *App) verify(mainCtx context.Context, file *DataFile) int {
+	type DigestInfo struct {
+		Name string
+		Hash hash.Hash
+	}
+
+	var digests map[string]DigestInfo
+
+	contentSize := file.ContentSize()
+	completeSize := file.CompleteSize()
+
+	if completeSize == contentSize {
+		for _, h := range supportedHashMethods {
+			hashCode := h.Get(file)
+			if hashCode != "" {
+				if digests == nil {
+					digests = make(map[string]DigestInfo)
+				}
+
+				digests[hashCode] = DigestInfo{h.Name, h.New()}
+				println(h.Name+":", hashCode)
+			}
+		}
+	}
+
+	vs := rx.Observer(rx.Noop)
+	rx.Observable(
+		func(ctx context.Context, sink rx.Observer) {
+			vs = sink
+		},
+	).Pipe(
+		operators.SkipUntil(rx.Timer(time.Second)),
+	).Subscribe(
+		mainCtx,
+		func(t rx.Notification) {
+			switch {
+			case t.HasValue:
+				print("\033[1K\r")
+				switch t.Value.(type) {
+				case int64:
+					printf("verifying...%v%%", t.Value)
+				default:
+					printf("verifying...%v\n", t.Value)
+				}
+			case t.HasError:
+				print("\033[1K\r")
+				printf("verifying...%v\n", t.Error)
+			}
+		},
+	)
+
+	p := int64(0)
+	s := int64(0)
+	w := func(b []byte) (n int, err error) {
+		n = len(b)
+		for _, digest := range digests {
+			n, err = digest.Hash.Write(b)
+			if err != nil {
+				break
+			}
+		}
+
+		s += int64(n)
+		if s*100 >= (p+1)*contentSize {
+			p = s * 100 / contentSize
+			vs.Next(p)
+		}
+
+		return
+	}
+
+	if err := file.Verify(mainCtx, WriterFunc(w)); err != nil {
+		vs.Error(err)
+
+		if mainCtx.Err() != nil {
+			return exitCodeCanceled
+		}
+
+		return exitCodeChecksumFailed
+	}
+
+	oldCompleteSize := completeSize
+	newCompleteSize := file.CompleteSize()
+
+	if oldCompleteSize > newCompleteSize {
+		vs.Error(errors.New("BAD: file corrupted"))
+
+		if app.fixCorrupted {
+			if err := file.SyncNow(); err != nil {
+				println("sync failed:", err)
+				return exitCodeSyncFailed
+			}
+
+			println("Successfully marked corrupted parts as not downloaded.")
+
+			return exitCodeOK
+		}
+
+		corruptedSize := oldCompleteSize - newCompleteSize
+		printf("About %v%% (%vB) are corrupted.\n", 100*corruptedSize/contentSize, formatBytes(corruptedSize))
+		println(`Consider run "resume verify --fix" to mark corrupted parts as not downloaded.`)
+
+		return exitCodeCorruptionDetected
+	}
+
+	for hashCode, digest := range digests {
+		if hashCode != hex.EncodeToString(digest.Hash.Sum(nil)) {
+			vs.Error(fmt.Errorf("BAD: %v mismatched", digest.Name))
+			return exitCodeChecksumMismatched
+		}
+	}
+
+	if app.Autoremove && !app.verifyOnly {
+		os.Remove(file.HashFile())
+	}
+
+	vs.Next("DONE")
+	vs.Complete()
 
 	return exitCodeOK
 }
