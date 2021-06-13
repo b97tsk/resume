@@ -175,7 +175,7 @@ func main() {
 
 	rootCmd := &cobra.Command{
 		Use:   "resume",
-		Short: "splitting download a file",
+		Short: "A resumable multipart HTTP downloader.",
 		Args:  cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			os.Exit(app.Main(cmd, args))
@@ -194,12 +194,12 @@ func main() {
 	flags.BoolVar(&app.Alloc, "alloc", false, "alloc disk space before the first write")
 	flags.BoolVar(&app.Autoremove, "autoremove", false, "auto remove .resume file after successfully verified")
 	flags.BoolVar(&app.ForceAttemptHTTP2, "force-http2", true, "force attempt HTTP/2")
-	flags.BoolVar(&app.TimeoutIntolerant, "timeout-intolerant", false, "treat timeouts as errors")
 	flags.BoolVar(&app.Truncate, "truncate", false, "truncate output file before the first write")
 	flags.BoolVar(&app.Verify, "verify", true, "verify output file after download completes")
 	flags.BoolVarP(&app.DisableKeepAlives, "disable-keep-alives", "D", false, "disable HTTP keep alives")
 	flags.BoolVarP(&app.SkipETag, "skip-etag", "E", false, "skip unreliable ETag field")
 	flags.BoolVarP(&app.SkipLastModified, "skip-last-modified", "M", false, "skip unreliable Last-Modified field")
+	flags.BoolVarP(&app.TimeoutIntolerant, "timeout-intolerant", "T", false, "treat timeouts as errors")
 	flags.BoolVarP(&app.Verbose, "verbose", "v", false, "write additional information to stderr")
 	flags.DurationVar(&app.DialTimeout, "dial-timeout", 30*time.Second, "dial timeout")
 	flags.DurationVar(&app.KeepAlive, "keep-alive", 30*time.Second, "keep-alive duration")
@@ -227,7 +227,7 @@ func main() {
 	flags.BoolVarP(&app.retryForever, "retry-forever", "Y", false, "retry forever")
 	flags.BoolVarP(&app.noUserConfig, "no-user-config", "n", false, "do not load .resumerc file")
 	flags.StringVarP(&app.workdir, "workdir", "w", ".", "working directory")
-	flags.StringVarP(&app.conffile, "conf", "f", "resume.yaml", "configure file")
+	flags.StringVarP(&app.conffile, "config", "f", "resume.yaml", "configuration file")
 	flags.UintVarP(&app.retryCount, "retry", "y", 0, "retry count")
 
 	rootCmd.AddCommand(&cobra.Command{
@@ -240,7 +240,7 @@ func main() {
 	})
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "config",
-		Short: "Show configure",
+		Short: "Show configuration",
 		Run: func(cmd *cobra.Command, args []string) {
 			app.showConfigure = true
 			os.Exit(app.Main(cmd, args))
@@ -327,11 +327,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		return exitCodeFatal
 	}
 
-	if app.Interval <= 0 {
-		println("fatal: negative or zero interval")
-		return exitCodeFatal
-	}
-
 	if app.LimitRate != "" {
 		s := app.LimitRate
 		n := 0
@@ -345,9 +340,11 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			n = 30
 		}
 
-		s = strings.TrimRight(s, "KkMmGg")
+		if n > 0 {
+			s = s[:len(s)-1]
+		}
 
-		i, err := strconv.ParseInt(s, 10, 32)
+		i, err := strconv.ParseInt(s, 10, 64)
 		if err != nil || i < 0 {
 			println("fatal: invalid limit rate:", app.LimitRate)
 			return exitCodeFatal
@@ -691,49 +688,32 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 		http.Handle("/stream", http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
+				if file.ContentSize() == 0 {
+					http.Error(w, "download not started", http.StatusServiceUnavailable)
+					return
+				}
+
 				streamNotify.Next(1)
 				defer streamNotify.Next(-1)
 
 				done := r.Context().Done()
-				currentOffset := int64(0)
-				content := struct {
-					io.Reader
-					io.Seeker
-				}{
-					ReaderFunc(
-						func(p []byte) (n int, err error) {
-							n, err = file.ReadAt(p, currentOffset)
+				f := func(p []byte, off int64) (n int, err error) {
+					n, err = file.ReadAt(p, off)
 
-							for err == ErrIncomplete {
-								select {
-								case <-done:
-									return
-								case <-mainDone:
-									return
-								case <-time.After(time.Second):
-									n, err = file.ReadAt(p, currentOffset)
-								}
-							}
-
-							currentOffset += int64(n)
-
+					for err == ErrIncomplete {
+						select {
+						case <-done:
 							return
-						},
-					),
-					SeekerFunc(
-						func(offset int64, whence int) (int64, error) {
-							switch whence {
-							case io.SeekStart:
-								currentOffset = offset
-							case io.SeekCurrent:
-								currentOffset += offset
-							case io.SeekEnd:
-								currentOffset = file.ContentSize() - offset
-							}
-							return currentOffset, nil
-						},
-					),
+						case <-mainDone:
+							return
+						case <-time.After(time.Second):
+							n, err = file.ReadAt(p, off)
+						}
+					}
+
+					return
 				}
+				content := io.NewSectionReader(ReaderAtFunc(f), 0, file.ContentSize())
 				http.ServeContent(w, r, filepath.Base(filename), time.Time{}, content)
 			},
 		))
@@ -1066,8 +1046,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				progress := int(float64(completeSize) / float64(contentSize) * 100)
 
 				b.WriteString(time.Now().Format("15:04:05"))
-				b.WriteString(fmt.Sprint(" ", formatBytes(completeSize)))
-				b.WriteString(fmt.Sprint("/", formatBytes(contentSize)))
+				b.WriteString(fmt.Sprint(" ", strings.TrimSuffix(formatBytes(completeSize), "i")))
+				b.WriteString(fmt.Sprint("/", strings.TrimSuffix(formatBytes(contentSize), "i")))
 				b.WriteString(fmt.Sprint(" ", progress, "%"))
 
 				switch {
@@ -1075,10 +1055,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					b.WriteString(fmt.Sprint(" CN:", connections))
 
 					if emaSpeed > 0 {
-						remaining := float64(file.IncompleteSize())
-						seconds := int64(math.Ceil(remaining / float64(emaSpeed)))
-
-						b.WriteString(fmt.Sprint(" DL:", formatBytes(emaSpeed)))
+						seconds := int64(math.Ceil(float64(file.IncompleteSize()) / float64(emaSpeed)))
+						b.WriteString(fmt.Sprint(" DL:", strings.TrimSuffix(formatBytes(emaSpeed), "i")))
 						b.WriteString(fmt.Sprint(" ETA:", formatETA(time.Duration(seconds)*time.Second)))
 					}
 				case status == StatusDownloading:
@@ -2017,16 +1995,16 @@ func formatBytes(n int64) string {
 
 	kilobytes := int64(math.Ceil(float64(n) / 1024))
 	if kilobytes < 1000 {
-		return strconv.FormatInt(kilobytes, 10) + "K"
+		return strconv.FormatInt(kilobytes, 10) + "Ki"
 	}
 
 	if kilobytes < 102400 {
-		return strconv.FormatFloat(float64(n)/(1024*1024), 'f', 1, 64) + "M"
+		return strconv.FormatFloat(float64(n)/(1024*1024), 'f', 1, 64) + "Mi"
 	}
 
 	megabytes := int64(math.Ceil(float64(n) / (1024 * 1024)))
 
-	return strconv.FormatInt(megabytes, 10) + "M"
+	return strconv.FormatInt(megabytes, 10) + "Mi"
 }
 
 func formatTimeUsed(d time.Duration) (s string) {
@@ -2115,8 +2093,11 @@ func loadCookies(name string, jar http.CookieJar) (err error) {
 	defer file.Close()
 
 	s := bufio.NewScanner(file)
+	lineNumber := 0
+
 	for s.Scan() {
 		line := s.Text()
+		lineNumber++
 
 		if line == "" || strings.HasPrefix(line, "# ") {
 			continue
@@ -2124,12 +2105,15 @@ func loadCookies(name string, jar http.CookieJar) (err error) {
 
 		fields := strings.Split(line, "\t")
 		if len(fields) != 7 {
-			continue
+			return fmt.Errorf(
+				"%v(%v): incorrect field number: want 7, but got %v",
+				name, lineNumber, len(fields),
+			)
 		}
 
 		expires, err := strconv.ParseInt(fields[4], 10, 64)
 		if err != nil {
-			continue
+			return fmt.Errorf("%v(%v): expires(field #5): not an integer", name, lineNumber)
 		}
 
 		cookie := http.Cookie{
@@ -2138,11 +2122,11 @@ func loadCookies(name string, jar http.CookieJar) (err error) {
 			Path:    fields[2],
 			Domain:  fields[0],
 			Expires: time.Unix(expires, 0),
-			Secure:  fields[3] == "TRUE",
+			Secure:  strings.EqualFold(fields[3], "TRUE"),
 		}
 
-		if strings.HasPrefix(cookie.Domain, "#HttpOnly_") {
-			cookie.Domain = cookie.Domain[10:]
+		if n := len("#HttpOnly_"); len(cookie.Domain) > n && strings.EqualFold(cookie.Domain[:n], "#HttpOnly_") {
+			cookie.Domain = cookie.Domain[n:]
 			cookie.HttpOnly = true
 		}
 
