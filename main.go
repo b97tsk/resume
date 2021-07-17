@@ -1222,11 +1222,10 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	}()
 
 	var (
-		activeCount     uint
-		errorCount      uint
-		fatalCode       int
-		pauseNewTask    bool
-		streamCacheFull chan struct{}
+		activeCount  uint
+		errorCount   uint
+		fatalCode    int
+		pauseNewTask bool
 
 		maxDownloads = app.Connections
 		currentURL   = app.URL
@@ -1300,10 +1299,6 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				break
 			}
 
-			if streamCacheFull != nil {
-				break
-			}
-
 			if pauseNewTask {
 				break
 			}
@@ -1331,33 +1326,12 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				if offset >= streamOffset+streamCacheSize {
 					returnIncomplete(offset, size)
 
-					streamCacheFull = make(chan struct{})
-
 					queuedMessages.Next(StatusChangedMessage{StatusWaitStreaming})
-
-					offset := offset
-
-					go func() {
-						defer close(streamCacheFull)
-
-						ticker := time.NewTicker(time.Second)
-						defer ticker.Stop()
-
-						for {
-							select {
-							case <-mainDone:
-								return
-							case <-ticker.C:
-								streamOffset := atomic.LoadInt64(app.streamOffset)
-								if offset < streamOffset+streamCacheSize {
-									return
-								}
-							}
-						}
-					}()
 
 					break
 				}
+
+				queuedMessages.Next(StatusChangedMessage{StatusDownloading})
 			}
 
 			var userAgent string
@@ -1671,10 +1645,6 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			pauseNewTask = true
 
 			activeTasks.Next(rx.Observable(cr).Pipe(operators.Do(do)))
-		case <-streamCacheFull:
-			streamCacheFull = nil
-
-			queuedMessages.Next(StatusChangedMessage{StatusDownloading})
 		case e := <-messages:
 			switch e := e.(type) {
 			case ResponseMessage:
