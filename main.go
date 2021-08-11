@@ -942,7 +942,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				operators.Take(N),
 			).Subscribe(ctx, rx.Noop)
 			skipZeros.Pipe(
-				operators.BufferCountConfigure{
+				operators.BufferCountConfig{
 					BufferSize:       N,
 					StartBufferEvery: 1,
 				}.Make(),
@@ -998,11 +998,11 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	queuedMessages := rx.Observer(rx.Noop)
 	rx.Observable(
 		func(ctx context.Context, sink rx.Observer) {
-			// Since `Cache` is concurrency-safe, `sink.Mutex()` is not needed.
+			// Since `Congest` is concurrency-safe, `sink.Mutex()` is not needed.
 			queuedMessages = sink
 		},
 	).Pipe(
-		operators.Cache(int(app.Connections*3)),
+		operators.Congest(int(app.Connections*3)),
 		operators.DoAfterErrorOrComplete(handleMessagesCancel),
 	).Subscribe(handleMessagesCtx, func(t rx.Notification) {
 		if t.HasValue {
@@ -1115,11 +1115,11 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	queuedWrites := rx.Observer(rx.Noop)
 	rx.Observable(
 		func(ctx context.Context, sink rx.Observer) {
-			// Since `Cache` is concurrency-safe, `sink.Mutex()` is not needed.
+			// Since `Congest` is concurrency-safe, `sink.Mutex()` is not needed.
 			queuedWrites = sink
 		},
 	).Pipe(
-		operators.Cache(int(app.Connections*3)),
+		operators.Congest(int(app.Connections*3)),
 		operators.DoAfterErrorOrComplete(handleWritesCancel),
 	).Subscribe(handleWritesCtx, func(t rx.Notification) {
 		if t.HasValue {

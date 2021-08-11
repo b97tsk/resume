@@ -22,8 +22,8 @@ github.com/armon/go-metrics v0.0.0-20180917152333-f0300d1749da/go.mod h1:Q73ZrmV
 github.com/armon/go-radix v0.0.0-20180808171621-7fddfc383310/go.mod h1:ufUuZ+zHj4x4TnLV4JWEpy2hxWSpsRywHrMgIH9cCH8=
 github.com/b97tsk/rangeset v0.4.0 h1:odbCSP0ZncCJKcpyhUIaEzBkX/x9TqkZJD5HSVkbkmk=
 github.com/b97tsk/rangeset v0.4.0/go.mod h1:a1tExjZN5EhmeL91pxhP+tteZnPx4OHvOI92WQJ8nng=
-github.com/b97tsk/rx v0.5.0 h1:xLI/C6cNI8cThuUKfFKnl4jsq86vBMgVKTebdsqWtmQ=
-github.com/b97tsk/rx v0.5.0/go.mod h1:MwSawdoepcjczPkq5zkr2t5ByAKO8w9CpDaBw1u9KIs=
+github.com/b97tsk/rx v0.6.0 h1:+qDHxuNuUnTI+ja1NZUfgMEdkIhkwaa4YkhuPgbIlgQ=
+github.com/b97tsk/rx v0.6.0/go.mod h1:MwSawdoepcjczPkq5zkr2t5ByAKO8w9CpDaBw1u9KIs=
 github.com/beorn7/perks v0.0.0-20180321164747-3a771d992973/go.mod h1:Dwedo/Wpr24TaqPxmxbtue+5NUziq4I4S80YR8gNf3Q=
 github.com/beorn7/perks v1.0.0/go.mod h1:KWe93zE9D1o94FZ5RNwFwVgaQK1VOXiVxmqh+CedLV8=
 github.com/bgentry/speakeasy v0.1.0/go.mod h1:+zsyZBPWlz7T6j88CTgSN5bM796AkVf0kBD4zp0CCIs=
