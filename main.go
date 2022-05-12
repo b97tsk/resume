@@ -513,7 +513,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	}
 
 	if app.Range != "" {
-		var sections rangeset.RangeSet
+		var sections rangeset.RangeSet[int64]
 
 		for _, r0 := range strings.Split(app.Range, ",") {
 			r := strings.Split(r0, "-")

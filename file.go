@@ -26,9 +26,9 @@ type DataFile struct {
 	mu              sync.Mutex
 	file            *os.File
 	hash            HashInfo
-	completed       rangeset.RangeSet
-	incomplete      rangeset.RangeSet
-	requested       rangeset.RangeSet
+	completed       rangeset.RangeSet[int64]
+	incomplete      rangeset.RangeSet[int64]
+	requested       rangeset.RangeSet[int64]
 	ignoreSize      *int64
 	contentSize     *int64
 	completeSize    *int64
@@ -70,7 +70,7 @@ func openDataFile(name string) (f *DataFile, err error) {
 
 	f = &DataFile{
 		file:         file,
-		incomplete:   rangeset.FromRange(0, math.MaxInt64),
+		incomplete:   rangeset.FromRange[int64](0, math.MaxInt64),
 		ignoreSize:   &ints[0],
 		contentSize:  &ints[1],
 		completeSize: &ints[2],
@@ -123,7 +123,7 @@ func (f *DataFile) LoadHashFile() (err error) {
 		return f.loadHashFileFailed()
 	}
 
-	var completed rangeset.RangeSet
+	var completed rangeset.RangeSet[int64]
 
 	for i := range hash.Pieces {
 		p := &hash.Pieces[i]
@@ -139,7 +139,7 @@ func (f *DataFile) LoadHashFile() (err error) {
 
 	f.hash = hash
 	f.completed = completed
-	f.incomplete = rangeset.FromRange(0, math.MaxInt64).Difference(completed)
+	f.incomplete = rangeset.FromRange[int64](0, math.MaxInt64).Difference(completed)
 	atomic.StoreInt64(f.completeSize, int64(completed.Count()))
 
 	if hash.ContentSize > 0 {
@@ -153,14 +153,14 @@ func (f *DataFile) loadHashFileFailed() error {
 	return fmt.Errorf("open %v: tampered or incompatible", f.HashFile())
 }
 
-func (f *DataFile) Incomplete() rangeset.RangeSet {
+func (f *DataFile) Incomplete() rangeset.RangeSet[int64] {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	return f.getIncompleteLocked()
 }
 
-func (f *DataFile) getIncompleteLocked() rangeset.RangeSet {
+func (f *DataFile) getIncompleteLocked() rangeset.RangeSet[int64] {
 	high := int64(math.MaxInt64)
 	if *f.contentSize > 0 {
 		high = *f.contentSize
@@ -170,8 +170,7 @@ func (f *DataFile) getIncompleteLocked() rangeset.RangeSet {
 }
 
 func (f *DataFile) IncompleteSize() int64 {
-	contentSize := f.ContentSize()
-	if contentSize > 0 {
+	if contentSize := f.ContentSize(); contentSize > 0 {
 		return contentSize - f.CompleteSize() - f.IgnoreSize()
 	}
 
@@ -357,12 +356,12 @@ func (f *DataFile) Filename() string {
 	return f.hash.Filename
 }
 
-func (f *DataFile) SetRange(s rangeset.RangeSet) {
+func (f *DataFile) SetRange(s rangeset.RangeSet[int64]) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.incomplete = f.incomplete.Intersection(s)
-	f.requested = append(rangeset.RangeSet{}, f.incomplete...)
+	f.requested = append(rangeset.RangeSet[int64]{}, f.incomplete...)
 
 	if *f.contentSize > 0 {
 		f.updateIgnoreSizeLocked()
