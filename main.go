@@ -32,7 +32,6 @@ import (
 
 	"github.com/b97tsk/rangeset"
 	"github.com/b97tsk/rx"
-	"github.com/b97tsk/rx/operators"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"golang.org/x/net/publicsuffix"
@@ -667,20 +666,18 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			},
 		))
 
-		streamCounter := rx.MulticastReplay(&rx.ReplayOptions{BufferSize: 1})
+		streamCounter := rx.MulticastReplay[int](&rx.ReplayConfig{BufferSize: 1})
 		streamCounter.Next(0)
 
-		streamNotify := rx.Observer(rx.Noop)
-		rx.Observable(
-			func(ctx context.Context, sink rx.Observer) {
-				streamNotify = sink.Mutex()
-			},
-		).Pipe(
-			operators.Scan(
-				func(acc, val interface{}, idx int) interface{} {
-					return acc.(int) + val.(int)
+		var streamNotify rx.Observer[int]
+
+		rx.Pipe(
+			rx.AsObservable(
+				func(ctx context.Context, sink rx.Observer[int]) {
+					streamNotify = sink.Mutex()
 				},
 			),
+			rx.Scan(0, func(a, b int) int { return a + b }),
 		).Subscribe(
 			context.Background(),
 			streamCounter.Observer,
@@ -721,40 +718,47 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		srv := &http.Server{}
 
 		defer func() {
-			if streamCounter.BlockingFirstOrDefault(mainCtx, 0).(int) > 0 {
+			if streamCounter.BlockingFirstOrDefault(mainCtx, 0) > 0 {
 				// Wait until `streamCounter` remains zero for N seconds.
 				const N = 5
 
 				println("waiting for remote streaming to complete...")
 
-				_, _ = streamCounter.Pipe(
-					operators.Filter(
-						func(val interface{}, idx int) bool {
-							return val == 0
-						},
-					),
-					operators.SwitchMapTo(
-						rx.Race(
-							rx.Timer(N*time.Second).Pipe(operators.MapTo(nil)),
-							streamCounter.Pipe(
-								operators.Exclude(
-									func(val interface{}, idx int) bool {
-										// Exclude the first value that is zero.
-										return idx == 0 && val == 0
-									},
+				_, _ = rx.Pipe3(
+					streamCounter.Observable,
+					rx.Filter(func(v int) bool { return v == 0 }),
+					rx.SwitchMapTo[int](
+						rx.Pipe2(
+							rx.Race(
+								rx.Pipe(
+									rx.Timer(N*time.Second),
+									rx.MapTo[time.Time](-1),
+								),
+								rx.Pipe2(
+									streamCounter.Observable,
+									rx.WithIndex[int](0),
+									rx.FilterMap(
+										func(p rx.Pair[int, int]) (int, bool) {
+											// Exclude the first value that is zero.
+											if p.Key == 0 && p.Value == 0 {
+												return 0, false
+											}
+
+											return p.Value, true
+										},
+									),
 								),
 							),
-						).Pipe(
-							operators.Take(1),
-							operators.Filter(
-								func(val interface{}, idx int) bool {
+							rx.Take[int](1),
+							rx.Filter(
+								func(v int) bool {
 									// Check if this is the value from `rx.Timer`.
-									return val == nil
+									return v == -1
 								},
 							),
 						),
 					),
-					operators.Take(1),
+					rx.Take[int](1),
 				).BlockingSingle(mainCtx)
 			}
 
@@ -913,76 +917,66 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	var emaValue, emaSpeed int64
 
-	byteIntervals := rx.Multicast()
-	rx.Observable(
-		func(ctx context.Context, sink rx.Observer) {
-			const N = 5
-			skipZeros := byteIntervals.Pipe(
-				operators.SkipWhile(
-					func(val interface{}, idx int) bool {
-						return val.(int64) == 0
-					},
-				),
-			)
-			skipZeros.Pipe(
-				operators.Scan(
-					func(acc, val interface{}, idx int) interface{} {
-						return acc.(int64) + val.(int64)
-					},
-				),
-				operators.Map(
-					func(val interface{}, idx int) interface{} {
-						// For the first `N * measureInterval`, we average the speed.
-						emaValue = val.(int64) / int64(idx+1)
-						emaSpeed = int64(float64(emaValue) / measureIntervalMultiple)
+	byteIntervals := rx.Multicast[int64]()
+	rx.Pipe(
+		rx.AsObservable(
+			func(ctx context.Context, sink rx.Observer[int64]) {
+				const N = 5
 
-						return val
-					},
-				),
-				operators.Take(N),
-			).Subscribe(ctx, rx.Noop)
-			skipZeros.Pipe(
-				operators.BufferCountConfig{
-					BufferSize:       N,
-					StartBufferEvery: 1,
-				}.Make(),
-				operators.Skip(1),
-				operators.Map(
-					func(val interface{}, idx int) interface{} {
-						values := val.([]interface{})
+				skipZeros := rx.Pipe(
+					byteIntervals.Observable,
+					rx.SkipWhile(func(v int64) bool { return v == 0 }),
+				)
 
-						sum := int64(0)
-						for _, v := range values {
-							sum += v.(int64)
-						}
+				rx.Pipe4(
+					skipZeros,
+					rx.Scan(0, func(a, b int64) int64 { return a + b }),
+					rx.WithIndex[int64](1),
+					rx.Map(
+						func(p rx.Pair[int, int64]) int64 {
+							// For the first `N * measureInterval`, we average the speed.
+							emaValue = p.Value / int64(p.Key)
+							emaSpeed = int64(float64(emaValue) / measureIntervalMultiple)
 
-						return sum / int64(len(values))
-					},
-				),
-				operators.Map(
-					func(val interface{}, idx int) interface{} {
+							return p.Value
+						},
+					),
+					rx.Take[int64](N),
+				).Subscribe(ctx, rx.Noop[int64])
+
+				rx.Pipe4(
+					skipZeros,
+					rx.BufferCount[int64](N).WithStartBufferEvery(1).AsOperator(),
+					rx.Skip[[]int64](1),
+					rx.Map(
+						func(s []int64) int64 {
+							sum := int64(0)
+							for _, v := range s {
+								sum += v
+							}
+
+							return sum / int64(len(s))
+						},
+					),
+					rx.TakeWhile(func(v int64) bool { return v > 0 }),
+				).Subscribe(ctx, func(n rx.Notification[int64]) {
+					switch {
+					case n.HasValue:
 						// After `N * measureInterval`, we calculate the speed by using
 						// exponential moving average (EMA).
 						const ia = 5 // Inverse of alpha.
-						emaValue = (val.(int64) + (ia-1)*emaValue) / ia
+						emaValue = (n.Value + (ia-1)*emaValue) / ia
 						emaSpeed = int64(float64(emaValue) / measureIntervalMultiple)
+					default:
+						emaValue, emaSpeed = 0, 0
+					}
 
-						return val
-					},
-				),
-				operators.TakeWhile(
-					func(val interface{}, idx int) bool {
-						return val.(int64) > 0
-					},
-				),
-				operators.DoAfterErrorOrComplete(
-					func() { emaValue, emaSpeed = 0, 0 },
-				),
-			).Subscribe(ctx, sink)
-		},
-	).Pipe(
-		operators.RepeatForever(),
-	).Subscribe(speedUpdateCtx, rx.Noop)
+					sink(n)
+				})
+			},
+		),
+		rx.RepeatForever[int64](),
+	).Subscribe(speedUpdateCtx, rx.Noop[int64])
 
 	var (
 		firstRecvTime  time.Time
@@ -995,20 +989,22 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	)
 
 	handleMessagesCtx, handleMessagesCancel := context.WithCancel(dlCtx)
-	queuedMessages := rx.Observer(rx.Noop)
-	rx.Observable(
-		func(ctx context.Context, sink rx.Observer) {
-			// Since `Congest` is concurrency-safe, `sink.Mutex()` is not needed.
-			queuedMessages = sink
-		},
-	).Pipe(
-		operators.Congest(int(app.Connections*3)),
-		operators.DoAfterErrorOrComplete(handleMessagesCancel),
-	).Subscribe(handleMessagesCtx, func(t rx.Notification) {
-		if t.HasValue {
+
+	var queuedMessages rx.Observer[any]
+
+	rx.Pipe(
+		rx.AsObservable(
+			func(ctx context.Context, sink rx.Observer[any]) {
+				// Since `Congest` is concurrency safe, `sink.Mutex()` is not needed.
+				queuedMessages = sink
+			},
+		),
+		rx.Congest[any](int(app.Connections*3)),
+	).Subscribe(handleMessagesCtx, func(n rx.Notification[any]) {
+		if n.HasValue {
 			shouldPrint := false
 
-			switch v := t.Value.(type) {
+			switch v := n.Value.(type) {
 			case ProgressMessage:
 				if totalReceived == 0 {
 					firstRecvTime = time.Now()
@@ -1074,7 +1070,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			}
 		}
 
-		if totalReceived > 0 && (!t.HasValue || time.Now().After(nextReportTime)) {
+		if totalReceived > 0 && (!n.HasValue || time.Now().After(nextReportTime)) {
 			nextReportTime = nextReportTime.Add(reportInterval)
 			statusLine = ""
 
@@ -1094,8 +1090,12 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			)
 		}
 
-		if !t.HasValue && statusLine != "" {
+		if !n.HasValue && statusLine != "" {
 			println()
+		}
+
+		if !n.HasValue {
+			handleMessagesCancel()
 		}
 	})
 
@@ -1107,23 +1107,28 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	measureCtx, measureCancel := context.WithCancel(dlCtx)
 	defer measureCancel()
 
-	rx.Ticker(measureInterval).Pipe(
-		operators.MapTo(MeasureMessage{}),
+	rx.Pipe(
+		rx.Ticker(measureInterval),
+		rx.MapTo[time.Time, any](MeasureMessage{}),
 	).Subscribe(measureCtx, queuedMessages)
 
 	handleWritesCtx, handleWritesCancel := context.WithCancel(dlCtx)
-	queuedWrites := rx.Observer(rx.Noop)
-	rx.Observable(
-		func(ctx context.Context, sink rx.Observer) {
-			// Since `Congest` is concurrency-safe, `sink.Mutex()` is not needed.
-			queuedWrites = sink
-		},
-	).Pipe(
-		operators.Congest(int(app.Connections*3)),
-		operators.DoAfterErrorOrComplete(handleWritesCancel),
-	).Subscribe(handleWritesCtx, func(t rx.Notification) {
-		if t.HasValue {
-			t.Value.(func())()
+
+	var queuedWrites rx.Observer[func()]
+
+	rx.Pipe(
+		rx.AsObservable(
+			func(ctx context.Context, sink rx.Observer[func()]) {
+				// Since `Congest` is concurrency safe, `sink.Mutex()` is not needed.
+				queuedWrites = sink
+			},
+		),
+		rx.Congest[func()](int(app.Connections*3)),
+	).Subscribe(handleWritesCtx, func(n rx.Notification[func()]) {
+		if n.HasValue {
+			n.Value()
+		} else {
+			handleWritesCancel()
 		}
 	})
 
@@ -1137,7 +1142,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	type buffer [readBufferSize]byte
 
 	bufferPool := sync.Pool{
-		New: func() interface{} { return new(buffer) },
+		New: func() any { return new(buffer) },
 	}
 
 	readAndWrite := func(body io.Reader, offset, size int64) (n int, err error) {
@@ -1194,18 +1199,26 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		file.ReturnIncomplete(offset, size)
 	}
 
-	messages := make(chan interface{}, app.Connections)
+	messages := make(chan any, app.Connections)
 
 	handleTasksCtx, handleTasksCancel := context.WithCancel(dlCtx)
-	activeTasks := rx.Observer(rx.Noop)
-	rx.Observable(
-		func(ctx context.Context, sink rx.Observer) {
-			activeTasks = sink
-		},
-	).Pipe(
-		operators.MergeAll(-1),
-		operators.DoAfterErrorOrComplete(handleTasksCancel),
-	).Subscribe(handleTasksCtx, queuedMessages)
+
+	var activeTasks rx.Observer[rx.Observable[any]]
+
+	rx.Pipe(
+		rx.AsObservable(
+			func(ctx context.Context, sink rx.Observer[rx.Observable[any]]) {
+				activeTasks = sink
+			},
+		),
+		rx.MergeAll[rx.Observable[any]]().AsOperator(),
+	).Subscribe(handleTasksCtx, func(n rx.Notification[any]) {
+		queuedMessages.Sink(n)
+
+		if !n.HasValue {
+			handleTasksCancel()
+		}
+	})
 
 	defer func() {
 		activeTasks.Complete()
@@ -1339,7 +1352,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				userAgent = userAgents[0]
 			}
 
-			cr := func(parent context.Context, sink rx.Observer) {
+			f := func(parent context.Context, sink rx.Observer[any]) {
 				reqCtx, reqCancel := context.WithCancel(mainCtx) // Not parent.
 
 				var (
@@ -1628,14 +1641,14 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}()
 			}
 
-			do := func(t rx.Notification) {
-				if t.HasValue {
-					switch t.Value.(type) {
+			do := func(n rx.Notification[any]) {
+				if n.HasValue {
+					switch n.Value.(type) {
 					case ProgressMessage:
 					case ResponseMessage:
-						messages <- t.Value
+						messages <- n.Value
 					case CompleteMessage:
-						messages <- t.Value
+						messages <- n.Value
 					}
 				}
 			}
@@ -1644,7 +1657,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 			pauseNewTask = true
 
-			activeTasks.Next(rx.Observable(cr).Pipe(operators.Do(do)))
+			activeTasks.Next(rx.Pipe(rx.AsObservable(f), rx.Do(do)))
 		case e := <-messages:
 			switch e := e.(type) {
 			case ResponseMessage:
@@ -1767,33 +1780,33 @@ func (app *App) verify(mainCtx context.Context, file *DataFile) int {
 		}
 	}
 
-	vs := rx.Observer(rx.Noop)
-	rx.Observable(
-		func(ctx context.Context, sink rx.Observer) {
-			vs = sink
-		},
-	).Pipe(
-		operators.SkipUntil(rx.Timer(time.Second)),
-	).Subscribe(
-		mainCtx,
-		func(t rx.Notification) {
-			switch {
-			case t.HasValue:
-				print("\033[1K\r")
-				switch t.Value.(type) {
-				case int64:
-					printf("verifying...%v%%", t.Value)
-				default:
-					printf("verifying...%v\n", t.Value)
-				}
-			case t.HasError:
-				print("\033[1K\r")
-				printf("verifying...%v\n", t.Error)
-			}
-		},
-	)
+	var vs rx.Observer[int]
 
-	p := int64(0)
+	rx.Pipe2(
+		rx.AsObservable(
+			func(ctx context.Context, sink rx.Observer[int]) {
+				vs = sink
+			},
+		),
+		rx.SkipUntil[int](rx.Timer(time.Second)),
+		rx.ThrowIfEmpty[int](),
+	).Subscribe(mainCtx, func(n rx.Notification[int]) {
+		switch {
+		case n.HasValue:
+			print("\033[1K\r")
+			printf("verifying...%v%%", n.Value)
+		case n.HasError:
+			if n.Error != rx.ErrEmpty {
+				print("\033[1K\r")
+				printf("verifying...%v\n", n.Error)
+			}
+		default:
+			print("\033[1K\r")
+			println("verifying...DONE")
+		}
+	})
+
+	p := int(-1)
 	s := int64(0)
 	w := func(b []byte) (n int, err error) {
 		n = len(b)
@@ -1805,8 +1818,8 @@ func (app *App) verify(mainCtx context.Context, file *DataFile) int {
 		}
 
 		s += int64(n)
-		if s*100 >= (p+1)*contentSize {
-			p = s * 100 / contentSize
+		if s*100 >= int64(p+1)*contentSize {
+			p = int(s * 100 / contentSize)
 			vs.Next(p)
 		}
 
@@ -1858,7 +1871,6 @@ func (app *App) verify(mainCtx context.Context, file *DataFile) int {
 		os.Remove(file.HashFile())
 	}
 
-	vs.Next("DONE")
 	vs.Complete()
 
 	return exitCodeOK
@@ -2026,15 +2038,15 @@ func isDir(name string) bool {
 	return stat.IsDir()
 }
 
-func print(a ...interface{}) {
+func print(a ...any) {
 	fmt.Fprint(os.Stderr, a...)
 }
 
-func printf(format string, a ...interface{}) {
+func printf(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, format, a...)
 }
 
-func println(a ...interface{}) {
+func println(a ...any) {
 	fmt.Fprintln(os.Stderr, a...)
 }
 
