@@ -40,8 +40,8 @@ github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03
 github.com/BurntSushi/xgb v0.0.0-20160522181843-27f122750802/go.mod h1:IVnqGOEym/WlBOVXweHU+Q+/VP0lqqI8lqeDx9IjBqo=
 github.com/b97tsk/rangeset v0.5.0 h1:zFrT18AM1gyxKYvLwIFAUZUFrnNY9XHJ/aev451Es9g=
 github.com/b97tsk/rangeset v0.5.0/go.mod h1:i4K527Y8L126kfHda9UxFTvGoK1WALfuG1IxjxQQkps=
-github.com/b97tsk/rx v0.7.0 h1:TpX88NDq9ilJKMUZi5IVHxHag64QPBwQ0+JLaHwshDc=
-github.com/b97tsk/rx v0.7.0/go.mod h1:X/XdMLH72VhtFZghrpyeXF7rADmZ6GrfV9LxHFcLJ+M=
+github.com/b97tsk/rx v0.8.0 h1:8zlmxyOUkmTvvi9EfwtigKJ2naaPdlyf8cRuw8sWSBU=
+github.com/b97tsk/rx v0.8.0/go.mod h1:xpnOsPttaAj7UlhWFPGqfuFbUbLuTpC4asCLHipONLY=
 github.com/census-instrumentation/opencensus-proto v0.2.1/go.mod h1:f6KPmirojxKA12rnyqOA5BBL4O983OfeGPqjHWSTneU=
 github.com/chzyer/logex v1.1.10/go.mod h1:+Ywpsq7O8HXn0nuIou7OrIPyXbp3wmkHB+jjWRnGsAI=
 github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e/go.mod h1:nSuG5e5PlCu98SY8svDHJxuZscDgtXS6KTTbou5AhLI=

@@ -671,10 +671,10 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 		var streamNotify rx.Observer[int]
 
-		rx.Pipe(
-			rx.AsObservable(
+		rx.Pipe1(
+			rx.NewObservable(
 				func(ctx context.Context, sink rx.Observer[int]) {
-					streamNotify = sink.Mutex()
+					streamNotify = sink.Serialized()
 				},
 			),
 			rx.Scan(0, func(a, b int) int { return a + b }),
@@ -718,7 +718,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		srv := &http.Server{}
 
 		defer func() {
-			if streamCounter.BlockingFirstOrDefault(mainCtx, 0) > 0 {
+			if streamCounter.BlockingFirstOrElse(mainCtx, 0) > 0 {
 				// Wait until `streamCounter` remains zero for N seconds.
 				const N = 5
 
@@ -730,7 +730,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 					rx.SwitchMapTo[int](
 						rx.Pipe2(
 							rx.Race(
-								rx.Pipe(
+								rx.Pipe1(
 									rx.Timer(N*time.Second),
 									rx.MapTo[time.Time](-1),
 								),
@@ -918,12 +918,12 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	var emaValue, emaSpeed int64
 
 	byteIntervals := rx.Multicast[int64]()
-	rx.Pipe(
-		rx.AsObservable(
+	rx.Pipe1(
+		rx.NewObservable(
 			func(ctx context.Context, sink rx.Observer[int64]) {
 				const N = 5
 
-				skipZeros := rx.Pipe(
+				skipZeros := rx.Pipe1(
 					byteIntervals.Observable,
 					rx.SkipWhile(func(v int64) bool { return v == 0 }),
 				)
@@ -992,10 +992,10 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	var queuedMessages rx.Observer[any]
 
-	rx.Pipe(
-		rx.AsObservable(
+	rx.Pipe1(
+		rx.NewObservable(
 			func(ctx context.Context, sink rx.Observer[any]) {
-				// Since `Congest` is concurrency safe, `sink.Mutex()` is not needed.
+				// Since `Congest` is concurrency safe, `sink.Serialized()` is not needed.
 				queuedMessages = sink
 			},
 		),
@@ -1107,7 +1107,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	measureCtx, measureCancel := context.WithCancel(dlCtx)
 	defer measureCancel()
 
-	rx.Pipe(
+	rx.Pipe1(
 		rx.Ticker(measureInterval),
 		rx.MapTo[time.Time, any](MeasureMessage{}),
 	).Subscribe(measureCtx, queuedMessages)
@@ -1116,10 +1116,10 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	var queuedWrites rx.Observer[func()]
 
-	rx.Pipe(
-		rx.AsObservable(
+	rx.Pipe1(
+		rx.NewObservable(
 			func(ctx context.Context, sink rx.Observer[func()]) {
-				// Since `Congest` is concurrency safe, `sink.Mutex()` is not needed.
+				// Since `Congest` is concurrency safe, `sink.Serialized()` is not needed.
 				queuedWrites = sink
 			},
 		),
@@ -1205,15 +1205,15 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	var activeTasks rx.Observer[rx.Observable[any]]
 
-	rx.Pipe(
-		rx.AsObservable(
+	rx.Pipe1(
+		rx.NewObservable(
 			func(ctx context.Context, sink rx.Observer[rx.Observable[any]]) {
 				activeTasks = sink
 			},
 		),
 		rx.MergeAll[rx.Observable[any]]().AsOperator(),
 	).Subscribe(handleTasksCtx, func(n rx.Notification[any]) {
-		queuedMessages.Sink(n)
+		queuedMessages.Emit(n)
 
 		if !n.HasValue {
 			handleTasksCancel()
@@ -1583,7 +1583,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 				sink.Next(ResponseMessage{resp.Request.URL.String()})
 
-				go func() {
+				rx.Go(parent, func() {
 					var result error
 
 					var (
@@ -1638,7 +1638,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 							return
 						}
 					}
-				}()
+				})
 			}
 
 			do := func(n rx.Notification[any]) {
@@ -1657,7 +1657,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 			pauseNewTask = true
 
-			activeTasks.Next(rx.Pipe(rx.AsObservable(f), rx.Do(do)))
+			activeTasks.Next(rx.Pipe1(rx.NewObservable(f), rx.Do(do)))
 		case e := <-messages:
 			switch e := e.(type) {
 			case ResponseMessage:
@@ -1783,7 +1783,7 @@ func (app *App) verify(mainCtx context.Context, file *DataFile) int {
 	var vs rx.Observer[int]
 
 	rx.Pipe2(
-		rx.AsObservable(
+		rx.NewObservable(
 			func(ctx context.Context, sink rx.Observer[int]) {
 				vs = sink
 			},

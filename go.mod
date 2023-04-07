@@ -1,10 +1,10 @@
 module github.com/b97tsk/resume
 
-go 1.18
+go 1.19
 
 require (
 	github.com/b97tsk/rangeset v0.5.0
-	github.com/b97tsk/rx v0.7.0
+	github.com/b97tsk/rx v0.8.0
 	github.com/spf13/cobra v1.5.0
 	github.com/spf13/viper v1.12.0
 	golang.org/x/net v0.0.0-20220520000938-2e3eb7b945c2
