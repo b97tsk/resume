@@ -30,7 +30,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/b97tsk/rangeset"
+	"github.com/b97tsk/intervals"
+	"github.com/b97tsk/intervals/elems"
 	"github.com/b97tsk/rx"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -512,7 +513,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	}
 
 	if app.Range != "" {
-		var sections rangeset.RangeSet[int64]
+		var s intervals.Set[elems.Int64]
 
 		for _, r0 := range strings.Split(app.Range, ",") {
 			r := strings.Split(r0, "-")
@@ -528,12 +529,12 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			}
 
 			if len(r) == 1 {
-				sections.AddRange(i*1024*1024, (i+1)*1024*1024)
+				s.AddRange(elems.Int64(i*1024*1024), elems.Int64((i+1)*1024*1024))
 				continue
 			}
 
 			if r[1] == "" {
-				sections.AddRange(i*1024*1024, math.MaxInt64)
+				s.AddRange(elems.Int64(i*1024*1024), math.MaxInt64)
 				continue
 			}
 
@@ -543,11 +544,11 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				return exitCodeFatal
 			}
 
-			sections.AddRange(i*1024*1024, (j+1)*1024*1024)
+			s.AddRange(elems.Int64(i*1024*1024), elems.Int64((j+1)*1024*1024))
 		}
 
-		if len(sections) > 0 {
-			file.SetRange(sections)
+		if len(s) > 0 {
+			file.SetRange(s)
 		}
 	}
 
