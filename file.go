@@ -71,7 +71,7 @@ func openDataFile(name string) (f *DataFile, err error) {
 
 	f = &DataFile{
 		file:         file,
-		incomplete:   intervals.Set[elems.Int64]{{Low: 0, High: math.MaxInt64}},
+		incomplete:   intervals.Range[elems.Int64](0, math.MaxInt64).Set(),
 		ignoreSize:   &ints[0],
 		contentSize:  &ints[1],
 		completeSize: &ints[2],
@@ -140,7 +140,7 @@ func (f *DataFile) LoadHashFile() (err error) {
 
 	f.hash = hash
 	f.completed = completed
-	f.incomplete = intervals.Set[elems.Int64]{{Low: 0, High: math.MaxInt64}}.Difference(completed)
+	f.incomplete = intervals.Range[elems.Int64](0, math.MaxInt64).Set().Difference(completed)
 	atomic.StoreInt64(f.completeSize, sum(completed))
 
 	if hash.ContentSize > 0 {
@@ -167,7 +167,7 @@ func (f *DataFile) getIncompleteLocked() intervals.Set[elems.Int64] {
 		high = *f.contentSize
 	}
 
-	return intervals.Set[elems.Int64]{{Low: 0, High: elems.Int64(high)}}.Difference(f.completed)
+	return intervals.Range(0, elems.Int64(high)).Set().Difference(f.completed)
 }
 
 func (f *DataFile) IncompleteSize() int64 {
