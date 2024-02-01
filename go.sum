@@ -38,8 +38,8 @@ cloud.google.com/go/storage v1.14.0/go.mod h1:GrKmX003DSIwi9o29oFT7YDnHYwZoctc3f
 dmitri.shuralyov.com/gpu/mtl v0.0.0-20190408044501-666a987793e9/go.mod h1:H6x//7gZCb22OMCxBHrMx7a5I7Hp++hsVxbQ4BYO7hU=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/BurntSushi/xgb v0.0.0-20160522181843-27f122750802/go.mod h1:IVnqGOEym/WlBOVXweHU+Q+/VP0lqqI8lqeDx9IjBqo=
-github.com/b97tsk/intervals v0.2.0 h1:ZwEpJnzkoScAtX32i5ACZRjKIO/g6ZoCYvsJ0eZdvM4=
-github.com/b97tsk/intervals v0.2.0/go.mod h1:CF/oCS3HIIXVhJYXcJHwSjuzE4hkvHmY37ziMwiU9yQ=
+github.com/b97tsk/intervals v0.3.3 h1:AfHtqWGlRQOg2d24MM5JEv3n9bIrPVIlmq/yt1etl2Y=
+github.com/b97tsk/intervals v0.3.3/go.mod h1:CF/oCS3HIIXVhJYXcJHwSjuzE4hkvHmY37ziMwiU9yQ=
 github.com/b97tsk/rx v0.8.0 h1:8zlmxyOUkmTvvi9EfwtigKJ2naaPdlyf8cRuw8sWSBU=
 github.com/b97tsk/rx v0.8.0/go.mod h1:xpnOsPttaAj7UlhWFPGqfuFbUbLuTpC4asCLHipONLY=
 github.com/census-instrumentation/opencensus-proto v0.2.1/go.mod h1:f6KPmirojxKA12rnyqOA5BBL4O983OfeGPqjHWSTneU=

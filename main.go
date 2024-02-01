@@ -529,12 +529,12 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			}
 
 			if len(r) == 1 {
-				s.AddRange(elems.Int64(i*1024*1024), elems.Int64((i+1)*1024*1024))
+				s = intervals.Add(s, intervals.Range(elems.Int64(i*1024*1024), elems.Int64((i+1)*1024*1024)))
 				continue
 			}
 
 			if r[1] == "" {
-				s.AddRange(elems.Int64(i*1024*1024), math.MaxInt64)
+				s = intervals.Add(s, intervals.Range(elems.Int64(i*1024*1024), math.MaxInt64))
 				continue
 			}
 
@@ -544,7 +544,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				return exitCodeFatal
 			}
 
-			s.AddRange(elems.Int64(i*1024*1024), elems.Int64((j+1)*1024*1024))
+			s = intervals.Add(s, intervals.Range(elems.Int64(i*1024*1024), elems.Int64((j+1)*1024*1024)))
 		}
 
 		if len(s) > 0 {

@@ -130,7 +130,7 @@ func (f *DataFile) LoadHashFile() (err error) {
 		p := &hash.Pieces[i]
 		if p.Size > 0 && p.Size <= pieceSize && p.HashCode > 0 {
 			offset := pieceSize * int64(i)
-			completed.AddRange(elems.Int64(offset), elems.Int64(offset+int64(p.Size)))
+			completed = intervals.Add(completed, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(p.Size))))
 
 			continue
 		}
@@ -203,7 +203,7 @@ func (f *DataFile) setContentSizeLocked(size int64) {
 		copy(f.hash.Pieces, pieces)
 	}
 
-	f.incomplete.DeleteRange(elems.Int64(size), math.MaxInt64)
+	f.incomplete = intervals.Delete(f.incomplete, intervals.Range(elems.Int64(size), math.MaxInt64))
 	f.updateIgnoreSizeLocked()
 }
 
@@ -399,7 +399,7 @@ func (f *DataFile) TakeIncomplete(max int64) (offset, size int64) {
 		high = r.High
 	}
 
-	f.incomplete.DeleteRange(low, high)
+	f.incomplete = intervals.Delete(f.incomplete, intervals.Range(low, high))
 
 	return int64(low), int64(high - low)
 }
@@ -408,10 +408,10 @@ func (f *DataFile) ReturnIncomplete(offset, size int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	f.incomplete.AddRange(elems.Int64(offset), elems.Int64(offset+size))
+	f.incomplete = intervals.Add(f.incomplete, intervals.Range(elems.Int64(offset), elems.Int64(offset+size)))
 
 	if *f.contentSize > 0 {
-		f.incomplete.DeleteRange(elems.Int64(*f.contentSize), math.MaxInt64)
+		f.incomplete = intervals.Delete(f.incomplete, intervals.Range(elems.Int64(*f.contentSize), math.MaxInt64))
 	}
 }
 
@@ -451,8 +451,8 @@ func (f *DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 		panic("WriteAt failed")
 	}
 
-	f.completed.AddRange(elems.Int64(offset), elems.Int64(offset+int64(n)))
-	f.incomplete.DeleteRange(elems.Int64(offset), elems.Int64(offset+int64(n)))
+	f.completed = intervals.Add(f.completed, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(n))))
+	f.incomplete = intervals.Delete(f.incomplete, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(n))))
 
 	completeSize := *f.completeSize
 
@@ -596,8 +596,8 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 		p := &f.hash.Pieces[i]
 		if hashCode != p.HashCode {
 			offset := pieceSize * int64(i)
-			f.completed.DeleteRange(elems.Int64(offset), elems.Int64(offset+int64(p.Size)))
-			f.incomplete.AddRange(elems.Int64(offset), elems.Int64(offset+int64(p.Size)))
+			f.completed = intervals.Delete(f.completed, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(p.Size))))
+			f.incomplete = intervals.Add(f.incomplete, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(p.Size))))
 			atomic.AddInt64(f.completeSize, -int64(p.Size))
 			p.Reset()
 		}
@@ -610,8 +610,8 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 			p := &f.hash.Pieces[i]
 			if hashCode != p.HashCode {
 				offset := pieceSize * int64(i)
-				f.completed.DeleteRange(elems.Int64(offset), elems.Int64(offset+int64(p.Size)))
-				f.incomplete.AddRange(elems.Int64(offset), elems.Int64(offset+int64(p.Size)))
+				f.completed = intervals.Delete(f.completed, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(p.Size))))
+				f.incomplete = intervals.Add(f.incomplete, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(p.Size))))
 				atomic.AddInt64(f.completeSize, -int64(p.Size))
 				p.Reset()
 			}
@@ -644,8 +644,8 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 		p := &f.hash.Pieces[i]
 		if hashCode != p.HashCode {
 			offset := pieceSize * int64(i)
-			f.completed.DeleteRange(elems.Int64(offset), elems.Int64(offset+int64(p.Size)))
-			f.incomplete.AddRange(elems.Int64(offset), elems.Int64(offset+int64(p.Size)))
+			f.completed = intervals.Delete(f.completed, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(p.Size))))
+			f.incomplete = intervals.Add(f.incomplete, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(p.Size))))
 			atomic.AddInt64(f.completeSize, -int64(p.Size))
 			p.Reset()
 		}
