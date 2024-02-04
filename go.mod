@@ -3,7 +3,7 @@ module github.com/b97tsk/resume
 go 1.21.0
 
 require (
-	github.com/b97tsk/intervals v0.3.3
+	github.com/b97tsk/intervals v0.4.0
 	github.com/b97tsk/rx v0.8.0
 	github.com/spf13/cobra v1.8.0
 	github.com/spf13/viper v1.18.2
