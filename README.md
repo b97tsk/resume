@@ -53,7 +53,6 @@ A config file is an YAML document that can specify following options:
 - `max-split` maximal split size (MiB).
 - `min-split` minimal split size (MiB).
 - `output` output file.
-- `per-user-agent-limit` limit per user agent connections.
 - `proxy` a shorthand for setting http(s)\_proxy environment variables.
 - `range` request range (MiB).
 - `read-timeout` read timeout (Default: 30s).
@@ -69,7 +68,7 @@ A config file is an YAML document that can specify following options:
 - `tls-handshake-timeout` tls handshake timeout (Default: 10s).
 - `truncate` truncate output file before the first write.
 - `url` the URL to download.
-- `user-agent` user agent, one for each line.
+- `user-agent` user agent.
 - `verbose` write additional information to stderr.
 - `verify` verify output file after download completes (Default: true).
 

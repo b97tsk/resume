@@ -149,7 +149,6 @@ type Configure struct {
 	MaxSplitSize          uint          `mapstructure:"max-split" yaml:"max-split"`
 	MinSplitSize          uint          `mapstructure:"min-split" yaml:"min-split"`
 	OutputFile            string        `mapstructure:"output" yaml:"output"`
-	PerUserAgentLimit     uint          `mapstructure:"per-user-agent-limit" yaml:"per-user-agent-limit"`
 	Proxy                 string        `mapstructure:"proxy" yaml:"proxy"`
 	Range                 string        `mapstructure:"range" yaml:"range"`
 	ReadTimeout           time.Duration `mapstructure:"read-timeout" yaml:"read-timeout"`
@@ -1236,19 +1235,13 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	}()
 
 	var (
-		activeCount  uint
+		downloads    uint
 		errorCount   uint
 		fatalCode    int
 		pauseNewTask bool
 
 		maxDownloads = app.Connections
 		currentURL   = app.URL
-
-		allUserAgents  = strings.Split(strings.TrimSuffix(app.UserAgent, "\n"), "\n")
-		newUserAgents  = make([]string, 0, len(allUserAgents))
-		userAgents     = allUserAgents
-		userAgentIndex = 0
-		userAgentConns = uint(0)
 	)
 
 	syncPeriod := app.SyncPeriod
@@ -1264,43 +1257,24 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	errTryAgain := errors.New("try again")
 	mainDone := mainCtx.Done()
 
-	for activeCount > 0 || file.HasIncomplete() {
+	for downloads > 0 || file.HasIncomplete() {
 		var canRequest <-chan struct{}
 
 		switch {
 		case fatalCode != 0:
-			if activeCount == 0 {
+			if downloads == 0 {
 				return fatalCode
 			}
 		case errorCount >= app.Errors:
-			if len(userAgents) > 1 {
-				// If multiple user agents are provided, we are going to
-				// test all of them one by one.
-				userAgents = userAgents[1:] // Switch to next one.
-				userAgentIndex = (userAgentIndex + 1) % len(allUserAgents)
-				userAgentConns = 0
-			} else {
-				if len(allUserAgents) > 1 {
-					// We tested all user agents, now prepare to start over again.
-					userAgentIndex = (userAgentIndex + 1) % len(allUserAgents)
-					userAgentConns = 0
-					userAgents = newUserAgents
-					userAgents = append(userAgents, allUserAgents[userAgentIndex:]...)
-					userAgents = append(userAgents, allUserAgents[:userAgentIndex]...)
+			if currentURL == app.URL { // No redirection.
+				if downloads == 0 { // Failed to start any download.
+					return exitCodeIncomplete // Giving up.
 				}
-				if currentURL == app.URL {
-					if activeCount == 0 {
-						// We tested all user agents, failed to start any download.
-						return exitCodeIncomplete // Give up.
-					}
-					// We tested all user agents and successfully started
-					// some downloads, but now we are going to assume this
-					// is all we can do so far.
-					// Let's limit the number of parallel downloads.
-					maxDownloads = activeCount
-					errorCount = 0
-					break
-				}
+
+				maxDownloads = downloads // Limit the number of parallel downloads.
+				errorCount = 0
+
+				break
 			}
 
 			currentURL = app.URL
@@ -1309,7 +1283,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 			fallthrough
 		default:
-			if activeCount >= maxDownloads {
+			if downloads >= maxDownloads {
 				break
 			}
 
@@ -1326,7 +1300,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		case <-canRequest:
 			offset, size := takeIncomplete()
 			if size == 0 {
-				if activeCount == 0 {
+				if downloads == 0 {
 					return exitCodeOK
 				}
 
@@ -1346,11 +1320,6 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}
 
 				queuedMessages.Next(StatusChangedMessage{StatusDownloading})
-			}
-
-			var userAgent string
-			if len(userAgents) > 0 {
-				userAgent = userAgents[0]
 			}
 
 			f := func(parent context.Context, sink rx.Observer[any]) {
@@ -1381,7 +1350,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					req.Header.Set("Referer", app.Referer)
 				}
 
-				req.Header.Set("User-Agent", userAgent)
+				req.Header.Set("User-Agent", app.UserAgent)
 
 				resp, err := client.Do(req)
 				if err != nil {
@@ -1654,7 +1623,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				}
 			}
 
-			activeCount++
+			downloads++
 
 			pauseNewTask = true
 
@@ -1666,50 +1635,10 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				currentURL = e.URL // Save the redirected one if redirection happens.
 				maxDownloads = app.Connections
 				errorCount = 0
-
-				if len(allUserAgents) > 1 {
-					if app.Verbose {
-						queuedMessages.Next(
-							fmt.Sprintf(
-								"UserAgent #%v: +1 connection",
-								userAgentIndex+1,
-							),
-						)
-					}
-
-					userAgentConns++
-
-					switch userAgentConns {
-					case app.PerUserAgentLimit:
-						// We successfully started some downloads with current
-						// user agent, let's try next.
-						userAgentIndex = (userAgentIndex + 1) % len(allUserAgents)
-						userAgentConns = 0
-						userAgents = newUserAgents
-						userAgents = append(userAgents, allUserAgents[userAgentIndex:]...)
-						userAgents = append(userAgents, allUserAgents[:userAgentIndex]...)
-						// If we change the user agent, we probably need to
-						// reset the url to the original one.
-						currentURL = app.URL
-					case 1:
-						// Successfully made the first connection with current
-						// user agent, we'll test all other user agents again.
-						userAgents = newUserAgents
-						userAgents = append(userAgents, allUserAgents[userAgentIndex:]...)
-						userAgents = append(userAgents, allUserAgents[:userAgentIndex]...)
-					}
-				}
 			case CompleteMessage:
-				activeCount--
+				downloads--
 
-				if e.Responsed {
-					if len(allUserAgents) > 1 {
-						// Prepare to test all user agents again.
-						userAgents = newUserAgents
-						userAgents = append(userAgents, allUserAgents[userAgentIndex:]...)
-						userAgents = append(userAgents, allUserAgents[:userAgentIndex]...)
-					}
-				} else { // There must be an error if no response.
+				if !e.Responsed { // There must be an error if no response.
 					pauseNewTask = false
 
 					switch {
@@ -1721,7 +1650,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 							fatalCode = e.Fatal
 						}
 
-						if e.Fatal != 0 || activeCount == 0 || app.Verbose {
+						if e.Fatal != 0 || downloads == 0 || app.Verbose {
 							err := e.Err
 
 							switch e := err.(type) {
@@ -1731,17 +1660,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 								err = e.Err
 							}
 
-							message := err.Error()
-							if len(allUserAgents) > 1 {
-								if app.Verbose {
-									message = fmt.Sprintf(
-										"UserAgent #%v: %v",
-										userAgentIndex+1,
-										message,
-									)
-								}
-							}
-							queuedMessages.Next(message)
+							queuedMessages.Next(err.Error())
 						}
 					}
 				}
