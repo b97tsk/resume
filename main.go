@@ -138,7 +138,6 @@ type Configure struct {
 	Autoremove            bool          `mapstructure:"autoremove" yaml:"autoremove"`
 	Connections           uint          `mapstructure:"connections" yaml:"connections"`
 	CookieFile            string        `mapstructure:"cookie" yaml:"cookie"`
-	DialTimeout           time.Duration `mapstructure:"dial-timeout" yaml:"dial-timeout"`
 	DisableKeepAlives     bool          `mapstructure:"disable-keep-alives" yaml:"disable-keep-alives"`
 	Errors                uint          `mapstructure:"errors" yaml:"errors"`
 	ForceAttemptHTTP2     bool          `mapstructure:"force-http2" yaml:"force-http2"`
@@ -200,14 +199,13 @@ func main() {
 	flags.BoolVarP(&app.SkipLastModified, "skip-last-modified", "M", false, "skip unreliable Last-Modified field")
 	flags.BoolVarP(&app.TimeoutIntolerant, "timeout-intolerant", "T", false, "treat timeouts as errors")
 	flags.BoolVarP(&app.Verbose, "verbose", "v", false, "write additional information to stderr")
-	flags.DurationVar(&app.DialTimeout, "dial-timeout", 30*time.Second, "dial timeout")
 	flags.DurationVar(&app.KeepAlive, "keep-alive", 30*time.Second, "keep-alive duration")
 	flags.DurationVar(&app.ReadTimeout, "read-timeout", 30*time.Second, "read timeout")
 	flags.DurationVar(&app.ResponseHeaderTimeout, "response-header-timeout", 10*time.Second, "response header timeout")
 	flags.DurationVar(&app.SyncPeriod, "sync-period", 10*time.Minute, "sync-to-disk period")
 	flags.DurationVar(&app.TLSHandshakeTimeout, "tls-handshake-timeout", 10*time.Second, "tls handshake timeout")
 	flags.DurationVarP(&app.Interval, "interval", "i", 2*time.Second, "request interval")
-	flags.DurationVarP(&app.Timeout, "timeout", "t", 0, "if positive, all timeouts default to this value")
+	flags.DurationVarP(&app.Timeout, "timeout", "t", 30*time.Second, "timeout for all, low priority")
 	flags.StringVar(&app.CookieFile, "cookie", "", "cookie file")
 	flags.StringVarP(&app.LimitRate, "limit-rate", "l", "", "limit download rate to this value (B/s), e.g., 32K")
 	flags.StringVarP(&app.ListenAddress, "listen", "L", "", "HTTP listen address for remote control")
@@ -357,12 +355,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 	if app.Timeout > 0 {
 		timeoutFlagProvided := cmd.Flags().Changed("timeout")
-		if !cmd.Flags().Changed("dial-timeout") {
-			if timeoutFlagProvided || !viper.InConfig("dial-timeout") {
-				app.DialTimeout = app.Timeout
-			}
-		}
-
 		if !cmd.Flags().Changed("read-timeout") {
 			if timeoutFlagProvided || !viper.InConfig("read-timeout") {
 				app.ReadTimeout = app.Timeout
@@ -821,7 +813,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
-				Timeout:   app.DialTimeout,
+				Timeout:   app.Timeout,
 				KeepAlive: app.KeepAlive,
 				DualStack: true,
 			}).DialContext,
@@ -1254,6 +1246,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	re1 := regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+)$`)
 	re2 := regexp.MustCompile(`^bytes \*/(\d+)$`)
+	errConnTimeout := errors.New("connection timeout")
+	errReadTimeout := errors.New("read timeout")
 	errTryAgain := errors.New("try again")
 	mainDone := mainCtx.Done()
 
@@ -1323,7 +1317,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			}
 
 			f := func(parent context.Context, sink rx.Observer[any]) {
-				reqCtx, reqCancel := context.WithCancel(mainCtx) // Not parent.
+				reqCtx, reqCancel := context.WithCancelCause(mainCtx) // Not parent.
 
 				var (
 					err   error
@@ -1335,7 +1329,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						returnIncomplete(offset, size)
 						sink.Next(CompleteMessage{err, fatal, false})
 						sink.Complete()
-						reqCancel()
+						reqCancel(nil)
 					}
 				}()
 
@@ -1352,8 +1346,14 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 				req.Header.Set("User-Agent", app.UserAgent)
 
+				reqTimer := time.AfterFunc(app.Timeout, func() { reqCancel(errConnTimeout) })
+
 				resp, err := client.Do(req)
 				if err != nil {
+					if context.Cause(reqCtx) == errConnTimeout {
+						err = errConnTimeout
+					}
+
 					return
 				}
 
@@ -1362,6 +1362,11 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						resp.Body.Close()
 					}
 				}()
+
+				if !reqTimer.Stop() {
+					err = errTryAgain
+					return
+				}
 
 				var contentSize int64
 
@@ -1554,59 +1559,59 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				sink.Next(ResponseMessage{resp.Request.URL.String()})
 
 				rx.Go(parent, func() {
-					var result error
+					var err error
 
-					var (
-						readTimeout      = app.ReadTimeout
-						readTimer        = time.AfterFunc(readTimeout, reqCancel)
-						shouldResetTimer bool
-						shouldWaitWrite  bool
-					)
+					var waitWrite bool
 
 					defer func() {
 						resp.Body.Close()
 
-						if shouldWaitWrite {
+						if waitWrite {
 							waitWriteDone()
 						}
 
 						returnIncomplete(offset, size)
-						sink.Next(CompleteMessage{result, 0, true})
+						sink.Next(CompleteMessage{err, 0, true})
 						sink.Complete()
-						reqCancel()
+						reqCancel(nil)
 					}()
 
-					for {
-						if shouldResetTimer {
-							readTimer.Reset(readTimeout)
+					var resetTimer bool
+
+					readTimer := time.AfterFunc(app.ReadTimeout, func() { reqCancel(errReadTimeout) })
+
+				Again:
+					if resetTimer {
+						readTimer.Reset(app.ReadTimeout)
+					}
+
+					n, err := readAndWrite(resp.Body, offset, size)
+
+					readTimer.Stop()
+
+					resetTimer = true
+
+					if n > 0 {
+						offset, size = offset+int64(n), size-int64(n)
+						waitWrite = true
+
+						sink.Next(ProgressMessage{n})
+
+						if err == nil && app.rateLimiter != nil {
+							err = app.rateLimiter.WaitN(reqCtx, n)
 						}
+					}
 
-						n, err := readAndWrite(resp.Body, offset, size)
+					if err == nil {
+						goto Again
+					}
 
-						readTimer.Stop()
+					if err == io.EOF {
+						return
+					}
 
-						shouldResetTimer = true
-
-						if n > 0 {
-							offset, size = offset+int64(n), size-int64(n)
-							shouldWaitWrite = true
-
-							sink.Next(ProgressMessage{n})
-
-							if err == nil && app.rateLimiter != nil {
-								err = app.rateLimiter.WaitN(reqCtx, n)
-							}
-						}
-
-						if err != nil {
-							if err == io.EOF {
-								return
-							}
-
-							result = err
-
-							return
-						}
+					if context.Cause(reqCtx) == errReadTimeout {
+						err = errReadTimeout
 					}
 				})
 			}
@@ -1641,10 +1646,10 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				if !e.Responsed { // There must be an error if no response.
 					pauseNewTask = false
 
-					switch {
-					case e.Err == errTryAgain:
-					case app.TimeoutIntolerant || !os.IsTimeout(e.Err):
-						errorCount++
+					if e.Err != errTryAgain {
+						if e.Err != errConnTimeout && e.Err != errReadTimeout || app.TimeoutIntolerant {
+							errorCount++
+						}
 
 						if e.Fatal != 0 {
 							fatalCode = e.Fatal
