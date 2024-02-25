@@ -126,7 +126,7 @@ type App struct {
 	verifyOnly     bool
 	fixCorrupted   bool
 	streamToStdout bool
-	streamOffset   *int64
+	streamOffset   atomic.Int64
 	canRequest     chan struct{}
 	rateLimiter    *rate.Limiter
 	retryCount     uint
@@ -571,7 +571,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	)
 
 	if app.streamToStdout {
-		app.streamOffset = new(int64)
 		streamDone = make(chan struct{})
 		streamRest = make(chan struct{})
 
@@ -605,7 +604,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				case <-streamTicker.C:
 					if n, err := file.ReadAt(streamBuffer, streamOffset); err == nil {
 						streamOffset += int64(n)
-						atomic.StoreInt64(app.streamOffset, streamOffset)
+						app.streamOffset.Store(streamOffset)
 
 						if _, err := os.Stdout.Write(streamBuffer[:n]); err != nil {
 							mainCancel() // Exiting.
@@ -1303,7 +1302,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 			if app.streamToStdout && app.StreamCache > 0 {
 				streamCacheSize := int64(app.StreamCache) * 1024 * 1024
-				streamOffset := atomic.LoadInt64(app.streamOffset)
+				streamOffset := app.streamOffset.Load()
 
 				if offset >= streamOffset+streamCacheSize {
 					returnIncomplete(offset, size)

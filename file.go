@@ -30,9 +30,9 @@ type DataFile struct {
 	completed       intervals.Set[elems.Int64]
 	incomplete      intervals.Set[elems.Int64]
 	requested       intervals.Set[elems.Int64]
-	ignoreSize      *int64
-	contentSize     *int64
-	completeSize    *int64
+	ignoreSize      atomic.Int64
+	contentSize     atomic.Int64
+	completeSize    atomic.Int64
 	recentIncrement int64
 	autoSyncSize    int64
 }
@@ -67,14 +67,9 @@ func openDataFile(name string) (f *DataFile, err error) {
 		return
 	}
 
-	var ints [3]int64 // Ensure 64-bit alignment for atomic operations.
-
 	f = &DataFile{
-		file:         file,
-		incomplete:   intervals.Range[elems.Int64](0, math.MaxInt64).Set(),
-		ignoreSize:   &ints[0],
-		contentSize:  &ints[1],
-		completeSize: &ints[2],
+		file:       file,
+		incomplete: intervals.Range[elems.Int64](0, math.MaxInt64).Set(),
 	}
 
 	return
@@ -141,7 +136,7 @@ func (f *DataFile) LoadHashFile() (err error) {
 	f.hash = hash
 	f.completed = completed
 	f.incomplete = intervals.Range[elems.Int64](0, math.MaxInt64).Set().Difference(completed)
-	atomic.StoreInt64(f.completeSize, sum(completed))
+	f.completeSize.Store(sum(completed))
 
 	if hash.ContentSize > 0 {
 		f.setContentSizeLocked(hash.ContentSize)
@@ -163,8 +158,8 @@ func (f *DataFile) Incomplete() intervals.Set[elems.Int64] {
 
 func (f *DataFile) getIncompleteLocked() intervals.Set[elems.Int64] {
 	high := int64(math.MaxInt64)
-	if *f.contentSize > 0 {
-		high = *f.contentSize
+	if contentSize := f.ContentSize(); contentSize > 0 {
+		high = contentSize
 	}
 
 	return intervals.Range(0, elems.Int64(high)).Set().Difference(f.completed)
@@ -179,11 +174,11 @@ func (f *DataFile) IncompleteSize() int64 {
 }
 
 func (f *DataFile) IgnoreSize() int64 {
-	return atomic.LoadInt64(f.ignoreSize)
+	return f.ignoreSize.Load()
 }
 
 func (f *DataFile) CompleteSize() int64 {
-	return atomic.LoadInt64(f.completeSize)
+	return f.completeSize.Load()
 }
 
 func (f *DataFile) SetContentSize(size int64) {
@@ -194,7 +189,7 @@ func (f *DataFile) SetContentSize(size int64) {
 
 func (f *DataFile) setContentSizeLocked(size int64) {
 	f.hash.ContentSize = size
-	atomic.StoreInt64(f.contentSize, size)
+	f.contentSize.Store(size)
 
 	pieceCount := int(math.Ceil(float64(size) / pieceSize))
 	if len(f.hash.Pieces) != pieceCount {
@@ -215,7 +210,7 @@ func (f *DataFile) updateIgnoreSizeLocked() {
 		ignoreSize = sum(ignored)
 	}
 
-	atomic.StoreInt64(f.ignoreSize, ignoreSize)
+	f.ignoreSize.Store(ignoreSize)
 }
 
 func (f *DataFile) Truncate(size int64) error {
@@ -237,7 +232,7 @@ func (f *DataFile) Truncate(size int64) error {
 }
 
 func (f *DataFile) ContentSize() int64 {
-	return atomic.LoadInt64(f.contentSize)
+	return f.contentSize.Load()
 }
 
 func (f *DataFile) SetContentMD5(contentMD5 string) {
@@ -364,7 +359,7 @@ func (f *DataFile) SetRange(s intervals.Set[elems.Int64]) {
 	f.incomplete = f.incomplete.Intersection(s)
 	f.requested = append(intervals.Set[elems.Int64]{}, f.incomplete...)
 
-	if *f.contentSize > 0 {
+	if f.ContentSize() > 0 {
 		f.updateIgnoreSizeLocked()
 	}
 }
@@ -410,8 +405,8 @@ func (f *DataFile) ReturnIncomplete(offset, size int64) {
 
 	f.incomplete = intervals.Add(f.incomplete, intervals.Range(elems.Int64(offset), elems.Int64(offset+size)))
 
-	if *f.contentSize > 0 {
-		f.incomplete = intervals.Delete(f.incomplete, intervals.Range(elems.Int64(*f.contentSize), math.MaxInt64))
+	if contentSize := f.ContentSize(); contentSize > 0 {
+		f.incomplete = intervals.Delete(f.incomplete, intervals.Range(elems.Int64(contentSize), math.MaxInt64))
 	}
 }
 
@@ -454,10 +449,10 @@ func (f *DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 	f.completed = intervals.Add(f.completed, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(n))))
 	f.incomplete = intervals.Delete(f.incomplete, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(n))))
 
-	completeSize := *f.completeSize
+	completeSize := f.CompleteSize()
 
 	defer func() {
-		f.recentIncrement += *f.completeSize - completeSize
+		f.recentIncrement += f.CompleteSize() - completeSize
 		if f.autoSyncSize > 0 && f.recentIncrement >= f.autoSyncSize {
 			f.recentIncrement = 0
 			_ = f.syncLocked()
@@ -466,7 +461,7 @@ func (f *DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 
 	pieceSizeRequired := pieceSize - int(p.Size)
 	if n < pieceSizeRequired {
-		atomic.AddInt64(f.completeSize, int64(n))
+		f.completeSize.Add(int64(n))
 
 		p.HashCode = crc32.Update(p.HashCode, crc32.IEEETable, b)
 		p.Size += uint32(n)
@@ -474,7 +469,7 @@ func (f *DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 		return
 	}
 
-	atomic.AddInt64(f.completeSize, int64(pieceSizeRequired))
+	f.completeSize.Add(int64(pieceSizeRequired))
 	p.HashCode = crc32.Update(p.HashCode, crc32.IEEETable, b[:pieceSizeRequired])
 	p.Size = pieceSize
 	b, i = b[pieceSizeRequired:], i+1
@@ -482,7 +477,7 @@ func (f *DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 	for len(b) >= pieceSize {
 		p := &f.hash.Pieces[i]
 		if p.Size < pieceSize {
-			atomic.AddInt64(f.completeSize, pieceSize-int64(p.Size))
+			f.completeSize.Add(pieceSize - int64(p.Size))
 			p.HashCode = crc32.ChecksumIEEE(b[:pieceSize])
 			p.Size = pieceSize
 		}
@@ -493,7 +488,7 @@ func (f *DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 	if len(b) > 0 {
 		p := &f.hash.Pieces[i]
 		if int(p.Size) < len(b) {
-			atomic.AddInt64(f.completeSize, int64(len(b)-int(p.Size)))
+			f.completeSize.Add(int64(len(b) - int(p.Size)))
 			p.HashCode = crc32.ChecksumIEEE(b)
 			p.Size = uint32(len(b))
 		}
@@ -598,7 +593,7 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 			offset := pieceSize * int64(i)
 			f.completed = intervals.Delete(f.completed, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(p.Size))))
 			f.incomplete = intervals.Add(f.incomplete, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(p.Size))))
-			atomic.AddInt64(f.completeSize, -int64(p.Size))
+			f.completeSize.Add(-int64(p.Size))
 			p.Reset()
 		}
 
@@ -612,7 +607,7 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 				offset := pieceSize * int64(i)
 				f.completed = intervals.Delete(f.completed, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(p.Size))))
 				f.incomplete = intervals.Add(f.incomplete, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(p.Size))))
-				atomic.AddInt64(f.completeSize, -int64(p.Size))
+				f.completeSize.Add(-int64(p.Size))
 				p.Reset()
 			}
 
@@ -646,7 +641,7 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 			offset := pieceSize * int64(i)
 			f.completed = intervals.Delete(f.completed, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(p.Size))))
 			f.incomplete = intervals.Add(f.incomplete, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(p.Size))))
-			atomic.AddInt64(f.completeSize, -int64(p.Size))
+			f.completeSize.Add(-int64(p.Size))
 			p.Reset()
 		}
 	}
