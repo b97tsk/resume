@@ -348,8 +348,8 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}
 
 		if i > 0 {
-			const rateLimitBurst = readBufferSize
-			app.rateLimiter = rate.NewLimiter(rate.Limit(i<<n), rateLimitBurst)
+			burst := int(i<<n) + int(i<<n>>9)
+			app.rateLimiter = rate.NewLimiter(rate.Limit(i<<n), burst)
 		}
 	}
 
