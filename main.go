@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -543,7 +542,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}
 	}
 
-	mainCtx, mainCancel := context.WithCancel(context.Background())
+	mainCtx, mainCancel := rx.NewBackgroundContext().WithCancel()
 	defer mainCancel()
 
 	mainDone := mainCtx.Done()
@@ -657,20 +656,16 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			},
 		))
 
-		streamCounter := rx.MulticastReplay[int](&rx.ReplayConfig{BufferSize: 1})
+		streamCounter := rx.MulticastBuffer[int](1)
 		streamCounter.Next(0)
 
-		var streamNotify rx.Observer[int]
+		streamNotifier := rx.Unicast[int]()
 
 		rx.Pipe1(
-			rx.NewObservable(
-				func(ctx context.Context, sink rx.Observer[int]) {
-					streamNotify = sink.Serialized()
-				},
-			),
+			streamNotifier.Observable,
 			rx.Scan(0, func(a, b int) int { return a + b }),
 		).Subscribe(
-			context.Background(),
+			rx.NewBackgroundContext(),
 			streamCounter.Observer,
 		)
 
@@ -681,8 +676,8 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 					return
 				}
 
-				streamNotify.Next(1)
-				defer streamNotify.Next(-1)
+				streamNotifier.Next(1)
+				defer streamNotifier.Next(-1)
 
 				done := r.Context().Done()
 				f := func(p []byte, off int64) (n int, err error) {
@@ -727,7 +722,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 								),
 								rx.Pipe2(
 									streamCounter.Observable,
-									rx.WithIndex[int](0),
+									rx.Enumerate[int](0),
 									rx.FilterMap(
 										func(p rx.Pair[int, int]) (int, bool) {
 											// Exclude the first value that is zero.
@@ -763,7 +758,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				}
 			})
 
-			_ = srv.Shutdown(mainCtx)
+			_ = srv.Shutdown(mainCtx.Context)
 
 			if <-timeout {
 				close(timeout)
@@ -871,7 +866,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	return exitCodeIncomplete
 }
 
-func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client) int {
+func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int {
 	type (
 		Status int
 
@@ -882,7 +877,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		}
 
 		ProgressMessage struct {
-			Just int
+			N int
 		}
 
 		CompleteMessage struct {
@@ -891,7 +886,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 			Responsed bool
 		}
 
-		StatusChangedMessage struct {
+		StatusMessage struct {
 			Status Status
 		}
 	)
@@ -901,234 +896,246 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		StatusWaitStreaming
 	)
 
-	dlCtx := context.Background() // dlCtx never cancels.
-
-	speedUpdateCtx, speedUpdateCancel := context.WithCancel(dlCtx)
-	defer speedUpdateCancel()
+	dlCtx := rx.NewBackgroundContext() // dlCtx never cancels.
 
 	var emaValue, emaSpeed int64
 
 	byteIntervals := rx.Multicast[int64]()
-	rx.Pipe1(
-		rx.NewObservable(
-			func(ctx context.Context, sink rx.Observer[int64]) {
-				const N = 5
 
-				skipZeros := rx.Pipe1(
-					byteIntervals.Observable,
-					rx.SkipWhile(func(v int64) bool { return v == 0 }),
-				)
+	{
+		ctx, cancel := dlCtx.WithWaitGroup(new(sync.WaitGroup)).WithCancel()
 
-				rx.Pipe4(
-					skipZeros,
-					rx.Scan(0, func(a, b int64) int64 { return a + b }),
-					rx.WithIndex[int64](1),
-					rx.Map(
-						func(p rx.Pair[int, int64]) int64 {
-							// For the first `N * measureInterval`, we average the speed.
-							emaValue = p.Value / int64(p.Key)
+		defer func() {
+			cancel()
+			ctx.WaitGroup.Wait()
+		}()
+
+		rx.Pipe1(
+			rx.NewObservable(
+				func(c rx.Context, o rx.Observer[int64]) {
+					const N = 5
+
+					skipZeros := rx.Pipe1(
+						byteIntervals.Observable,
+						rx.SkipWhile(func(v int64) bool { return v == 0 }),
+					)
+
+					rx.Pipe4(
+						skipZeros,
+						rx.Scan(0, func(a, b int64) int64 { return a + b }),
+						rx.Enumerate[int64](1),
+						rx.Map(
+							func(p rx.Pair[int, int64]) int64 {
+								// For the first `N * measureInterval`, we average the speed.
+								emaValue = p.Value / int64(p.Key)
+								emaSpeed = int64(float64(emaValue) / measureIntervalMultiple)
+
+								return p.Value
+							},
+						),
+						rx.Take[int64](N),
+					).Subscribe(c, rx.Noop[int64])
+
+					rx.Pipe4(
+						skipZeros,
+						rx.BufferCount[int64](N).WithStartBufferEvery(1),
+						rx.Skip[[]int64](1),
+						rx.Map(
+							func(s []int64) int64 {
+								sum := int64(0)
+								for _, v := range s {
+									sum += v
+								}
+
+								return sum / int64(len(s))
+							},
+						),
+						rx.TakeWhile(func(v int64) bool { return v > 0 }),
+					).Subscribe(c, func(n rx.Notification[int64]) {
+						switch n.Kind {
+						case rx.KindNext:
+							// After `N * measureInterval`, we calculate the speed by using
+							// exponential moving average (EMA).
+							const ia = 5 // Inverse of alpha.
+							emaValue = (n.Value + (ia-1)*emaValue) / ia
 							emaSpeed = int64(float64(emaValue) / measureIntervalMultiple)
+						case rx.KindError, rx.KindComplete:
+							emaValue, emaSpeed = 0, 0
+						}
 
-							return p.Value
-						},
-					),
-					rx.Take[int64](N),
-				).Subscribe(ctx, rx.Noop[int64])
+						o.Emit(n)
+					})
+				},
+			),
+			rx.RepeatForever[int64](),
+		).Subscribe(ctx, rx.Noop[int64])
+	}
 
-				rx.Pipe4(
-					skipZeros,
-					rx.BufferCount[int64](N).WithStartBufferEvery(1).AsOperator(),
-					rx.Skip[[]int64](1),
-					rx.Map(
-						func(s []int64) int64 {
-							sum := int64(0)
-							for _, v := range s {
-								sum += v
+	var output rx.Observer[any]
+
+	{
+		var (
+			firstRecvTime  time.Time
+			nextReportTime time.Time
+			totalReceived  int64
+			recentReceived int64
+			connections    int
+			status         Status
+			statusLine     string
+		)
+
+		ctx := dlCtx.WithWaitGroup(new(sync.WaitGroup))
+
+		defer func() {
+			output.Complete()
+			ctx.WaitGroup.Wait()
+		}()
+
+		rx.Pipe2(
+			rx.NewObservable(
+				func(c rx.Context, o rx.Observer[any]) {
+					output = o // OnBackpressureCongest is safe for concurrent use.
+				},
+			),
+			rx.OnBackpressureCongest[any](int(app.Connections*4)),
+			rx.DoOnNext(
+				func(v any) {
+					shouldPrint := false
+
+					switch v := v.(type) {
+					case ProgressMessage:
+						if totalReceived == 0 {
+							firstRecvTime = time.Now()
+							nextReportTime = firstRecvTime.Add(reportInterval)
+						}
+
+						totalReceived += int64(v.N)
+						recentReceived += int64(v.N)
+					case MeasureMessage:
+						byteIntervals.Next(recentReceived)
+
+						recentReceived = 0
+						shouldPrint = file.ContentSize() > 0
+					case ResponseMessage:
+						connections++
+					case CompleteMessage:
+						if v.Responsed {
+							connections--
+						}
+					case StatusMessage:
+						status = v.Status
+					case string:
+						print("\033[1K\r")
+						println(time.Now().Format("15:04:05"), v)
+
+						statusLine = ""
+						shouldPrint = file.ContentSize() > 0
+					}
+
+					if shouldPrint {
+						var b strings.Builder
+
+						contentSize := file.ContentSize()
+						completeSize := file.CompleteSize()
+						progress := int(float64(completeSize) / float64(contentSize) * 100)
+
+						b.WriteString(time.Now().Format("15:04:05"))
+						b.WriteString(fmt.Sprint(" ", strings.TrimSuffix(formatBytes(completeSize), "i")))
+						b.WriteString(fmt.Sprint("/", strings.TrimSuffix(formatBytes(contentSize), "i")))
+						b.WriteString(fmt.Sprint(" ", progress, "%"))
+
+						switch {
+						case connections > 0:
+							b.WriteString(fmt.Sprint(" CN:", connections))
+
+							if emaSpeed > 0 {
+								seconds := int64(math.Ceil(float64(file.IncompleteSize()) / float64(emaSpeed)))
+								b.WriteString(fmt.Sprint(" DL:", strings.TrimSuffix(formatBytes(emaSpeed), "i")))
+								b.WriteString(fmt.Sprint(" ETA:", formatETA(time.Duration(seconds)*time.Second)))
 							}
+						case status == StatusDownloading:
+							b.WriteString(" connecting...")
+						case status == StatusWaitStreaming:
+							b.WriteString(" streaming...")
+						}
 
-							return sum / int64(len(s))
-						},
-					),
-					rx.TakeWhile(func(v int64) bool { return v > 0 }),
-				).Subscribe(ctx, func(n rx.Notification[int64]) {
-					switch {
-					case n.HasValue:
-						// After `N * measureInterval`, we calculate the speed by using
-						// exponential moving average (EMA).
-						const ia = 5 // Inverse of alpha.
-						emaValue = (n.Value + (ia-1)*emaValue) / ia
-						emaSpeed = int64(float64(emaValue) / measureIntervalMultiple)
-					default:
-						emaValue, emaSpeed = 0, 0
+						if s := b.String(); s != statusLine {
+							statusLine = s
+
+							print("\033[1K\r")
+							print(s)
+						}
 					}
+				},
+			),
+		).Subscribe(ctx, func(n rx.Notification[any]) {
+			isExiting := n.Kind == rx.KindError || n.Kind == rx.KindComplete
 
-					sink(n)
-				})
-			},
-		),
-		rx.RepeatForever[int64](),
-	).Subscribe(speedUpdateCtx, rx.Noop[int64])
-
-	var (
-		firstRecvTime  time.Time
-		nextReportTime time.Time
-		totalReceived  int64
-		recentReceived int64
-		connections    int
-		status         Status
-		statusLine     string
-	)
-
-	handleMessagesCtx, handleMessagesCancel := context.WithCancel(dlCtx)
-
-	var queuedMessages rx.Observer[any]
-
-	rx.Pipe1(
-		rx.NewObservable(
-			func(ctx context.Context, sink rx.Observer[any]) {
-				// Since `Congest` is concurrency safe, `sink.Serialized()` is not needed.
-				queuedMessages = sink
-			},
-		),
-		rx.Congest[any](int(app.Connections*3)),
-	).Subscribe(handleMessagesCtx, func(n rx.Notification[any]) {
-		if n.HasValue {
-			shouldPrint := false
-
-			switch v := n.Value.(type) {
-			case ProgressMessage:
-				if totalReceived == 0 {
-					firstRecvTime = time.Now()
-					nextReportTime = firstRecvTime.Add(reportInterval)
-				}
-
-				totalReceived += int64(v.Just)
-				recentReceived += int64(v.Just)
-			case MeasureMessage:
-				byteIntervals.Next(recentReceived)
-
-				recentReceived = 0
-				shouldPrint = file.ContentSize() > 0
-			case ResponseMessage:
-				connections++
-			case CompleteMessage:
-				if v.Responsed {
-					connections--
-				}
-			case StatusChangedMessage:
-				status = v.Status
-			case string:
-				print("\033[1K\r")
-				println(time.Now().Format("15:04:05"), v)
-
+			if totalReceived > 0 && (isExiting || time.Now().After(nextReportTime)) {
+				nextReportTime = nextReportTime.Add(reportInterval)
 				statusLine = ""
-				shouldPrint = file.ContentSize() > 0
-			}
 
-			if shouldPrint {
-				var b strings.Builder
-
-				contentSize := file.ContentSize()
-				completeSize := file.CompleteSize()
-				progress := int(float64(completeSize) / float64(contentSize) * 100)
-
-				b.WriteString(time.Now().Format("15:04:05"))
-				b.WriteString(fmt.Sprint(" ", strings.TrimSuffix(formatBytes(completeSize), "i")))
-				b.WriteString(fmt.Sprint("/", strings.TrimSuffix(formatBytes(contentSize), "i")))
-				b.WriteString(fmt.Sprint(" ", progress, "%"))
-
-				switch {
-				case connections > 0:
-					b.WriteString(fmt.Sprint(" CN:", connections))
-
-					if emaSpeed > 0 {
-						seconds := int64(math.Ceil(float64(file.IncompleteSize()) / float64(emaSpeed)))
-						b.WriteString(fmt.Sprint(" DL:", strings.TrimSuffix(formatBytes(emaSpeed), "i")))
-						b.WriteString(fmt.Sprint(" ETA:", formatETA(time.Duration(seconds)*time.Second)))
-					}
-				case status == StatusDownloading:
-					b.WriteString(" connecting...")
-				case status == StatusWaitStreaming:
-					b.WriteString(" streaming...")
+				timeUsed := time.Since(firstRecvTime)
+				if timeUsed < time.Second {
+					timeUsed = time.Second
 				}
 
-				if s := b.String(); s != statusLine {
-					statusLine = s
-
-					print("\033[1K\r")
-					print(s)
-				}
-			}
-		}
-
-		if totalReceived > 0 && (!n.HasValue || time.Now().After(nextReportTime)) {
-			nextReportTime = nextReportTime.Add(reportInterval)
-			statusLine = ""
-
-			timeUsed := time.Since(firstRecvTime)
-			if timeUsed < time.Second {
-				timeUsed = time.Second
+				print("\033[1K\r")
+				print(time.Now().Format("15:04:05"))
+				printf(
+					" recv %vB in %v, %vB/s, %v%% completed\n",
+					formatBytes(totalReceived),
+					formatTimeUsed(timeUsed),
+					formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
+					int(float64(file.CompleteSize())/float64(file.ContentSize())*100),
+				)
 			}
 
-			print("\033[1K\r")
-			print(time.Now().Format("15:04:05"))
-			printf(
-				" recv %vB in %v, %vB/s, %v%% completed\n",
-				formatBytes(totalReceived),
-				formatTimeUsed(timeUsed),
-				formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
-				int(float64(file.CompleteSize())/float64(file.ContentSize())*100),
-			)
-		}
+			if isExiting && statusLine != "" {
+				println()
+			}
+		})
+	}
 
-		if !n.HasValue && statusLine != "" {
-			println()
-		}
+	{
+		ctx, cancel := dlCtx.WithWaitGroup(new(sync.WaitGroup)).WithCancel()
 
-		if !n.HasValue {
-			handleMessagesCancel()
-		}
-	})
+		defer func() {
+			cancel()
+			ctx.WaitGroup.Wait()
+		}()
 
-	defer func() {
-		queuedMessages.Complete()
-		<-handleMessagesCtx.Done()
-	}()
+		rx.Pipe1(
+			rx.Ticker(measureInterval),
+			rx.MapTo[time.Time, any](MeasureMessage{}),
+		).Subscribe(ctx, output.ElementsOnly)
+	}
 
-	measureCtx, measureCancel := context.WithCancel(dlCtx)
-	defer measureCancel()
+	var writes rx.Observer[func()]
 
-	rx.Pipe1(
-		rx.Ticker(measureInterval),
-		rx.MapTo[time.Time, any](MeasureMessage{}),
-	).Subscribe(measureCtx, queuedMessages)
+	{
+		ctx := dlCtx.WithWaitGroup(new(sync.WaitGroup))
 
-	handleWritesCtx, handleWritesCancel := context.WithCancel(dlCtx)
+		defer func() {
+			writes.Complete()
+			ctx.WaitGroup.Wait()
 
-	var queuedWrites rx.Observer[func()]
+			_ = file.Sync()
+		}()
 
-	rx.Pipe1(
-		rx.NewObservable(
-			func(ctx context.Context, sink rx.Observer[func()]) {
-				// Since `Congest` is concurrency safe, `sink.Serialized()` is not needed.
-				queuedWrites = sink
-			},
-		),
-		rx.Congest[func()](int(app.Connections*3)),
-	).Subscribe(handleWritesCtx, func(n rx.Notification[func()]) {
-		if n.HasValue {
-			n.Value()
-		} else {
-			handleWritesCancel()
-		}
-	})
-
-	defer func() {
-		queuedWrites.Complete()
-		<-handleWritesCtx.Done()
-
-		_ = file.Sync()
-	}()
+		rx.Pipe1(
+			rx.NewObservable(
+				func(c rx.Context, o rx.Observer[func()]) {
+					writes = o // OnBackpressureCongest is safe for concurrent use.
+				},
+			),
+			rx.OnBackpressureCongest[func()](int(app.Connections*4)),
+		).Subscribe(ctx, func(n rx.Notification[func()]) {
+			if n.Kind == rx.KindNext {
+				n.Value()
+			}
+		})
+	}
 
 	type buffer [readBufferSize]byte
 
@@ -1149,7 +1156,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 		n, err = body.Read((*b)[:size])
 		if n > 0 {
-			queuedWrites.Next(func() {
+			writes.Next(func() {
 				_, _ = file.WriteAt((*b)[:n], offset)
 				bufferPool.Put(b)
 			})
@@ -1163,7 +1170,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	waitWriteDone := func() {
 		q := make(chan struct{})
 
-		queuedWrites.Next(func() { close(q) })
+		writes.Next(func() { close(q) })
 
 		<-q
 	}
@@ -1192,47 +1199,59 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 	messages := make(chan any, app.Connections)
 
-	handleTasksCtx, handleTasksCancel := context.WithCancel(dlCtx)
+	var tasks rx.Observer[rx.Observable[any]]
 
-	var activeTasks rx.Observer[rx.Observable[any]]
+	{
+		ctx := dlCtx.WithWaitGroup(new(sync.WaitGroup))
 
-	rx.Pipe1(
-		rx.NewObservable(
-			func(ctx context.Context, sink rx.Observer[rx.Observable[any]]) {
-				activeTasks = sink
-			},
-		),
-		rx.MergeAll[rx.Observable[any]]().AsOperator(),
-	).Subscribe(handleTasksCtx, func(n rx.Notification[any]) {
-		queuedMessages.Emit(n)
+		defer func() {
+			tasks.Complete()
 
-		if !n.HasValue {
-			handleTasksCancel()
-		}
-	})
+			done := make(chan struct{})
 
-	defer func() {
-		activeTasks.Complete()
+			go func() {
+				ctx.WaitGroup.Wait()
+				close(done)
+			}()
 
-		done := handleTasksCtx.Done()
-
-		for {
-			select {
-			case <-done:
-				return
-			case <-messages:
+			for {
+				select {
+				case <-done:
+					return
+				case <-messages:
+				}
 			}
-		}
-	}()
+		}()
+
+		rx.Pipe2(
+			rx.NewObservable(
+				func(c rx.Context, o rx.Observer[rx.Observable[any]]) {
+					tasks = o
+				},
+			),
+			rx.MergeAll[rx.Observable[any]](),
+			rx.DoOnNext(
+				func(v any) {
+					switch v.(type) {
+					case ProgressMessage:
+					case ResponseMessage:
+						messages <- v
+					case CompleteMessage:
+						messages <- v
+					}
+				},
+			),
+		).Subscribe(ctx, output.ElementsOnly)
+	}
 
 	var (
-		downloads    uint
+		connections  uint
 		errorCount   uint
 		fatalCode    int
 		pauseNewTask bool
 
-		maxDownloads = app.Connections
-		currentURL   = app.URL
+		currentURL     = app.URL
+		maxConnections = app.Connections
 	)
 
 	syncPeriod := app.SyncPeriod
@@ -1250,33 +1269,33 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	errTryAgain := errors.New("try again")
 	mainDone := mainCtx.Done()
 
-	for downloads > 0 || file.HasIncomplete() {
+	for connections > 0 || file.HasIncomplete() {
 		var canRequest <-chan struct{}
 
 		switch {
 		case fatalCode != 0:
-			if downloads == 0 {
+			if connections == 0 {
 				return fatalCode
 			}
 		case errorCount >= app.Errors:
 			if currentURL == app.URL { // No redirection.
-				if downloads == 0 { // Failed to start any download.
+				if connections == 0 { // Failed to start any download.
 					return exitCodeIncomplete // Giving up.
 				}
 
-				maxDownloads = downloads // Limit the number of parallel downloads.
 				errorCount = 0
+				maxConnections = connections // Limit the number of parallel downloads.
 
 				break
 			}
 
-			currentURL = app.URL
-			maxDownloads = app.Connections
 			errorCount = 0
+			currentURL = app.URL
+			maxConnections = app.Connections
 
 			fallthrough
 		default:
-			if downloads >= maxDownloads {
+			if connections >= maxConnections {
 				break
 			}
 
@@ -1293,7 +1312,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 		case <-canRequest:
 			offset, size := takeIncomplete()
 			if size == 0 {
-				if downloads == 0 {
+				if connections == 0 {
 					return exitCodeOK
 				}
 
@@ -1307,16 +1326,16 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				if offset >= streamOffset+streamCacheSize {
 					returnIncomplete(offset, size)
 
-					queuedMessages.Next(StatusChangedMessage{StatusWaitStreaming})
+					output.Next(StatusMessage{StatusWaitStreaming})
 
 					break
 				}
 
-				queuedMessages.Next(StatusChangedMessage{StatusDownloading})
+				output.Next(StatusMessage{StatusDownloading})
 			}
 
-			f := func(parent context.Context, sink rx.Observer[any]) {
-				reqCtx, reqCancel := context.WithCancelCause(mainCtx) // Not parent.
+			f := func(c rx.Context, o rx.Observer[any]) {
+				reqCtx, reqCancel := mainCtx.WithCancelCause() // Not c.
 
 				var (
 					err   error
@@ -1326,13 +1345,13 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 				defer func() {
 					if err != nil {
 						returnIncomplete(offset, size)
-						sink.Next(CompleteMessage{err, fatal, false})
-						sink.Complete()
+						o.Next(CompleteMessage{err, fatal, false})
+						o.Complete()
 						reqCancel(nil)
 					}
 				}()
 
-				req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, currentURL, nil)
+				req, err := http.NewRequestWithContext(reqCtx.Context, http.MethodGet, currentURL, nil)
 				if err != nil {
 					return
 				}
@@ -1349,7 +1368,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 
 				resp, err := client.Do(req)
 				if err != nil {
-					if context.Cause(reqCtx) == errConnTimeout {
+					if reqCtx.Cause() == errConnTimeout {
 						err = errConnTimeout
 					}
 
@@ -1555,9 +1574,9 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 					}
 				}
 
-				sink.Next(ResponseMessage{resp.Request.URL.String()})
+				o.Next(ResponseMessage{resp.Request.URL.String()})
 
-				rx.Go(parent, func() {
+				c.Go(func() {
 					var err error
 
 					var waitWrite bool
@@ -1570,8 +1589,8 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						}
 
 						returnIncomplete(offset, size)
-						sink.Next(CompleteMessage{err, 0, true})
-						sink.Complete()
+						o.Next(CompleteMessage{err, 0, true})
+						o.Complete()
 						reqCancel(nil)
 					}()
 
@@ -1594,10 +1613,10 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						offset, size = offset+int64(n), size-int64(n)
 						waitWrite = true
 
-						sink.Next(ProgressMessage{n})
+						o.Next(ProgressMessage{n})
 
 						if err == nil && app.rateLimiter != nil {
-							err = app.rateLimiter.WaitN(reqCtx, n)
+							err = app.rateLimiter.WaitN(reqCtx.Context, n)
 						}
 					}
 
@@ -1609,38 +1628,26 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 						return
 					}
 
-					if context.Cause(reqCtx) == errReadTimeout {
+					if reqCtx.Cause() == errReadTimeout {
 						err = errReadTimeout
 					}
 				})
 			}
 
-			do := func(n rx.Notification[any]) {
-				if n.HasValue {
-					switch n.Value.(type) {
-					case ProgressMessage:
-					case ResponseMessage:
-						messages <- n.Value
-					case CompleteMessage:
-						messages <- n.Value
-					}
-				}
-			}
-
-			downloads++
+			connections++
 
 			pauseNewTask = true
 
-			activeTasks.Next(rx.Pipe1(rx.NewObservable(f), rx.Do(do)))
+			tasks.Next(rx.Pipe1(rx.NewObservable(f), rx.Go[any]()))
 		case e := <-messages:
 			switch e := e.(type) {
 			case ResponseMessage:
+				errorCount = 0
 				pauseNewTask = false
 				currentURL = e.URL // Save the redirected one if redirection happens.
-				maxDownloads = app.Connections
-				errorCount = 0
+				maxConnections = app.Connections
 			case CompleteMessage:
-				downloads--
+				connections--
 
 				if !e.Responsed { // There must be an error if no response.
 					pauseNewTask = false
@@ -1654,7 +1661,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 							fatalCode = e.Fatal
 						}
 
-						if e.Fatal != 0 || downloads == 0 || app.Verbose {
+						if e.Fatal != 0 || connections == 0 || app.Verbose {
 							err := e.Err
 
 							switch e := err.(type) {
@@ -1664,14 +1671,14 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 								err = e.Err
 							}
 
-							queuedMessages.Next(err.Error())
+							output.Next(err.Error())
 						}
 					}
 				}
 			}
 		case <-syncTicker.C:
 			if err := file.Sync(); err != nil {
-				queuedMessages.Next(fmt.Sprintf("sync failed: %v", err))
+				output.Next(fmt.Sprintf("sync failed: %v", err))
 			}
 		}
 	}
@@ -1679,7 +1686,7 @@ func (app *App) dl(mainCtx context.Context, file *DataFile, client *http.Client)
 	return exitCodeOK
 }
 
-func (app *App) verify(mainCtx context.Context, file *DataFile) int {
+func (app *App) verify(mainCtx rx.Context, file *DataFile) int {
 	type DigestInfo struct {
 		Name string
 		Hash hash.Hash
@@ -1708,23 +1715,23 @@ func (app *App) verify(mainCtx context.Context, file *DataFile) int {
 
 	rx.Pipe2(
 		rx.NewObservable(
-			func(ctx context.Context, sink rx.Observer[int]) {
-				vs = sink
+			func(c rx.Context, o rx.Observer[int]) {
+				vs = o
 			},
 		),
 		rx.SkipUntil[int](rx.Timer(time.Second)),
 		rx.ThrowIfEmpty[int](),
 	).Subscribe(mainCtx, func(n rx.Notification[int]) {
-		switch {
-		case n.HasValue:
+		switch n.Kind {
+		case rx.KindNext:
 			print("\033[1K\r")
 			printf("verifying...%v%%", n.Value)
-		case n.HasError:
+		case rx.KindError:
 			if n.Error != rx.ErrEmpty {
 				print("\033[1K\r")
 				printf("verifying...%v\n", n.Error)
 			}
-		default:
+		case rx.KindComplete:
 			print("\033[1K\r")
 			println("verifying...DONE")
 		}
@@ -1750,10 +1757,10 @@ func (app *App) verify(mainCtx context.Context, file *DataFile) int {
 		return
 	}
 
-	if err := file.Verify(mainCtx, WriterFunc(w)); err != nil {
+	if err := file.Verify(mainCtx.Context, WriterFunc(w)); err != nil {
 		vs.Error(err)
 
-		if mainCtx.Err() != nil {
+		if mainCtx.Context.Err() != nil {
 			return exitCodeCanceled
 		}
 
@@ -1800,7 +1807,7 @@ func (app *App) verify(mainCtx context.Context, file *DataFile) int {
 	return exitCodeOK
 }
 
-func (app *App) alloc(mainCtx context.Context, file *DataFile) error {
+func (app *App) alloc(mainCtx rx.Context, file *DataFile) error {
 	done := make(chan struct{})
 
 	defer func() {
@@ -1831,7 +1838,7 @@ func (app *App) alloc(mainCtx context.Context, file *DataFile) error {
 		close(done)
 	}()
 
-	return file.Alloc(mainCtx, progress)
+	return file.Alloc(mainCtx.Context, progress)
 }
 
 func (app *App) status(file *DataFile, writer io.Writer) {
