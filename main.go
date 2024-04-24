@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -40,10 +41,9 @@ import (
 )
 
 const (
-	readBufferSize          = 4096
-	reportInterval          = 10 * time.Minute
-	measureInterval         = 1500 * time.Millisecond
-	measureIntervalMultiple = float64(measureInterval) / float64(time.Second)
+	readBufferSize = 8192
+	updateInterval = 1500 * time.Millisecond
+	reportInterval = 10 * time.Minute
 )
 
 const (
@@ -803,14 +803,16 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}
 	}()
 
+	dialer := &net.Dialer{
+		Timeout:   app.Timeout,
+		KeepAlive: app.KeepAlive,
+		DualStack: true,
+	}
+
 	client := &http.Client{
 		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   app.Timeout,
-				KeepAlive: app.KeepAlive,
-				DualStack: true,
-			}).DialContext,
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           dialer.DialContext,
 			DisableKeepAlives:     app.DisableKeepAlives,
 			ForceAttemptHTTP2:     app.ForceAttemptHTTP2,
 			MaxIdleConns:          100,
@@ -868,258 +870,46 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int {
 	type (
-		Status int
+		UpdateTimer struct{}
+		ReportTimer struct{}
+		SyncTimer   struct{}
 
-		MeasureMessage struct{}
+		CancelMessage     struct{}
+		CanRequestMessage struct{}
+		QuitMessage       struct{}
 
 		ResponseMessage struct {
 			URL string
 		}
-
 		ProgressMessage struct {
 			N int
 		}
-
 		CompleteMessage struct {
 			Err       error
 			Fatal     int
 			Responsed bool
 		}
 
-		StatusMessage struct {
-			Status Status
+		UpdateMessage struct {
+			Connections    int
+			DownloadRate   int64
+			RequestOngoing bool
+			WaitStreaming  bool
+		}
+		ReportMessage struct {
+			TotalReceived int64
+			TimeUsed      time.Duration
 		}
 	)
-
-	const (
-		StatusDownloading Status = iota
-		StatusWaitStreaming
-	)
-
-	dlCtx := rx.NewBackgroundContext() // dlCtx never cancels.
-
-	var emaValue, emaSpeed int64
-
-	byteIntervals := rx.Multicast[int64]()
-
-	{
-		ctx, cancel := dlCtx.WithWaitGroup(new(sync.WaitGroup)).WithCancel()
-
-		defer func() {
-			cancel()
-			ctx.WaitGroup.Wait()
-		}()
-
-		rx.Pipe1(
-			rx.NewObservable(
-				func(c rx.Context, o rx.Observer[int64]) {
-					const N = 5
-
-					skipZeros := rx.Pipe1(
-						byteIntervals.Observable,
-						rx.SkipWhile(func(v int64) bool { return v == 0 }),
-					)
-
-					rx.Pipe4(
-						skipZeros,
-						rx.Scan(0, func(a, b int64) int64 { return a + b }),
-						rx.Enumerate[int64](1),
-						rx.Map(
-							func(p rx.Pair[int, int64]) int64 {
-								// For the first `N * measureInterval`, we average the speed.
-								emaValue = p.Value / int64(p.Key)
-								emaSpeed = int64(float64(emaValue) / measureIntervalMultiple)
-
-								return p.Value
-							},
-						),
-						rx.Take[int64](N),
-					).Subscribe(c, rx.Noop[int64])
-
-					rx.Pipe4(
-						skipZeros,
-						rx.BufferCount[int64](N).WithStartBufferEvery(1),
-						rx.Skip[[]int64](1),
-						rx.Map(
-							func(s []int64) int64 {
-								sum := int64(0)
-								for _, v := range s {
-									sum += v
-								}
-
-								return sum / int64(len(s))
-							},
-						),
-						rx.TakeWhile(func(v int64) bool { return v > 0 }),
-					).Subscribe(c, func(n rx.Notification[int64]) {
-						switch n.Kind {
-						case rx.KindNext:
-							// After `N * measureInterval`, we calculate the speed by using
-							// exponential moving average (EMA).
-							const ia = 5 // Inverse of alpha.
-							emaValue = (n.Value + (ia-1)*emaValue) / ia
-							emaSpeed = int64(float64(emaValue) / measureIntervalMultiple)
-						case rx.KindError, rx.KindComplete:
-							emaValue, emaSpeed = 0, 0
-						}
-
-						o.Emit(n)
-					})
-				},
-			),
-			rx.RepeatForever[int64](),
-		).Subscribe(ctx, rx.Noop[int64])
-	}
-
-	var output rx.Observer[any]
-
-	{
-		var (
-			firstRecvTime  time.Time
-			nextReportTime time.Time
-			totalReceived  int64
-			recentReceived int64
-			connections    int
-			status         Status
-			statusLine     string
-		)
-
-		ctx := dlCtx.WithWaitGroup(new(sync.WaitGroup))
-
-		defer func() {
-			output.Complete()
-			ctx.WaitGroup.Wait()
-		}()
-
-		rx.Pipe2(
-			rx.NewObservable(
-				func(c rx.Context, o rx.Observer[any]) {
-					output = o // OnBackpressureCongest is safe for concurrent use.
-				},
-			),
-			rx.OnBackpressureCongest[any](int(app.Connections*4)),
-			rx.DoOnNext(
-				func(v any) {
-					shouldPrint := false
-
-					switch v := v.(type) {
-					case ProgressMessage:
-						if totalReceived == 0 {
-							firstRecvTime = time.Now()
-							nextReportTime = firstRecvTime.Add(reportInterval)
-						}
-
-						totalReceived += int64(v.N)
-						recentReceived += int64(v.N)
-					case MeasureMessage:
-						byteIntervals.Next(recentReceived)
-
-						recentReceived = 0
-						shouldPrint = file.ContentSize() > 0
-					case ResponseMessage:
-						connections++
-					case CompleteMessage:
-						if v.Responsed {
-							connections--
-						}
-					case StatusMessage:
-						status = v.Status
-					case string:
-						print("\033[1K\r")
-						println(time.Now().Format("15:04:05"), v)
-
-						statusLine = ""
-						shouldPrint = file.ContentSize() > 0
-					}
-
-					if shouldPrint {
-						var b strings.Builder
-
-						contentSize := file.ContentSize()
-						completeSize := file.CompleteSize()
-						progress := int(float64(completeSize) / float64(contentSize) * 100)
-
-						b.WriteString(time.Now().Format("15:04:05"))
-						b.WriteString(fmt.Sprint(" ", strings.TrimSuffix(formatBytes(completeSize), "i")))
-						b.WriteString(fmt.Sprint("/", strings.TrimSuffix(formatBytes(contentSize), "i")))
-						b.WriteString(fmt.Sprint(" ", progress, "%"))
-
-						switch {
-						case connections > 0:
-							b.WriteString(fmt.Sprint(" CN:", connections))
-
-							if emaSpeed > 0 {
-								seconds := int64(math.Ceil(float64(file.IncompleteSize()) / float64(emaSpeed)))
-								b.WriteString(fmt.Sprint(" DL:", strings.TrimSuffix(formatBytes(emaSpeed), "i")))
-								b.WriteString(fmt.Sprint(" ETA:", formatETA(time.Duration(seconds)*time.Second)))
-							}
-						case status == StatusDownloading:
-							b.WriteString(" connecting...")
-						case status == StatusWaitStreaming:
-							b.WriteString(" streaming...")
-						}
-
-						if s := b.String(); s != statusLine {
-							statusLine = s
-
-							print("\033[1K\r")
-							print(s)
-						}
-					}
-				},
-			),
-		).Subscribe(ctx, func(n rx.Notification[any]) {
-			isExiting := n.Kind == rx.KindError || n.Kind == rx.KindComplete
-
-			if totalReceived > 0 && (isExiting || time.Now().After(nextReportTime)) {
-				nextReportTime = nextReportTime.Add(reportInterval)
-				statusLine = ""
-
-				timeUsed := time.Since(firstRecvTime)
-				if timeUsed < time.Second {
-					timeUsed = time.Second
-				}
-
-				print("\033[1K\r")
-				print(time.Now().Format("15:04:05"))
-				printf(
-					" recv %vB in %v, %vB/s, %v%% completed\n",
-					formatBytes(totalReceived),
-					formatTimeUsed(timeUsed),
-					formatBytes(int64(float64(totalReceived)/timeUsed.Seconds())),
-					int(float64(file.CompleteSize())/float64(file.ContentSize())*100),
-				)
-			}
-
-			if isExiting && statusLine != "" {
-				println()
-			}
-		})
-	}
-
-	{
-		ctx, cancel := dlCtx.WithWaitGroup(new(sync.WaitGroup)).WithCancel()
-
-		defer func() {
-			cancel()
-			ctx.WaitGroup.Wait()
-		}()
-
-		rx.Pipe1(
-			rx.Ticker(measureInterval),
-			rx.MapTo[time.Time, any](MeasureMessage{}),
-		).Subscribe(ctx, output.ElementsOnly)
-	}
 
 	var writes rx.Observer[func()]
 
 	{
-		ctx := dlCtx.WithWaitGroup(new(sync.WaitGroup))
+		ctx := rx.NewBackgroundContext().WithNewWaitGroup()
 
 		defer func() {
 			writes.Complete()
-			ctx.WaitGroup.Wait()
-
+			ctx.Wait()
 			_ = file.Sync()
 		}()
 
@@ -1137,10 +927,10 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 		})
 	}
 
-	type buffer [readBufferSize]byte
+	type Buffer [readBufferSize]byte
 
 	bufferPool := sync.Pool{
-		New: func() any { return new(buffer) },
+		New: func() any { return new(Buffer) },
 	}
 
 	readAndWrite := func(body io.Reader, offset, size int64) (n int, err error) {
@@ -1152,8 +942,7 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 			size = readBufferSize
 		}
 
-		b := bufferPool.Get().(*buffer)
-
+		b := bufferPool.Get().(*Buffer)
 		n, err = body.Read((*b)[:size])
 		if n > 0 {
 			writes.Next(func() {
@@ -1169,9 +958,7 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 
 	waitWriteDone := func() {
 		q := make(chan struct{})
-
 		writes.Next(func() { close(q) })
-
 		<-q
 	}
 
@@ -1181,7 +968,6 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 		if incompleteSize := file.IncompleteSize(); incompleteSize > 0 {
 			average := float64(incompleteSize) / float64(app.Connections)
 			splitSize = uint(math.Ceil(average / (1024 * 1024)))
-
 			switch {
 			case splitSize > app.MaxSplitSize && app.MaxSplitSize > 0:
 				splitSize = app.MaxSplitSize
@@ -1197,493 +983,645 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 		file.ReturnIncomplete(offset, size)
 	}
 
-	messages := make(chan any, app.Connections)
+	ctx, cancel := rx.NewBackgroundContext().WithNewWaitGroup().WithCancel()
 
-	var tasks rx.Observer[rx.Observable[any]]
+	onDownloadStarted := rx.Multicast[any]()
 
-	{
-		ctx := dlCtx.WithWaitGroup(new(sync.WaitGroup))
+	defer func() {
+		cancel()
+		onDownloadStarted.Complete()
+		ctx.Wait()
+	}()
 
-		defer func() {
-			tasks.Complete()
+	messages := rx.Unicast[any]()
 
-			done := make(chan struct{})
-
-			go func() {
-				ctx.WaitGroup.Wait()
-				close(done)
-			}()
-
-			for {
-				select {
-				case <-done:
-					return
-				case <-messages:
-				}
-			}
-		}()
-
-		rx.Pipe2(
-			rx.NewObservable(
-				func(c rx.Context, o rx.Observer[rx.Observable[any]]) {
-					tasks = o
-				},
+	ob := rx.Pipe2(
+		messages.Observable,
+		rx.OnBackpressureCongest[any](int(app.Connections*4)),
+		rx.MergeWith(
+			rx.Concat(
+				onDownloadStarted.Observable,
+				rx.Pipe1(
+					rx.Ticker(updateInterval),
+					rx.MapTo[time.Time, any](UpdateTimer{}),
+				),
 			),
-			rx.MergeAll[rx.Observable[any]](),
-			rx.DoOnNext(
-				func(v any) {
-					switch v.(type) {
-					case ProgressMessage:
-					case ResponseMessage:
-						messages <- v
-					case CompleteMessage:
-						messages <- v
-					}
-				},
+			rx.Concat(
+				onDownloadStarted.Observable,
+				rx.Pipe1(
+					rx.Ticker(reportInterval),
+					rx.MapTo[time.Time, any](ReportTimer{}),
+				),
 			),
-		).Subscribe(ctx, output.ElementsOnly)
-	}
-
-	var (
-		connections  uint
-		errorCount   uint
-		fatalCode    int
-		pauseNewTask bool
-
-		currentURL     = app.URL
-		maxConnections = app.Connections
+			rx.Pipe1(
+				rx.Ticker(max(app.SyncPeriod, time.Minute)),
+				rx.MapTo[time.Time, any](SyncTimer{}),
+			),
+			rx.Pipe1(
+				rx.NewObservable(
+					func(c rx.Context, o rx.Observer[any]) {
+						done := c.Done()
+						mainDone := mainCtx.Done()
+						for {
+							select {
+							case <-done:
+								o.Complete()
+								return
+							case <-mainDone:
+								o.Next(CancelMessage{})
+								o.Complete()
+								return
+							case <-app.canRequest:
+								o.Next(CanRequestMessage{})
+							}
+						}
+					},
+				),
+				rx.Go[any](),
+			),
+		),
 	)
 
-	syncPeriod := app.SyncPeriod
-	if syncPeriod < time.Minute {
-		syncPeriod = time.Minute
-	}
+	{
+		var downloadRate int64 // bytes per updateInterval
 
-	syncTicker := time.NewTicker(syncPeriod)
-	defer syncTicker.Stop()
+		var speedtest rx.Observer[int64]
 
-	re1 := regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+)$`)
-	re2 := regexp.MustCompile(`^bytes \*/(\d+)$`)
-	errConnTimeout := errors.New("connection timeout")
-	errReadTimeout := errors.New("read timeout")
-	errTryAgain := errors.New("try again")
-	mainDone := mainCtx.Done()
+		rx.Pipe1(
+			rx.NewObservable(
+				func(c rx.Context, o rx.Observer[int64]) {
+					speedtest = o
+				},
+			),
+			rx.Connect(
+				func(source rx.Observable[int64]) rx.Observable[int64] {
+					const N = 5
 
-	for connections > 0 || file.HasIncomplete() {
-		var canRequest <-chan struct{}
+					source = rx.Pipe1(
+						source,
+						rx.SkipWhile(func(v int64) bool { return v == 0 }),
+					)
 
-		switch {
-		case fatalCode != 0:
-			if connections == 0 {
-				return fatalCode
-			}
-		case errorCount >= app.Errors:
-			if currentURL == app.URL { // No redirection.
-				if connections == 0 { // Failed to start any download.
-					return exitCodeIncomplete // Giving up.
-				}
+					return rx.Pipe2(
+						rx.Empty[int64](),
+						rx.MergeWith(
+							rx.Pipe4(
+								source,
+								rx.Scan(0, func(a, b int64) int64 { return a + b }),
+								rx.Enumerate[int64](1),
+								rx.Map(
+									func(p rx.Pair[int, int64]) int64 {
+										// For the first `N * updateInterval`, we average the speed.
+										downloadRate = p.Value / int64(p.Key)
+										return p.Value
+									},
+								),
+								rx.Take[int64](N),
+							),
+							rx.Pipe6(
+								source,
+								rx.BufferCount[int64](N).WithStartBufferEvery(1),
+								rx.Skip[[]int64](1),
+								rx.Map(
+									func(s []int64) int64 {
+										sum := int64(0)
+										for _, v := range s {
+											sum += v
+										}
+										return sum / int64(len(s))
+									},
+								),
+								rx.TakeWhile(func(v int64) bool { return v > 0 }),
+								rx.DoOnNext(
+									func(v int64) {
+										// After `N * updateInterval`, we calculate the speed by using
+										// exponential moving average (EMA).
+										const ia = 5 // Inverse of alpha.
+										downloadRate = (v + (ia-1)*downloadRate) / ia
+									},
+								),
+								rx.DoOnTermination[int64](
+									func() { downloadRate = 0 },
+								),
+							),
+						),
+						rx.RepeatForever[int64](),
+					)
+				},
+			),
+		).Subscribe(ctx, rx.Noop[int64])
 
-				errorCount = 0
-				maxConnections = connections // Limit the number of parallel downloads.
+		var (
+			firstRecvTime    time.Time
+			totalReceived    int64
+			recentReceived   int64
+			requestPermitted bool
+			requestOngoing   bool
+			waitStreaming    bool
+			connections      uint
+			errorCount       uint
+			fatalCode        int
+		)
 
-				break
-			}
+		currentURL := app.URL
+		maxConnections := app.Connections
 
-			errorCount = 0
-			currentURL = app.URL
-			maxConnections = app.Connections
+		re1 := regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+)$`)
+		re2 := regexp.MustCompile(`^bytes \*/(\d+)$`)
+		errConnTimeout := errors.New("connection timeout")
+		errReadTimeout := errors.New("read timeout")
+		errTryAgain := errors.New("try again")
 
-			fallthrough
-		default:
-			if connections >= maxConnections {
-				break
-			}
-
-			if pauseNewTask {
-				break
-			}
-
-			canRequest = app.canRequest
+		report := func() rx.Observable[any] {
+			return rx.Just[any](ReportMessage{
+				TotalReceived: totalReceived,
+				TimeUsed:      max(time.Since(firstRecvTime), time.Second),
+			})
 		}
 
-		select {
-		case <-mainDone:
-			return exitCodeCanceled
-		case <-canRequest:
-			offset, size := takeIncomplete()
-			if size == 0 {
-				if connections == 0 {
-					return exitCodeOK
-				}
+		var canQuit, sentQuitMessage bool
 
-				break
+		quit := func(code int) rx.Observable[any] {
+			if !sentQuitMessage {
+				messages.Next(QuitMessage{})
+				messages.Complete()
+				sentQuitMessage = true
 			}
 
-			if app.streamToStdout && app.StreamCache > 0 {
-				streamCacheSize := int64(app.StreamCache) * 1024 * 1024
-				streamOffset := app.streamOffset.Load()
-
-				if offset >= streamOffset+streamCacheSize {
-					returnIncomplete(offset, size)
-
-					output.Next(StatusMessage{StatusWaitStreaming})
-
-					break
-				}
-
-				output.Next(StatusMessage{StatusDownloading})
+			if !canQuit {
+				return rx.Empty[any]()
 			}
 
-			f := func(c rx.Context, o rx.Observer[any]) {
-				reqCtx, reqCancel := mainCtx.WithCancelCause() // Not c.
+			ob := rx.Throw[any](exitCodeError(code))
+			if totalReceived > 0 {
+				ob = rx.Concat(report(), ob)
+			}
 
-				var (
-					err   error
-					fatal int
-				)
+			return ob
+		}
 
-				defer func() {
-					if err != nil {
-						returnIncomplete(offset, size)
-						o.Next(CompleteMessage{err, fatal, false})
-						o.Complete()
-						reqCancel(nil)
-					}
-				}()
-
-				req, err := http.NewRequestWithContext(reqCtx.Context, http.MethodGet, currentURL, nil)
-				if err != nil {
-					return
-				}
-
-				req.Header.Set("Range", fmt.Sprintf("bytes=%v-%v", offset, offset+size-1))
-
-				if app.Referer != "" {
-					req.Header.Set("Referer", app.Referer)
-				}
-
-				req.Header.Set("User-Agent", app.UserAgent)
-
-				reqTimer := time.AfterFunc(app.Timeout, func() { reqCancel(errConnTimeout) })
-
-				resp, err := client.Do(req)
-				if err != nil {
-					if reqCtx.Cause() == errConnTimeout {
-						err = errConnTimeout
-					}
-
-					return
-				}
-
-				defer func() {
-					if err != nil {
-						resp.Body.Close()
-					}
-				}()
-
-				if !reqTimer.Stop() {
-					err = errTryAgain
-					return
-				}
-
-				var contentSize int64
-
-				switch resp.StatusCode {
-				case http.StatusOK:
-					if offset > 0 {
-						err = errors.New("fatal: this server does not support partial requests")
-						fatal = exitCodeFatal
-
-						return
-					}
-
-					contentSize = resp.ContentLength
-				case http.StatusPartialContent:
-					contentRange := resp.Header.Get("Content-Range")
-					if contentRange == "" {
-						err = errors.New("fatal: Content-Range not found in response header")
-						fatal = exitCodeFatal
-
-						return
-					}
-
-					slice := re1.FindStringSubmatch(contentRange)
-					if slice == nil {
-						err = fmt.Errorf("fatal: Content-Range unrecognized: %v", contentRange)
-						fatal = exitCodeFatal
-
-						return
-					}
-
-					contentSize, _ = strconv.ParseInt(slice[3], 10, 64)
-				case http.StatusRequestedRangeNotSatisfiable:
-					contentRange := resp.Header.Get("Content-Range")
-					if contentRange != "" && file.ContentSize() == 0 {
-						slice := re2.FindStringSubmatch(contentRange)
-						if slice != nil {
-							contentSize, _ = strconv.ParseInt(slice[1], 10, 64)
-							if contentSize > 0 {
-								file.SetContentSize(contentSize)
-
-								err = errTryAgain
-
-								return
-							}
+		ob = rx.Pipe1(
+			ob,
+			rx.MergeMap(
+				func(v any) rx.Observable[any] {
+					switch w := v.(type) {
+					case ProgressMessage:
+						firstReceived := totalReceived == 0
+						totalReceived += int64(w.N)
+						recentReceived += int64(w.N)
+						if firstReceived {
+							firstRecvTime = time.Now()
+							onDownloadStarted.Complete()
 						}
-					}
-
-					err = errors.New("fatal: " + resp.Status)
-					fatal = exitCodeFatal
-
-					return
-				default:
-					err = errors.New(resp.Status)
-					return
-				}
-
-				if contentSize <= 0 {
-					err = errors.New("fatal: Content-Length unknown or zero")
-					fatal = exitCodeFatal
-
-					return
-				}
-
-				shouldAlloc := false
-				shouldSync := false
-
-				switch file.ContentSize() {
-				case contentSize:
-				case 0:
-					file.SetContentSize(contentSize)
-
-					shouldAlloc = app.Alloc
-					shouldSync = true
-				default:
-					err = errors.New("fatal: Content-Length mismatched")
-					fatal = exitCodeFatal
-
-					return
-				}
-
-				for _, h := range supportedHashMethods {
-					hashCode := resp.Header.Get("Content-" + h.Name)
-					if hashCode == "" {
-						hashCode = resp.Header.Get("X-Checksum-" + h.Name)
-						if hashCode == "" {
-							switch h.Name {
-							case "SHA224", "SHA256", "SHA384", "SHA512":
-								hashCode = resp.Header.Get("Content-Sha2")
-								if hashCode == "" {
-									hashCode = resp.Header.Get("X-Checksum-Sha2")
+						return rx.Empty[any]()
+					case UpdateTimer:
+						speedtest.Next(recentReceived)
+						recentReceived = 0
+						return rx.Just[any](UpdateMessage{
+							Connections:    int(connections),
+							DownloadRate:   int64(float64(downloadRate) * (float64(time.Second) / float64(updateInterval))),
+							RequestOngoing: requestOngoing,
+							WaitStreaming:  waitStreaming,
+						})
+					case ReportTimer:
+						return report()
+					case SyncTimer:
+						if err := file.Sync(); err != nil {
+							return rx.Just[any](fmt.Sprintf("sync failed: %v", err))
+						}
+						return rx.Empty[any]()
+					case CancelMessage:
+						fatalCode = exitCodeCanceled
+					case CanRequestMessage:
+						requestPermitted = true
+					case QuitMessage:
+						canQuit = true
+					case ResponseMessage:
+						requestOngoing = false
+						connections++
+						errorCount = 0
+						currentURL = w.URL // Save the redirected one if redirection happens.
+						maxConnections = app.Connections
+					case CompleteMessage:
+						if w.Responsed {
+							connections--
+						} else {
+							requestOngoing = false
+						}
+						if err := w.Err; err != nil && err != errTryAgain {
+							if err != errConnTimeout && err != errReadTimeout || app.TimeoutIntolerant {
+								errorCount++
+							}
+							if w.Fatal != 0 {
+								fatalCode = w.Fatal
+							}
+							if w.Fatal != 0 || connections == 0 || app.Verbose {
+								switch e := err.(type) {
+								case *net.OpError:
+									err = e.Err
+								case *url.Error:
+									err = e.Err
 								}
+								messages.Next(err)
 							}
 						}
-					}
-
-					if len(hashCode) == h.Length {
-						hashCode = strings.ToLower(hashCode)
-
-						switch h.Get(file) {
-						case hashCode:
-						case "":
-							h.Set(file, hashCode)
-
-							shouldSync = true
-						default:
-							err = errors.New("fatal: " + h.Name + " mismatched")
-							fatal = exitCodeFatal
-
-							return
-						}
-					}
-				}
-
-				eTag := resp.Header.Get("ETag")
-				if eTag != "" {
-					switch file.EntityTag() {
-					case eTag:
-					case "":
-						file.SetEntityTag(eTag)
-
-						shouldSync = true
 					default:
-						if !app.SkipETag {
-							err = errors.New("fatal: ETag mismatched")
-							fatal = exitCodeFatal
+						return rx.Just(v)
+					}
 
-							return
+					if !requestOngoing && connections == 0 && !file.HasIncomplete() {
+						return quit(exitCodeOK)
+					}
+
+					if fatalCode != 0 {
+						if !requestOngoing && connections == 0 {
+							return quit(fatalCode)
 						}
-					}
-				}
-
-				lastModified := resp.Header.Get("Last-Modified")
-				if lastModified != "" {
-					switch file.LastModified() {
-					case lastModified:
-					case "":
-						file.SetLastModified(lastModified)
-
-						shouldSync = true
-					default:
-						if !app.SkipLastModified {
-							err = errors.New("fatal: Last-Modified mismatched")
-							fatal = exitCodeFatal
-
-							return
-						}
-					}
-				}
-
-				contentDisposition := resp.Header.Get("Content-Disposition")
-				if contentDisposition != "" {
-					_, params, _ := mime.ParseMediaType(contentDisposition)
-					if filename := params["filename"]; filename != "" {
-						if filename != file.Filename() {
-							file.SetFilename(filename)
-
-							shouldSync = true
-						}
-					}
-				}
-
-				if shouldAlloc {
-					err = app.alloc(mainCtx, file)
-					if err != nil {
-						fatal = exitCodeFatal
-						return
-					}
-				}
-
-				if app.Truncate {
-					err = file.Truncate(contentSize)
-					if err != nil {
-						err = fmt.Errorf("truncate failed: %w", err)
-						fatal = exitCodeTruncateFailed
-
-						return
-					}
-				}
-
-				if shouldSync {
-					err = file.SyncNow()
-					if err != nil {
-						err = fmt.Errorf("sync failed: %w", err)
-						fatal = exitCodeSyncFailed
-
-						return
-					}
-				}
-
-				o.Next(ResponseMessage{resp.Request.URL.String()})
-
-				c.Go(func() {
-					var err error
-
-					var waitWrite bool
-
-					defer func() {
-						resp.Body.Close()
-
-						if waitWrite {
-							waitWriteDone()
-						}
-
-						returnIncomplete(offset, size)
-						o.Next(CompleteMessage{err, 0, true})
-						o.Complete()
-						reqCancel(nil)
-					}()
-
-					var resetTimer bool
-
-					readTimer := time.AfterFunc(app.ReadTimeout, func() { reqCancel(errReadTimeout) })
-
-				Again:
-					if resetTimer {
-						readTimer.Reset(app.ReadTimeout)
+						return rx.Empty[any]()
 					}
 
-					n, err := readAndWrite(resp.Body, offset, size)
-
-					readTimer.Stop()
-
-					resetTimer = true
-
-					if n > 0 {
-						offset, size = offset+int64(n), size-int64(n)
-						waitWrite = true
-
-						o.Next(ProgressMessage{n})
-
-						if err == nil && app.rateLimiter != nil {
-							err = app.rateLimiter.WaitN(reqCtx.Context, n)
-						}
-					}
-
-					if err == nil {
-						goto Again
-					}
-
-					if err == io.EOF {
-						return
-					}
-
-					if reqCtx.Cause() == errReadTimeout {
-						err = errReadTimeout
-					}
-				})
-			}
-
-			connections++
-
-			pauseNewTask = true
-
-			tasks.Next(rx.Pipe1(rx.NewObservable(f), rx.Go[any]()))
-		case e := <-messages:
-			switch e := e.(type) {
-			case ResponseMessage:
-				errorCount = 0
-				pauseNewTask = false
-				currentURL = e.URL // Save the redirected one if redirection happens.
-				maxConnections = app.Connections
-			case CompleteMessage:
-				connections--
-
-				if !e.Responsed { // There must be an error if no response.
-					pauseNewTask = false
-
-					if e.Err != errTryAgain {
-						if e.Err != errConnTimeout && e.Err != errReadTimeout || app.TimeoutIntolerant {
-							errorCount++
-						}
-
-						if e.Fatal != 0 {
-							fatalCode = e.Fatal
-						}
-
-						if e.Fatal != 0 || connections == 0 || app.Verbose {
-							err := e.Err
-
-							switch e := err.(type) {
-							case *net.OpError:
-								err = e.Err
-							case *url.Error:
-								err = e.Err
+					if errorCount >= app.Errors {
+						if currentURL == app.URL { // No redirection.
+							if !requestOngoing && connections == 0 { // Failed to start any download.
+								return quit(exitCodeIncomplete) // Giving up.
 							}
-
-							output.Next(err.Error())
+							errorCount = 0
+							maxConnections = connections // Limit the number of parallel downloads.
+							return rx.Empty[any]()
 						}
+						errorCount = 0
+						currentURL = app.URL
+						maxConnections = app.Connections
 					}
-				}
-			}
-		case <-syncTicker.C:
-			if err := file.Sync(); err != nil {
-				output.Next(fmt.Sprintf("sync failed: %v", err))
-			}
-		}
+
+					if !requestPermitted || requestOngoing || connections >= maxConnections {
+						return rx.Empty[any]()
+					}
+
+					offset, size := takeIncomplete()
+					if size == 0 {
+						return rx.Empty[any]()
+					}
+
+					if app.streamToStdout && app.StreamCache > 0 {
+						streamCacheSize := int64(app.StreamCache) * 1024 * 1024
+						streamOffset := app.streamOffset.Load()
+						if offset >= streamOffset+streamCacheSize {
+							returnIncomplete(offset, size)
+							waitStreaming = true
+							return rx.Empty[any]()
+						}
+						waitStreaming = false
+					}
+
+					requestPermitted = false
+					requestOngoing = true
+
+					return rx.Pipe1(
+						rx.NewObservable(
+							func(c rx.Context, o rx.Observer[any]) {
+								reqCtx, reqCancel := mainCtx.WithCancelCause()
+
+								var (
+									err       error
+									fatal     int
+									responsed bool
+								)
+
+								defer func() {
+									if responsed {
+										waitWriteDone()
+									}
+
+									returnIncomplete(offset, size)
+									messages.Next(CompleteMessage{err, fatal, responsed})
+									o.Complete()
+									reqCancel(nil)
+								}()
+
+								req, err := http.NewRequestWithContext(reqCtx.Context, http.MethodGet, currentURL, nil)
+								if err != nil {
+									return
+								}
+
+								req.Header.Set("Range", fmt.Sprintf("bytes=%v-%v", offset, offset+size-1))
+
+								if app.Referer != "" {
+									req.Header.Set("Referer", app.Referer)
+								}
+
+								req.Header.Set("User-Agent", app.UserAgent)
+
+								reqTimer := time.AfterFunc(app.Timeout, func() { reqCancel(errConnTimeout) })
+								defer reqTimer.Stop()
+
+								resp, err := client.Do(req)
+								if err != nil {
+									if reqCtx.Cause() == errConnTimeout {
+										err = errConnTimeout
+									}
+									return
+								}
+
+								defer resp.Body.Close()
+
+								if !reqTimer.Stop() {
+									err = errTryAgain
+									return
+								}
+
+								var contentSize int64
+
+								switch resp.StatusCode {
+								case http.StatusOK:
+									if offset > 0 {
+										err = errors.New("fatal: this server does not support partial requests")
+										fatal = exitCodeFatal
+										return
+									}
+
+									contentSize = resp.ContentLength
+								case http.StatusPartialContent:
+									contentRange := resp.Header.Get("Content-Range")
+									if contentRange == "" {
+										err = errors.New("fatal: Content-Range not found in response header")
+										fatal = exitCodeFatal
+										return
+									}
+
+									slice := re1.FindStringSubmatch(contentRange)
+									if slice == nil {
+										err = fmt.Errorf("fatal: Content-Range unrecognized: %v", contentRange)
+										fatal = exitCodeFatal
+										return
+									}
+
+									contentSize, _ = strconv.ParseInt(slice[3], 10, 64)
+								case http.StatusRequestedRangeNotSatisfiable:
+									contentRange := resp.Header.Get("Content-Range")
+									if contentRange != "" && file.ContentSize() == 0 {
+										slice := re2.FindStringSubmatch(contentRange)
+										if slice != nil {
+											contentSize, _ = strconv.ParseInt(slice[1], 10, 64)
+											if contentSize > 0 {
+												file.SetContentSize(contentSize)
+												err = errTryAgain
+												return
+											}
+										}
+									}
+									err = errors.New("fatal: " + resp.Status)
+									fatal = exitCodeFatal
+									return
+								default:
+									err = errors.New(resp.Status)
+									return
+								}
+
+								if contentSize <= 0 {
+									err = errors.New("fatal: Content-Length unknown or zero")
+									fatal = exitCodeFatal
+									return
+								}
+
+								shouldAlloc := false
+								shouldSync := false
+
+								switch file.ContentSize() {
+								case contentSize:
+								case 0:
+									file.SetContentSize(contentSize)
+									shouldAlloc = app.Alloc
+									shouldSync = true
+								default:
+									err = errors.New("fatal: Content-Length mismatched")
+									fatal = exitCodeFatal
+									return
+								}
+
+								for _, h := range supportedHashMethods {
+									hashCode := resp.Header.Get("Content-" + h.Name)
+									if hashCode == "" {
+										hashCode = resp.Header.Get("X-Checksum-" + h.Name)
+										if hashCode == "" {
+											switch h.Name {
+											case "SHA224", "SHA256", "SHA384", "SHA512":
+												hashCode = resp.Header.Get("Content-Sha2")
+												if hashCode == "" {
+													hashCode = resp.Header.Get("X-Checksum-Sha2")
+												}
+											}
+										}
+									}
+									if len(hashCode) == h.Length {
+										hashCode = strings.ToLower(hashCode)
+										switch h.Get(file) {
+										case hashCode:
+										case "":
+											h.Set(file, hashCode)
+											shouldSync = true
+										default:
+											err = errors.New("fatal: " + h.Name + " mismatched")
+											fatal = exitCodeFatal
+											return
+										}
+									}
+								}
+
+								eTag := resp.Header.Get("ETag")
+								if eTag != "" {
+									switch file.EntityTag() {
+									case eTag:
+									case "":
+										file.SetEntityTag(eTag)
+										shouldSync = true
+									default:
+										if !app.SkipETag {
+											err = errors.New("fatal: ETag mismatched")
+											fatal = exitCodeFatal
+											return
+										}
+									}
+								}
+
+								lastModified := resp.Header.Get("Last-Modified")
+								if lastModified != "" {
+									switch file.LastModified() {
+									case lastModified:
+									case "":
+										file.SetLastModified(lastModified)
+										shouldSync = true
+									default:
+										if !app.SkipLastModified {
+											err = errors.New("fatal: Last-Modified mismatched")
+											fatal = exitCodeFatal
+											return
+										}
+									}
+								}
+
+								contentDisposition := resp.Header.Get("Content-Disposition")
+								if contentDisposition != "" {
+									_, params, _ := mime.ParseMediaType(contentDisposition)
+									if filename := params["filename"]; filename != "" {
+										if filename != file.Filename() {
+											file.SetFilename(filename)
+											shouldSync = true
+										}
+									}
+								}
+
+								if shouldAlloc {
+									err = app.alloc(mainCtx, file)
+									if err != nil {
+										fatal = exitCodeFatal
+										return
+									}
+								}
+
+								if app.Truncate {
+									err = file.Truncate(contentSize)
+									if err != nil {
+										err = fmt.Errorf("truncate failed: %w", err)
+										fatal = exitCodeTruncateFailed
+										return
+									}
+								}
+
+								if shouldSync {
+									err = file.SyncNow()
+									if err != nil {
+										err = fmt.Errorf("sync failed: %w", err)
+										fatal = exitCodeSyncFailed
+										return
+									}
+								}
+
+								messages.Next(ResponseMessage{resp.Request.URL.String()})
+								responsed = true
+
+								readTimer := time.AfterFunc(app.ReadTimeout, func() { reqCancel(errReadTimeout) })
+								resetTimer := false
+
+								for {
+									if resetTimer {
+										readTimer.Reset(app.ReadTimeout)
+									}
+
+									var n int
+
+									n, err = readAndWrite(resp.Body, offset, size)
+
+									readTimer.Stop()
+									resetTimer = true
+
+									if n > 0 {
+										offset, size = offset+int64(n), size-int64(n)
+
+										messages.Next(ProgressMessage{n})
+
+										if err == nil && app.rateLimiter != nil {
+											err = app.rateLimiter.WaitN(reqCtx.Context, n)
+										}
+									}
+
+									if err != nil {
+										if err == io.EOF {
+											err = nil
+											return
+										}
+
+										if reqCtx.Cause() == errReadTimeout {
+											err = errReadTimeout
+										}
+
+										return
+									}
+								}
+							},
+						),
+						rx.Go[any](),
+					)
+				},
+			),
+		)
 	}
 
-	return exitCodeOK
+	{
+		var statusLine string
+
+		var b bytes.Buffer
+
+		ob = rx.Pipe2(
+			ob,
+			rx.DoOnNext(
+				func(v any) {
+					switch w := v.(type) {
+					case UpdateMessage:
+						contentSize := file.ContentSize()
+						completeSize := file.CompleteSize()
+						progress := int(float64(completeSize) / float64(contentSize) * 100)
+
+						b.Reset()
+						b.WriteString(time.Now().Format("15:04:05"))
+						b.WriteString(fmt.Sprint(" ", strings.TrimSuffix(formatBytes(completeSize), "i")))
+						b.WriteString(fmt.Sprint("/", strings.TrimSuffix(formatBytes(contentSize), "i")))
+						b.WriteString(fmt.Sprint(" ", progress, "%"))
+
+						switch {
+						case w.Connections > 0:
+							b.WriteString(fmt.Sprint(" CN:", w.Connections))
+							if w.DownloadRate > 0 {
+								seconds := int64(math.Ceil(float64(file.IncompleteSize()) / float64(w.DownloadRate)))
+								b.WriteString(fmt.Sprint(" DL:", strings.TrimSuffix(formatBytes(w.DownloadRate), "i")))
+								b.WriteString(fmt.Sprint(" ETA:", formatETA(time.Duration(seconds)*time.Second)))
+							}
+						case w.RequestOngoing:
+							b.WriteString(" connecting...")
+						case w.WaitStreaming:
+							b.WriteString(" streaming...")
+						}
+
+						if s := b.String(); s != statusLine {
+							statusLine = s
+							print("\033[1K\r")
+							print(s)
+						}
+					case ReportMessage:
+						statusLine = ""
+						print("\033[1K\r")
+						print(time.Now().Format("15:04:05"))
+						printf(
+							" recv %vB in %v, %vB/s, %v%% completed\n",
+							formatBytes(w.TotalReceived),
+							formatTimeUsed(w.TimeUsed),
+							formatBytes(int64(float64(w.TotalReceived)/w.TimeUsed.Seconds())),
+							int(float64(file.CompleteSize())/float64(file.ContentSize())*100),
+						)
+					default:
+						statusLine = ""
+						print("\033[1K\r")
+						println(time.Now().Format("15:04:05"), v)
+					}
+				},
+			),
+			rx.DoOnTermination[any](
+				func() {
+					if statusLine != "" {
+						println()
+					}
+				},
+			),
+		)
+	}
+
+	return int(ob.BlockingSubscribe(ctx, rx.Noop[any]).(exitCodeError))
+}
+
+type exitCodeError int
+
+func (e exitCodeError) Error() string {
+	return fmt.Sprintf("exit code: %v", int(e))
 }
 
 func (app *App) verify(mainCtx rx.Context, file *DataFile) int {
