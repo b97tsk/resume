@@ -44,7 +44,6 @@ A config file is an YAML document that can specify following options:
 - `cookie` cookie file. The file format is [Netscape format](https://unix.stackexchange.com/a/210282).
 - `disable-keep-alives` disable HTTP keep alives, one request per connection.
 - `errors` maximum number of errors (Default: 3).
-- `force-http2` force attempt HTTP/2 (Default: true).
 - `interval` request interval (Default: 2s).
 - `keep-alive` keep-alive duration (Default: 30s).
 - `limit-rate` limit download rate to this value.

@@ -139,7 +139,6 @@ type Configure struct {
 	CookieFile            string        `mapstructure:"cookie" yaml:"cookie"`
 	DisableKeepAlives     bool          `mapstructure:"disable-keep-alives" yaml:"disable-keep-alives"`
 	Errors                uint          `mapstructure:"errors" yaml:"errors"`
-	ForceAttemptHTTP2     bool          `mapstructure:"force-http2" yaml:"force-http2"`
 	Interval              time.Duration `mapstructure:"interval" yaml:"interval"`
 	KeepAlive             time.Duration `mapstructure:"keep-alive" yaml:"keep-alive"`
 	LimitRate             string        `mapstructure:"limit-rate" yaml:"limit-rate"`
@@ -190,7 +189,6 @@ func main() {
 
 	flags.BoolVar(&app.Alloc, "alloc", false, "alloc disk space before the first write")
 	flags.BoolVar(&app.Autoremove, "autoremove", false, "auto remove .resume file after successfully verified")
-	flags.BoolVar(&app.ForceAttemptHTTP2, "force-http2", true, "force attempt HTTP/2")
 	flags.BoolVar(&app.Truncate, "truncate", false, "truncate output file before the first write")
 	flags.BoolVar(&app.Verify, "verify", true, "verify output file after download completes")
 	flags.BoolVarP(&app.DisableKeepAlives, "disable-keep-alives", "D", false, "disable HTTP keep alives")
@@ -812,9 +810,9 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	client := &http.Client{
 		Transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           dialer.DialContext,
+			DialContext:           dialer.DialContext, // Disables HTTP/2.
 			DisableKeepAlives:     app.DisableKeepAlives,
-			ForceAttemptHTTP2:     app.ForceAttemptHTTP2,
+			ForceAttemptHTTP2:     false, // Do not attempt HTTP/2, we want parallel connections.
 			MaxIdleConns:          100,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   app.TLSHandshakeTimeout,
