@@ -1252,7 +1252,7 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 						maxConnections = app.Connections
 					}
 
-					if !requestPermitted || requestOngoing || connections >= maxConnections {
+					if !requestPermitted || requestOngoing || connections >= maxConnections || mainCtx.Context.Err() != nil {
 						return rx.Empty[any]()
 					}
 
