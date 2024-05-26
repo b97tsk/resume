@@ -116,12 +116,12 @@ var supportedHashMethods = [...]struct {
 }
 
 type App struct {
-	Configure
+	Configuration
 	workdir        string
 	conffile       string
 	noUserConfig   bool
 	showStatus     bool
-	showConfigure  bool
+	showConfig     bool
 	verifyOnly     bool
 	fixCorrupted   bool
 	streamToStdout bool
@@ -132,7 +132,7 @@ type App struct {
 	retryForever   bool
 }
 
-type Configure struct {
+type Configuration struct {
 	Alloc                 bool          `mapstructure:"alloc" yaml:"alloc"`
 	Autoremove            bool          `mapstructure:"autoremove" yaml:"autoremove"`
 	Connections           uint          `mapstructure:"connections" yaml:"connections"`
@@ -236,7 +236,7 @@ func main() {
 		Use:   "config",
 		Short: "Show configuration",
 		Run: func(cmd *cobra.Command, args []string) {
-			app.showConfigure = true
+			app.showConfig = true
 			os.Exit(app.Main(cmd, args))
 		},
 	})
@@ -292,7 +292,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			viper.SetConfigType("yaml")
 
 			if err := viper.ReadInConfig(); err == nil {
-				_ = viper.Unmarshal(&app.Configure)
+				_ = viper.Unmarshal(&app.Configuration)
 			}
 		}
 	}
@@ -308,7 +308,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			}
 		}
 
-		_ = viper.Unmarshal(&app.Configure)
+		_ = viper.Unmarshal(&app.Configuration)
 	}
 
 	if app.Connections == 0 {
@@ -375,9 +375,9 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		app.URL = args[0]
 	}
 
-	if app.showConfigure {
+	if app.showConfig {
 		enc := yaml.NewEncoder(os.Stdout)
-		_ = enc.Encode(&app.Configure)
+		_ = enc.Encode(&app.Configuration)
 		enc.Close()
 
 		return exitCodeOK
