@@ -212,7 +212,7 @@ func main() {
 	flags.StringVarP(&app.Range, "range", "r", "", "request range (MiB), e.g., 0-1023")
 	flags.StringVarP(&app.Referer, "referer", "R", "", "referer url")
 	flags.StringVarP(&app.UserAgent, "user-agent", "A", "", "user agent")
-	flags.UintVarP(&app.Connections, "connections", "c", 4, "maximum number of parallel downloads")
+	flags.UintVarP(&app.Connections, "connections", "c", 1, "maximum number of parallel downloads")
 	flags.UintVarP(&app.Errors, "errors", "e", 3, "maximum number of errors")
 	flags.UintVarP(&app.MaxSplitSize, "max-split", "s", 0, "maximum split size (MiB), 0 means use maximum possible")
 	flags.UintVarP(&app.MinSplitSize, "min-split", "p", 0, "minimum split size (MiB), even smaller value may be used")
