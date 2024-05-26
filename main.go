@@ -188,7 +188,7 @@ func main() {
 	flags := rootCmd.PersistentFlags()
 
 	flags.BoolVar(&app.Alloc, "alloc", false, "alloc disk space before the first write")
-	flags.BoolVar(&app.Autoremove, "autoremove", false, "auto remove .resume file after successfully verified")
+	flags.BoolVar(&app.Autoremove, "autoremove", true, "auto remove .resume file after successfully verified")
 	flags.BoolVar(&app.Truncate, "truncate", false, "truncate output file before the first write")
 	flags.BoolVar(&app.Verify, "verify", true, "verify output file after download completes")
 	flags.BoolVarP(&app.DisableKeepAlives, "disable-keep-alives", "D", false, "disable HTTP keep alives")

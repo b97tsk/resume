@@ -39,7 +39,7 @@ You can specify the path of this config file by using command-line flag `-f`.
 A config file is an YAML document that can specify following options:
 
 - `alloc` alloc disk space before the first write.
-- `autoremove` auto remove .resume file after successfully verified.
+- `autoremove` auto remove .resume file after successfully verified (Default: true).
 - `connections` maximum number of parallel downloads (Default: 4).
 - `cookie` cookie file. The file format is [Netscape format](https://unix.stackexchange.com/a/210282).
 - `disable-keep-alives` disable HTTP keep alives, one request per connection.
