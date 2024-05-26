@@ -385,7 +385,7 @@ func (f *DataFile) TakeIncomplete(max int64) (offset, size int64) {
 
 	r := f.incomplete[0]
 
-	low, high := r.Low, elems.Int64((r.Low.Unwrap()+max)/pieceSize*pieceSize)
+	low, high := r.Low, elems.Int64((r.Low.Unwrap()+max+pieceSize-1)/pieceSize*pieceSize)
 	if low >= high {
 		return
 	}

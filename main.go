@@ -146,6 +146,7 @@ type Configuration struct {
 	MaxSplitSize          uint          `mapstructure:"max-split" yaml:"max-split"`
 	MinSplitSize          uint          `mapstructure:"min-split" yaml:"min-split"`
 	OutputFile            string        `mapstructure:"output" yaml:"output"`
+	Parallel              uint          `mapstructure:"parallel" yaml:"parallel"`
 	Proxy                 string        `mapstructure:"proxy" yaml:"proxy"`
 	Range                 string        `mapstructure:"range" yaml:"range"`
 	ReadTimeout           time.Duration `mapstructure:"read-timeout" yaml:"read-timeout"`
@@ -213,8 +214,9 @@ func main() {
 	flags.StringVarP(&app.UserAgent, "user-agent", "A", "", "user agent")
 	flags.UintVarP(&app.Connections, "connections", "c", 4, "maximum number of parallel downloads")
 	flags.UintVarP(&app.Errors, "errors", "e", 3, "maximum number of errors")
-	flags.UintVarP(&app.MaxSplitSize, "max-split", "s", 0, "maximal split size (MiB), 0 means use maximum possible")
-	flags.UintVarP(&app.MinSplitSize, "min-split", "p", 0, "minimal split size (MiB), even smaller value may be used")
+	flags.UintVarP(&app.MaxSplitSize, "max-split", "s", 0, "maximum split size (MiB), 0 means use maximum possible")
+	flags.UintVarP(&app.MinSplitSize, "min-split", "p", 0, "minimum split size (MiB), even smaller value may be used")
+	flags.UintVarP(&app.Parallel, "parallel", "P", 0, "maximum number of parallel requests (default =connections)")
 
 	must(viper.BindPFlags(flags))
 
@@ -319,6 +321,14 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	if app.Errors == 0 {
 		println("fatal: zero errors")
 		return exitCodeFatal
+	}
+
+	if app.Parallel == 0 {
+		app.Parallel = app.Connections
+	}
+
+	if app.Connections < app.Parallel {
+		app.Connections = app.Parallel
 	}
 
 	if app.LimitRate != "" {
@@ -889,10 +899,10 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 		}
 
 		UpdateMessage struct {
-			Connections    int
-			DownloadRate   int64
-			RequestOngoing bool
-			WaitStreaming  bool
+			Connections     int
+			DownloadRate    int64
+			OngoingRequests int
+			WaitStreaming   bool
 		}
 		ReportMessage struct {
 			TotalReceived int64
@@ -1114,9 +1124,9 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 			totalReceived    int64
 			recentReceived   int64
 			requestPermitted bool
-			requestOngoing   bool
 			waitStreaming    bool
 			connections      uint
+			ongoingRequests  uint
 			errorCount       uint
 			fatalCode        int
 		)
@@ -1176,10 +1186,10 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 						speedtest.Next(recentReceived)
 						recentReceived = 0
 						return rx.Just[any](UpdateMessage{
-							Connections:    int(connections),
-							DownloadRate:   int64(float64(downloadRate) * (float64(time.Second) / float64(updateInterval))),
-							RequestOngoing: requestOngoing,
-							WaitStreaming:  waitStreaming,
+							Connections:     int(connections),
+							DownloadRate:    int64(float64(downloadRate) * (float64(time.Second) / float64(updateInterval))),
+							OngoingRequests: int(ongoingRequests),
+							WaitStreaming:   waitStreaming,
 						})
 					case ReportTimer:
 						return report()
@@ -1195,8 +1205,8 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 					case QuitMessage:
 						canQuit = true
 					case ResponseMessage:
-						requestOngoing = false
 						connections++
+						ongoingRequests--
 						errorCount = 0
 						currentURL = w.URL // Save the redirected one if redirection happens.
 						maxConnections = app.Connections
@@ -1204,7 +1214,7 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 						if w.Responsed {
 							connections--
 						} else {
-							requestOngoing = false
+							ongoingRequests--
 						}
 						if err := w.Err; err != nil && err != errTryAgain {
 							if err != errConnTimeout && err != errReadTimeout || app.TimeoutIntolerant {
@@ -1227,12 +1237,12 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 						return rx.Just(v)
 					}
 
-					if !requestOngoing && connections == 0 && !file.HasIncomplete() {
+					if connections == 0 && ongoingRequests == 0 && !file.HasIncomplete() {
 						return quit(exitCodeOK)
 					}
 
 					if fatalCode != 0 {
-						if !requestOngoing && connections == 0 {
+						if connections == 0 && ongoingRequests == 0 {
 							return quit(fatalCode)
 						}
 						return rx.Empty[any]()
@@ -1240,7 +1250,10 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 
 					if errorCount >= app.Errors {
 						if currentURL == app.URL { // No redirection.
-							if !requestOngoing && connections == 0 { // Failed to start any download.
+							if ongoingRequests != 0 {
+								return rx.Empty[any]()
+							}
+							if connections == 0 { // Failed to start any download.
 								return quit(exitCodeIncomplete) // Giving up.
 							}
 							errorCount = 0
@@ -1252,8 +1265,15 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 						maxConnections = app.Connections
 					}
 
-					if !requestPermitted || requestOngoing || connections >= maxConnections || mainCtx.Context.Err() != nil {
-						return rx.Empty[any]()
+					{
+						requestPermitted := requestPermitted &&
+							ongoingRequests < app.Parallel &&
+							connections+ongoingRequests < maxConnections &&
+							(ongoingRequests == 0 || file.ContentSize() > 0) &&
+							mainCtx.Context.Err() == nil
+						if !requestPermitted {
+							return rx.Empty[any]()
+						}
 					}
 
 					offset, size := takeIncomplete()
@@ -1273,7 +1293,7 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 					}
 
 					requestPermitted = false
-					requestOngoing = true
+					ongoingRequests++
 
 					return rx.Pipe1(
 						rx.NewObservable(
@@ -1567,15 +1587,16 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 						b.WriteString(fmt.Sprint(" ", progress, "%"))
 
 						switch {
-						case w.Connections > 0:
+						case w.Connections > 0 || w.OngoingRequests > 0:
 							b.WriteString(fmt.Sprint(" CN:", w.Connections))
+							if w.OngoingRequests > 0 {
+								b.WriteString(fmt.Sprintf("(%v)", w.OngoingRequests))
+							}
 							if w.DownloadRate > 0 {
 								seconds := int64(math.Ceil(float64(file.IncompleteSize()) / float64(w.DownloadRate)))
 								b.WriteString(fmt.Sprint(" DL:", strings.TrimSuffix(formatBytes(w.DownloadRate), "i")))
 								b.WriteString(fmt.Sprint(" ETA:", formatETA(time.Duration(seconds)*time.Second)))
 							}
-						case w.RequestOngoing:
-							b.WriteString(" connecting...")
 						case w.WaitStreaming:
 							b.WriteString(" streaming...")
 						}

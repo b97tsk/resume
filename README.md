@@ -48,9 +48,10 @@ A config file is an YAML document that can specify following options:
 - `keep-alive` keep-alive duration (Default: 30s).
 - `limit-rate` limit download rate to this value.
 - `listen` HTTP listen address for remote control.
-- `max-split` maximal split size (MiB).
-- `min-split` minimal split size (MiB).
+- `max-split` maximum split size (MiB).
+- `min-split` minimum split size (MiB).
 - `output` output file.
+- `parallel` maximum number of parallel requests (Default: =connections).
 - `proxy` a shorthand for setting http(s)\_proxy environment variables.
 - `range` request range (MiB).
 - `read-timeout` read timeout (Default: 30s).
