@@ -139,7 +139,6 @@ type Configuration struct {
 	Connections           uint          `mapstructure:"connections" yaml:"connections"`
 	CookieFile            string        `mapstructure:"cookie" yaml:"cookie"`
 	DisableKeepAlives     bool          `mapstructure:"disable-keep-alives" yaml:"disable-keep-alives"`
-	Errors                uint          `mapstructure:"errors" yaml:"errors"`
 	Interval              time.Duration `mapstructure:"interval" yaml:"interval"`
 	KeepAlive             time.Duration `mapstructure:"keep-alive" yaml:"keep-alive"`
 	LimitRate             string        `mapstructure:"limit-rate" yaml:"limit-rate"`
@@ -211,10 +210,9 @@ func main() {
 	flags.StringVarP(&app.OutputFile, "output", "o", "", "output file")
 	flags.StringVarP(&app.Proxy, "proxy", "x", "", "a shorthand for setting http(s)_proxy environment variables")
 	flags.StringVarP(&app.Range, "range", "r", "", "request range (MiB), e.g., 0-1023")
-	flags.StringVarP(&app.Referer, "referer", "R", "", "referer url")
+	flags.StringVarP(&app.Referer, "referer", "e", "", "referer url")
 	flags.StringVarP(&app.UserAgent, "user-agent", "A", "", "user agent")
 	flags.UintVarP(&app.Connections, "connections", "c", 1, "maximum number of parallel downloads")
-	flags.UintVarP(&app.Errors, "errors", "e", 3, "maximum number of errors")
 	flags.UintVarP(&app.MaxSplitSize, "max-split", "s", 0, "maximum split size (MiB), 0 means use maximum possible")
 	flags.UintVarP(&app.MinSplitSize, "min-split", "p", 0, "minimum split size (MiB), even smaller value may be used")
 	flags.UintVarP(&app.Parallel, "parallel", "P", 0, "maximum number of parallel requests (default =connections)")
@@ -316,11 +314,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 	if app.Connections == 0 {
 		println("fatal: zero connections")
-		return exitCodeFatal
-	}
-
-	if app.Errors == 0 {
-		println("fatal: zero errors")
 		return exitCodeFatal
 	}
 
@@ -1264,7 +1257,7 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 						return rx.Empty[any]()
 					}
 
-					if errorCount >= app.Errors {
+					if errorCount != 0 {
 						if currentURL == app.URL { // No redirection.
 							if ongoingRequests != 0 {
 								return rx.Empty[any]()
