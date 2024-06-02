@@ -1003,12 +1003,17 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 
 	messages := rx.Unicast[any]()
 
+	startUpdateTimer := onDownloadStarted.Observable
+	if file.ContentSize() > 0 {
+		startUpdateTimer = rx.Empty[any]()
+	}
+
 	ob := rx.Pipe2(
 		messages.Observable,
 		rx.OnBackpressureCongest[any](int(app.Connections*4)),
 		rx.MergeWith(
 			rx.Concat(
-				onDownloadStarted.Observable,
+				startUpdateTimer,
 				rx.Pipe1(
 					rx.Ticker(updateInterval),
 					rx.MapTo[time.Time, any](UpdateTimer{}),
