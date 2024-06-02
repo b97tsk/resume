@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -1221,14 +1222,24 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 						} else {
 							ongoingRequests--
 						}
-						if err := w.Err; err != nil && err != errTryAgain {
-							if err != errConnTimeout && err != errReadTimeout || app.TimeoutIntolerant {
-								errorCount++
-							}
+						switch {
+						case w.Err == nil:
+						case w.Err == errTryAgain:
+						case errors.Is(w.Err, context.Canceled):
+						case w.Responsed && !app.Verbose:
+						default:
 							if w.Fatal != 0 {
 								fatalCode = w.Fatal
 							}
-							if w.Fatal != 0 || connections == 0 || app.Verbose {
+							verbose := app.Verbose || w.Fatal != 0
+							if w.Err != errConnTimeout && w.Err != errReadTimeout || app.TimeoutIntolerant {
+								errorCount++
+								if connections == 0 {
+									verbose = true
+								}
+							}
+							if verbose {
+								err := w.Err
 								switch e := err.(type) {
 								case *net.OpError:
 									err = e.Err
