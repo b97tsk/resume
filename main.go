@@ -129,6 +129,7 @@ type App struct {
 	streamOffset   atomic.Int64
 	canRequest     chan struct{}
 	rateLimiter    *rate.Limiter
+	minDesiredRate int64
 	retryCount     uint
 	retryForever   bool
 }
@@ -144,6 +145,7 @@ type Configuration struct {
 	LimitRate             string        `mapstructure:"limit-rate" yaml:"limit-rate"`
 	ListenAddress         string        `mapstructure:"listen" yaml:"listen"`
 	MaxSplitSize          uint          `mapstructure:"max-split" yaml:"max-split"`
+	MinDesiredRate        string        `mapstructure:"min-desired-rate" yaml:"min-desired-rate"`
 	MinSplitSize          uint          `mapstructure:"min-split" yaml:"min-split"`
 	OutputFile            string        `mapstructure:"output" yaml:"output"`
 	Parallel              uint          `mapstructure:"parallel" yaml:"parallel"`
@@ -207,6 +209,7 @@ func main() {
 	flags.StringVar(&app.CookieFile, "cookie", "", "cookie file")
 	flags.StringVarP(&app.LimitRate, "limit-rate", "l", "", "limit download rate to this value (B/s), e.g., 32K")
 	flags.StringVarP(&app.ListenAddress, "listen", "L", "", "HTTP listen address for remote control")
+	flags.StringVarP(&app.MinDesiredRate, "min-desired-rate", "d", "", "minimum desired download rate (B/s), e.g., 32K")
 	flags.StringVarP(&app.OutputFile, "output", "o", "", "output file")
 	flags.StringVarP(&app.Proxy, "proxy", "x", "", "a shorthand for setting http(s)_proxy environment variables")
 	flags.StringVarP(&app.Range, "range", "r", "", "request range (MiB), e.g., 0-1023")
@@ -325,32 +328,33 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		app.Connections = app.Parallel
 	}
 
+	var limitRate int64
+
 	if app.LimitRate != "" {
-		s := app.LimitRate
-		n := 0
-
-		switch s[len(s)-1] {
-		case 'K', 'k':
-			n = 10
-		case 'M', 'm':
-			n = 20
-		case 'G', 'g':
-			n = 30
-		}
-
-		if n > 0 {
-			s = s[:len(s)-1]
-		}
-
-		i, err := strconv.ParseInt(s, 10, 64)
-		if err != nil || i < 0 {
-			println("fatal: invalid limit rate:", app.LimitRate)
+		n, ok := parseBytes(app.LimitRate)
+		if !ok {
+			println("fatal: invalid limit-rate:", app.LimitRate)
 			return exitCodeFatal
 		}
+		if n > 0 {
+			burst := int(n) + int(n>>9)
+			app.rateLimiter = rate.NewLimiter(rate.Limit(n), burst)
+		}
+		limitRate = n
+	}
 
-		if i > 0 {
-			burst := int(i<<n) + int(i<<n>>9)
-			app.rateLimiter = rate.NewLimiter(rate.Limit(i<<n), burst)
+	if app.MinDesiredRate != "" {
+		n, ok := parseBytes(app.MinDesiredRate)
+		if !ok {
+			println("fatal: invalid min-desired-rate:", app.MinDesiredRate)
+			return exitCodeFatal
+		}
+		if n > limitRate && limitRate > 0 {
+			println("fatal: min-desired-rate must not be greater than limit-rate")
+			return exitCodeFatal
+		}
+		if n > 0 {
+			app.minDesiredRate = int64(float64(n) * (float64(updateInterval) / float64(time.Second)))
 		}
 	}
 
@@ -881,12 +885,15 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 		QuitMessage       struct{}
 
 		ResponseMessage struct {
+			Tag any
 			URL string
 		}
 		ProgressMessage struct {
-			N int
+			Tag any
+			N   int
 		}
 		CompleteMessage struct {
+			Tag       any
 			Err       error
 			Fatal     int
 			Responsed bool
@@ -899,8 +906,8 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 			WaitStreaming   bool
 		}
 		ReportMessage struct {
-			TotalReceived int64
-			TimeUsed      time.Duration
+			TimeUsed  time.Duration
+			TotalRecv int64
 		}
 	)
 
@@ -988,10 +995,12 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 	ctx, cancel := rx.NewBackgroundContext().WithNewWaitGroup().WithCancel()
 
 	onDownloadStarted := rx.Multicast[any]()
+	onUpdateTimer := rx.Multicast[struct{}]()
 
 	defer func() {
+		onDownloadStarted.Error(context.Canceled)
+		onUpdateTimer.Error(context.Canceled)
 		cancel()
-		onDownloadStarted.Complete()
 		ctx.Wait()
 	}()
 
@@ -1050,88 +1059,160 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 	)
 
 	{
-		var downloadRate int64 // bytes per updateInterval
+		type DownloadInfo struct {
+			DownloadRate int64 // bytes per updateInterval
+			RecentRecv   int64
+			UpdateCount  int
+		}
 
-		var speedtest rx.Observer[int64]
+		var (
+			connections    uint
+			maxConnections = app.Connections
+		)
 
-		rx.Pipe1(
-			rx.NewObservable(
-				func(c rx.Context, o rx.Observer[int64]) {
-					speedtest = o
-				},
-			),
-			rx.Connect(
-				func(source rx.Observable[int64]) rx.Observable[int64] {
-					const N = 5
+		newDownloadInfo := func(ctx rx.Context, global bool) *DownloadInfo {
+			di := &DownloadInfo{}
 
-					source = rx.Pipe1(
-						source,
-						rx.SkipWhile(func(v int64) bool { return v == 0 }),
-					)
+			rx.Pipe3(
+				onUpdateTimer.Observable,
+				rx.Map(
+					func(struct{}) int64 {
+						v := di.RecentRecv
+						di.RecentRecv = 0
+						di.UpdateCount++
+						return v
+					},
+				),
+				rx.Connect(
+					func(source rx.Observable[int64]) rx.Observable[int64] {
+						const N = 5
 
-					return rx.Pipe2(
-						rx.Empty[int64](),
-						rx.MergeWith(
-							rx.Pipe4(
+						if global {
+							source = rx.Pipe2(
 								source,
-								rx.Scan(0, func(a, b int64) int64 { return a + b }),
-								rx.Enumerate[int64](1),
-								rx.Map(
-									func(p rx.Pair[int, int64]) int64 {
-										// For the first `N * updateInterval`, we average the speed.
-										downloadRate = p.Value / int64(p.Key)
-										return p.Value
-									},
+								rx.SkipWhile(func(v int64) bool { return v == 0 }),
+								rx.TakeWhile(func(v int64) bool { return v > 0 || connections > 0 }),
+							)
+						}
+
+						ob := rx.Pipe2(
+							rx.Empty[int64](),
+							rx.MergeWith(
+								rx.Pipe4(
+									source,
+									rx.Scan(0, func(a, b int64) int64 { return a + b }),
+									rx.Enumerate[int64](1),
+									rx.Map(
+										func(p rx.Pair[int, int64]) int64 {
+											// For the first `N * updateInterval`, we average the speed.
+											return p.Value / int64(p.Key)
+										},
+									),
+									rx.Take[int64](N),
 								),
-								rx.Take[int64](N),
-							),
-							rx.Pipe6(
-								source,
-								rx.BufferCount[int64](N).WithStartBufferEvery(1),
-								rx.Skip[[]int64](1),
-								rx.Map(
-									func(s []int64) int64 {
-										sum := int64(0)
-										for _, v := range s {
-											sum += v
+								rx.Pipe3(
+									source,
+									rx.BufferCount[int64](N).WithStartBufferEvery(1),
+									rx.Map(
+										func(s []int64) int64 {
+											sum := int64(0)
+											for _, v := range s {
+												sum += v
+											}
+											return sum / int64(len(s))
+										},
+									),
+									rx.Scan(-1, func(a, b int64) int64 {
+										if a < 0 {
+											return b
 										}
-										return sum / int64(len(s))
-									},
-								),
-								rx.TakeWhile(func(v int64) bool { return v > 0 }),
-								rx.DoOnNext(
-									func(v int64) {
 										// After `N * updateInterval`, we calculate the speed by using
 										// exponential moving average (EMA).
 										const ia = 5 // Inverse of alpha.
-										downloadRate = (v + (ia-1)*downloadRate) / ia
-									},
-								),
-								rx.DoOnTermination[int64](
-									func() { downloadRate = 0 },
+										return (b + (ia-1)*a) / ia
+									}),
 								),
 							),
-						),
-						rx.RepeatForever[int64](),
-					)
-				},
-			),
-		).Subscribe(ctx, rx.Noop[int64])
+							rx.EndWith[int64](0),
+						)
+
+						if global {
+							ob = rx.Pipe1(ob, rx.RepeatForever[int64]())
+						}
+
+						return ob
+					},
+				),
+				rx.DoOnNext(
+					func(v int64) {
+						di.DownloadRate = v
+					},
+				),
+			).Subscribe(ctx, rx.Noop[int64])
+
+			return di
+		}
+
+		gdi := newDownloadInfo(ctx, true)
+		tags := make(map[any]rx.CancelCauseFunc)
+
+		var postUpdateTimer rx.Observer[struct{}]
+
+		var ongoingRequests uint
+
+		if app.minDesiredRate > 0 {
+			const N = 5
+
+			errLowRate := errors.New("low rate")
+
+			aboutToComplete := func() bool {
+				downloadRate := float64(gdi.DownloadRate) * (float64(time.Second) / float64(updateInterval))
+				etaSeconds := float64(file.IncompleteSize()) / downloadRate
+				return etaSeconds < 30
+			}
+
+			cond := func(struct{}) bool {
+				return ongoingRequests == 0 &&
+					(connections == maxConnections || !file.HasIncomplete()) &&
+					gdi.DownloadRate < app.minDesiredRate && !aboutToComplete()
+			}
+
+			m := rx.Multicast[struct{}]()
+			defer m.Error(context.Canceled)
+
+			rx.Pipe7(
+				m.Observable,
+				rx.SkipWhile(func(v struct{}) bool { return !cond(v) }),
+				rx.TakeWhile(cond),
+				rx.Take[struct{}](N),
+				rx.Scan(0, func(a int, _ struct{}) int { return a + 1 }),
+				rx.Filter(func(v int) bool { return v == N }),
+				rx.DoOnNext(
+					func(int) {
+						for tag, cancel := range tags {
+							di := tag.(*DownloadInfo)
+							if di.UpdateCount >= N && di.DownloadRate <= gdi.DownloadRate {
+								cancel(errLowRate)
+							}
+						}
+					},
+				),
+				rx.RepeatForever[int](),
+			).Subscribe(ctx, rx.Noop[int])
+
+			postUpdateTimer = m.Observer
+		}
 
 		var (
 			firstRecvTime    time.Time
-			totalReceived    int64
-			recentReceived   int64
+			totalRecv        int64
 			requestPermitted bool
 			waitStreaming    bool
-			connections      uint
-			ongoingRequests  uint
 			errorCount       uint
 			fatalCode        int
 		)
 
 		currentURL := app.URL
-		maxConnections := app.Connections
 
 		re1 := regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+)$`)
 		re2 := regexp.MustCompile(`^bytes \*/(\d+)$`)
@@ -1141,8 +1222,8 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 
 		report := func() rx.Observable[any] {
 			return rx.Just[any](ReportMessage{
-				TotalReceived: totalReceived,
-				TimeUsed:      max(time.Since(firstRecvTime), time.Second),
+				TimeUsed:  max(time.Since(firstRecvTime), time.Second),
+				TotalRecv: totalRecv,
 			})
 		}
 
@@ -1160,7 +1241,7 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 			}
 
 			ob := rx.Throw[any](exitCodeError(code))
-			if totalReceived > 0 {
+			if totalRecv > 0 {
 				ob = rx.Concat(report(), ob)
 			}
 
@@ -1173,20 +1254,23 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 				func(v any) rx.Observable[any] {
 					switch w := v.(type) {
 					case ProgressMessage:
-						firstReceived := totalReceived == 0
-						totalReceived += int64(w.N)
-						recentReceived += int64(w.N)
-						if firstReceived {
+						firstRecv := totalRecv == 0
+						totalRecv += int64(w.N)
+						if firstRecv {
 							firstRecvTime = time.Now()
 							onDownloadStarted.Complete()
 						}
+						gdi.RecentRecv += int64(w.N)
+						w.Tag.(*DownloadInfo).RecentRecv += int64(w.N)
 						return rx.Empty[any]()
 					case UpdateTimer:
-						speedtest.Next(recentReceived)
-						recentReceived = 0
+						onUpdateTimer.Next(struct{}{})
+						if postUpdateTimer != nil {
+							postUpdateTimer.Next(struct{}{})
+						}
 						return rx.Just[any](UpdateMessage{
 							Connections:     int(connections),
-							DownloadRate:    int64(float64(downloadRate) * (float64(time.Second) / float64(updateInterval))),
+							DownloadRate:    int64(float64(gdi.DownloadRate) * (float64(time.Second) / float64(updateInterval))),
 							OngoingRequests: int(ongoingRequests),
 							WaitStreaming:   waitStreaming,
 						})
@@ -1210,6 +1294,7 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 						currentURL = w.URL // Save the redirected one if redirection happens.
 						maxConnections = app.Connections
 					case CompleteMessage:
+						delete(tags, w.Tag)
 						if w.Responsed {
 							connections--
 						} else {
@@ -1304,11 +1389,15 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 					requestPermitted = false
 					ongoingRequests++
 
+					reqCtx, reqCancel := mainCtx.WithCancelCause()
+
+					var tag any = newDownloadInfo(reqCtx, false)
+
+					tags[tag] = reqCancel
+
 					return rx.Pipe1(
 						rx.NewObservable(
 							func(c rx.Context, o rx.Observer[any]) {
-								reqCtx, reqCancel := mainCtx.WithCancelCause()
-
 								var (
 									err       error
 									fatal     int
@@ -1320,8 +1409,16 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 										waitWriteDone()
 									}
 
+									if err != nil && errors.Is(err, context.Canceled) {
+										if ctxErr := reqCtx.Context.Err(); ctxErr != nil {
+											if cause := reqCtx.Cause(); cause != ctxErr {
+												err = cause
+											}
+										}
+									}
+
 									returnIncomplete(offset, size)
-									messages.Next(CompleteMessage{err, fatal, responsed})
+									messages.Next(CompleteMessage{tag, err, fatal, responsed})
 									o.Complete()
 									reqCancel(nil)
 								}()
@@ -1344,9 +1441,6 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 
 								resp, err := client.Do(req)
 								if err != nil {
-									if reqCtx.Cause() == errConnTimeout {
-										err = errConnTimeout
-									}
 									return
 								}
 
@@ -1524,7 +1618,7 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 									}
 								}
 
-								messages.Next(ResponseMessage{resp.Request.URL.String()})
+								messages.Next(ResponseMessage{tag, resp.Request.URL.String()})
 								responsed = true
 
 								readTimer := time.AfterFunc(app.ReadTimeout, func() { reqCancel(errReadTimeout) })
@@ -1545,7 +1639,7 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 									if n > 0 {
 										offset, size = offset+int64(n), size-int64(n)
 
-										messages.Next(ProgressMessage{n})
+										messages.Next(ProgressMessage{tag, n})
 
 										if err == nil && app.rateLimiter != nil {
 											err = app.rateLimiter.WaitN(reqCtx.Context, n)
@@ -1556,10 +1650,6 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 										if err == io.EOF {
 											err = nil
 											return
-										}
-
-										if reqCtx.Cause() == errReadTimeout {
-											err = errReadTimeout
 										}
 
 										return
@@ -1602,9 +1692,9 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 								b.WriteString(fmt.Sprintf("(%v)", w.OngoingRequests))
 							}
 							if w.DownloadRate > 0 {
-								seconds := int64(math.Ceil(float64(file.IncompleteSize()) / float64(w.DownloadRate)))
+								etaSeconds := int64(math.Ceil(float64(file.IncompleteSize()) / float64(w.DownloadRate)))
 								b.WriteString(fmt.Sprint(" DL:", strings.TrimSuffix(formatBytes(w.DownloadRate), "i")))
-								b.WriteString(fmt.Sprint(" ETA:", formatETA(time.Duration(seconds)*time.Second)))
+								b.WriteString(fmt.Sprint(" ETA:", formatETA(time.Duration(etaSeconds)*time.Second)))
 							}
 						case w.WaitStreaming:
 							b.WriteString(" streaming...")
@@ -1621,9 +1711,9 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 						print(time.Now().Format("15:04:05"))
 						printf(
 							" recv %vB in %v, %vB/s, %v%% completed\n",
-							formatBytes(w.TotalReceived),
+							formatBytes(w.TotalRecv),
 							formatTimeUsed(w.TimeUsed),
-							formatBytes(int64(float64(w.TotalReceived)/w.TimeUsed.Seconds())),
+							formatBytes(int64(float64(w.TotalRecv)/w.TimeUsed.Seconds())),
 							int(float64(file.CompleteSize())/float64(file.ContentSize())*100),
 						)
 					default:
@@ -1924,6 +2014,30 @@ func formatETA(d time.Duration) (s string) {
 	}
 
 	return
+}
+
+func parseBytes(s string) (i int64, ok bool) {
+	n := 0
+
+	switch s[len(s)-1] {
+	case 'K', 'k':
+		n = 10
+	case 'M', 'm':
+		n = 20
+	case 'G', 'g':
+		n = 30
+	}
+
+	if n > 0 {
+		s = s[:len(s)-1]
+	}
+
+	i, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || i < 0 {
+		return 0, false
+	}
+
+	return i << n, true
 }
 
 func isDir(name string) bool {
