@@ -4,7 +4,7 @@ go 1.22.0
 
 require (
 	github.com/b97tsk/intervals v0.4.0
-	github.com/b97tsk/rx v0.9.0
+	github.com/b97tsk/rx v0.10.0
 	github.com/spf13/cobra v1.8.0
 	github.com/spf13/viper v1.18.2
 	golang.org/x/net v0.24.0

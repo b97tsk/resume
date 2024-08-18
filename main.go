@@ -710,13 +710,13 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		srv := &http.Server{}
 
 		defer func() {
-			if streamCounter.BlockingFirstOrElse(mainCtx, 0) > 0 {
+			if streamCounter.BlockingFirst(mainCtx).Value > 0 {
 				// Wait until `streamCounter` remains zero for N seconds.
 				const N = 5
 
 				println("waiting for remote streaming to complete...")
 
-				_, _ = rx.Pipe3(
+				_ = rx.Pipe3(
 					streamCounter.Observable,
 					rx.Filter(func(v int) bool { return v == 0 }),
 					rx.SwitchMapTo[int](
@@ -998,8 +998,8 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 	onUpdateTimer := rx.Multicast[struct{}]()
 
 	defer func() {
-		onDownloadStarted.Error(context.Canceled)
-		onUpdateTimer.Error(context.Canceled)
+		onDownloadStarted.Unsubscribe()
+		onUpdateTimer.Unsubscribe()
 		cancel()
 		ctx.Wait()
 	}()
@@ -1178,7 +1178,7 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 			}
 
 			m := rx.Multicast[struct{}]()
-			defer m.Error(context.Canceled)
+			defer m.Unsubscribe()
 
 			rx.Pipe7(
 				m.Observable,
@@ -1733,7 +1733,7 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 		)
 	}
 
-	return int(ob.BlockingSubscribe(ctx, rx.Noop[any]).(exitCodeError))
+	return int(ob.BlockingSubscribe(ctx, rx.Noop[any]).Error.(exitCodeError))
 }
 
 type exitCodeError int
@@ -1782,14 +1782,14 @@ func (app *App) verify(mainCtx rx.Context, file *DataFile) int {
 		case rx.KindNext:
 			print("\033[1K\r")
 			printf("verifying...%v%%", n.Value)
-		case rx.KindError:
+		case rx.KindComplete:
+			print("\033[1K\r")
+			println("verifying...DONE")
+		case rx.KindError, rx.KindStop:
 			if n.Error != rx.ErrEmpty {
 				print("\033[1K\r")
 				printf("verifying...%v\n", n.Error)
 			}
-		case rx.KindComplete:
-			print("\033[1K\r")
-			println("verifying...DONE")
 		}
 	})
 
