@@ -20,7 +20,7 @@ import (
 
 const (
 	pieceSize   = 1024 * 1024
-	zipFileName = "e29b33b3-7e9c-40e0-a41b-65cdadf3b068"
+	zipFileName = "11f56ab8-f1a2-4db7-8bdc-aa5c1ef976cc"
 )
 
 type DataFile struct {
@@ -38,17 +38,11 @@ type DataFile struct {
 }
 
 type HashInfo struct {
-	Pieces        []PieceInfo
-	ContentSize   int64
-	ContentMD5    string
-	ContentSHA1   string
-	ContentSHA224 string
-	ContentSHA256 string
-	ContentSHA384 string
-	ContentSHA512 string
-	EntityTag     string
-	LastModified  string
-	Filename      string
+	Pieces       []PieceInfo
+	ContentSize  int64
+	EntityTag    string
+	LastModified string
+	Filename     string
 }
 
 type PieceInfo struct {
@@ -233,84 +227,6 @@ func (f *DataFile) Truncate(size int64) error {
 
 func (f *DataFile) ContentSize() int64 {
 	return f.contentSize.Load()
-}
-
-func (f *DataFile) SetContentMD5(contentMD5 string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.hash.ContentMD5 = contentMD5
-}
-
-func (f *DataFile) ContentMD5() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	return f.hash.ContentMD5
-}
-
-func (f *DataFile) SetContentSHA1(contentSHA1 string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.hash.ContentSHA1 = contentSHA1
-}
-
-func (f *DataFile) ContentSHA1() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	return f.hash.ContentSHA1
-}
-
-func (f *DataFile) SetContentSHA224(contentSHA224 string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.hash.ContentSHA224 = contentSHA224
-}
-
-func (f *DataFile) ContentSHA224() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	return f.hash.ContentSHA224
-}
-
-func (f *DataFile) SetContentSHA256(contentSHA256 string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.hash.ContentSHA256 = contentSHA256
-}
-
-func (f *DataFile) ContentSHA256() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	return f.hash.ContentSHA256
-}
-
-func (f *DataFile) SetContentSHA384(contentSHA384 string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.hash.ContentSHA384 = contentSHA384
-}
-
-func (f *DataFile) ContentSHA384() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	return f.hash.ContentSHA384
-}
-
-func (f *DataFile) SetContentSHA512(contentSHA512 string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.hash.ContentSHA512 = contentSHA512
-}
-
-func (f *DataFile) ContentSHA512() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	return f.hash.ContentSHA512
 }
 
 func (f *DataFile) SetEntityTag(entityTag string) {

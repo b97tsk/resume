@@ -4,14 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/md5"
-	"crypto/sha1"
-	"crypto/sha256"
-	"crypto/sha512"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"math"
 	"mime"
@@ -53,8 +47,8 @@ const (
 	exitCodeCanceled             = 2
 	exitCodeIncomplete           = 3
 	exitCodeURLDeficient         = 4
-	exitCodeChecksumFailed       = 5
-	exitCodeChecksumMismatched   = 6
+	exitCodeVerificationFailed   = 5
+	_                            = 6
 	exitCodeCorruptionDetected   = 7
 	exitCodeOutputFileExists     = 8
 	exitCodeOpenDataFileFailed   = 9
@@ -64,57 +58,6 @@ const (
 	exitCodeTruncateFailed       = 13
 	exitCodeSyncFailed           = 14
 )
-
-var supportedHashMethods = [...]struct {
-	Name   string
-	Length int
-	New    func() hash.Hash
-	Get    func(*DataFile) string
-	Set    func(*DataFile, string)
-}{
-	{
-		Name:   "MD5",
-		Length: md5.Size * 2,
-		New:    md5.New,
-		Get:    (*DataFile).ContentMD5,
-		Set:    (*DataFile).SetContentMD5,
-	},
-	{
-		Name:   "SHA1",
-		Length: sha1.Size * 2,
-		New:    sha1.New,
-		Get:    (*DataFile).ContentSHA1,
-		Set:    (*DataFile).SetContentSHA1,
-	},
-	{
-		Name:   "SHA224",
-		Length: sha256.Size224 * 2,
-		New:    sha256.New224,
-		Get:    (*DataFile).ContentSHA224,
-		Set:    (*DataFile).SetContentSHA224,
-	},
-	{
-		Name:   "SHA256",
-		Length: sha256.Size * 2,
-		New:    sha256.New,
-		Get:    (*DataFile).ContentSHA256,
-		Set:    (*DataFile).SetContentSHA256,
-	},
-	{
-		Name:   "SHA384",
-		Length: sha512.Size384 * 2,
-		New:    sha512.New384,
-		Get:    (*DataFile).ContentSHA384,
-		Set:    (*DataFile).SetContentSHA384,
-	},
-	{
-		Name:   "SHA512",
-		Length: sha512.Size * 2,
-		New:    sha512.New,
-		Get:    (*DataFile).ContentSHA512,
-		Set:    (*DataFile).SetContentSHA512,
-	},
-}
 
 type App struct {
 	Configuration
@@ -1520,35 +1463,6 @@ func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int 
 									return
 								}
 
-								for _, h := range supportedHashMethods {
-									hashCode := resp.Header.Get("Content-" + h.Name)
-									if hashCode == "" {
-										hashCode = resp.Header.Get("X-Checksum-" + h.Name)
-										if hashCode == "" {
-											switch h.Name {
-											case "SHA224", "SHA256", "SHA384", "SHA512":
-												hashCode = resp.Header.Get("Content-Sha2")
-												if hashCode == "" {
-													hashCode = resp.Header.Get("X-Checksum-Sha2")
-												}
-											}
-										}
-									}
-									if len(hashCode) == h.Length {
-										hashCode = strings.ToLower(hashCode)
-										switch h.Get(file) {
-										case hashCode:
-										case "":
-											h.Set(file, hashCode)
-											shouldSync = true
-										default:
-											err = errors.New("fatal: " + h.Name + " mismatched")
-											fatal = exitCodeFatal
-											return
-										}
-									}
-								}
-
 								eTag := resp.Header.Get("ETag")
 								if eTag != "" {
 									switch file.EntityTag() {
@@ -1743,29 +1657,8 @@ func (e exitCodeError) Error() string {
 }
 
 func (app *App) verify(mainCtx rx.Context, file *DataFile) int {
-	type DigestInfo struct {
-		Name string
-		Hash hash.Hash
-	}
-
-	var digests map[string]DigestInfo
-
 	contentSize := file.ContentSize()
 	completeSize := file.CompleteSize()
-
-	if completeSize == contentSize {
-		for _, h := range supportedHashMethods {
-			hashCode := h.Get(file)
-			if hashCode != "" {
-				if digests == nil {
-					digests = make(map[string]DigestInfo)
-				}
-
-				digests[hashCode] = DigestInfo{h.Name, h.New()}
-				println(h.Name+":", hashCode)
-			}
-		}
-	}
 
 	var vs rx.Observer[int]
 
@@ -1797,19 +1690,11 @@ func (app *App) verify(mainCtx rx.Context, file *DataFile) int {
 	s := int64(0)
 	w := func(b []byte) (n int, err error) {
 		n = len(b)
-		for _, digest := range digests {
-			n, err = digest.Hash.Write(b)
-			if err != nil {
-				break
-			}
-		}
-
 		s += int64(n)
 		if s*100 >= int64(p+1)*contentSize {
 			p = int(s * 100 / contentSize)
 			vs.Next(p)
 		}
-
 		return
 	}
 
@@ -1820,7 +1705,7 @@ func (app *App) verify(mainCtx rx.Context, file *DataFile) int {
 			return exitCodeCanceled
 		}
 
-		return exitCodeChecksumFailed
+		return exitCodeVerificationFailed
 	}
 
 	oldCompleteSize := completeSize
@@ -1845,13 +1730,6 @@ func (app *App) verify(mainCtx rx.Context, file *DataFile) int {
 		println(`Consider run "resume verify --fix" to mark corrupted parts as not downloaded.`)
 
 		return exitCodeCorruptionDetected
-	}
-
-	for hashCode, digest := range digests {
-		if hashCode != hex.EncodeToString(digest.Hash.Sum(nil)) {
-			vs.Error(fmt.Errorf("BAD: %v mismatched", digest.Name))
-			return exitCodeChecksumMismatched
-		}
 	}
 
 	if app.Autoremove && !app.verifyOnly {
@@ -1931,13 +1809,6 @@ func (app *App) status(file *DataFile, writer io.Writer) {
 
 	if len(items) > 0 {
 		fmt.Fprintln(writer, "Incomplete(MiB):", strings.Join(items, ","))
-	}
-
-	for _, h := range supportedHashMethods {
-		hashCode := h.Get(file)
-		if hashCode != "" {
-			fmt.Fprintln(writer, h.Name+":", hashCode)
-		}
 	}
 
 	if entityTag := file.EntityTag(); entityTag != "" {
