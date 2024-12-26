@@ -1,7 +1,7 @@
+github.com/b97tsk/async v0.1.1 h1:0rfkkmfMZME0dAoEZWZiN2r5s8okYpfgqhHfycRUo8M=
+github.com/b97tsk/async v0.1.1/go.mod h1:gunBlvzv2eXkZJd8sbeE4NkGY7cmtwoa4BQsnPt2T6Q=
 github.com/b97tsk/intervals v0.4.0 h1:iEKnTAgvE3bKXQKWNurdnGUz23TBUZ8Kh0G+JeYnE+w=
 github.com/b97tsk/intervals v0.4.0/go.mod h1:CF/oCS3HIIXVhJYXcJHwSjuzE4hkvHmY37ziMwiU9yQ=
-github.com/b97tsk/rx v0.10.0 h1:Lvb2tVk3WIFcZHpupJcu+TdVyjVEAXGZuat2nR41AFs=
-github.com/b97tsk/rx v0.10.0/go.mod h1:XAHZHcZYSzqOsdnEWFFn6qMgxip4R4CUtn8kKSG0zMk=
 github.com/cpuguy83/go-md2man/v2 v2.0.4/go.mod h1:tgQtvFlXSQOSOSIRvRPT7W67SCa46tRHOmNcaadrF8o=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

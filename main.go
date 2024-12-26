@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,92 +26,15 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/b97tsk/async"
 	"github.com/b97tsk/intervals"
 	"github.com/b97tsk/intervals/elems"
-	"github.com/b97tsk/rx"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"golang.org/x/net/publicsuffix"
 	"golang.org/x/time/rate"
 	"gopkg.in/yaml.v3"
 )
-
-const (
-	readBufferSize = 8192
-	updateInterval = 1500 * time.Millisecond
-	reportInterval = 10 * time.Minute
-)
-
-const (
-	exitCodeOK                   = 0
-	exitCodeFatal                = 1
-	exitCodeCanceled             = 2
-	exitCodeIncomplete           = 3
-	exitCodeURLDeficient         = 4
-	exitCodeVerificationFailed   = 5
-	_                            = 6
-	exitCodeCorruptionDetected   = 7
-	exitCodeOutputFileExists     = 8
-	exitCodeOpenDataFileFailed   = 9
-	exitCodeLoadHashFileFailed   = 10
-	exitCodeLoadConfigFileFailed = 11
-	exitCodeLoadCookieFileFailed = 12
-	exitCodeTruncateFailed       = 13
-	exitCodeSyncFailed           = 14
-)
-
-type App struct {
-	Configuration
-	workdir        string
-	conffile       string
-	noUserConfig   bool
-	showStatus     bool
-	showConfig     bool
-	verifyOnly     bool
-	fixCorrupted   bool
-	streamToStdout bool
-	streamOffset   atomic.Int64
-	canRequest     chan struct{}
-	rateLimiter    *rate.Limiter
-	minDesiredRate int64
-	retryCount     uint
-	retryForever   bool
-}
-
-type Configuration struct {
-	Alloc                 bool          `mapstructure:"alloc" yaml:"alloc"`
-	Autoremove            bool          `mapstructure:"autoremove" yaml:"autoremove"`
-	Connections           uint          `mapstructure:"connections" yaml:"connections"`
-	CookieFile            string        `mapstructure:"cookie" yaml:"cookie"`
-	DisableKeepAlives     bool          `mapstructure:"disable-keep-alives" yaml:"disable-keep-alives"`
-	Interval              time.Duration `mapstructure:"interval" yaml:"interval"`
-	KeepAlive             time.Duration `mapstructure:"keep-alive" yaml:"keep-alive"`
-	LimitRate             string        `mapstructure:"limit-rate" yaml:"limit-rate"`
-	ListenAddress         string        `mapstructure:"listen" yaml:"listen"`
-	MaxSplitSize          uint          `mapstructure:"max-split" yaml:"max-split"`
-	MinDesiredRate        string        `mapstructure:"min-desired-rate" yaml:"min-desired-rate"`
-	MinSplitSize          uint          `mapstructure:"min-split" yaml:"min-split"`
-	OutputFile            string        `mapstructure:"output" yaml:"output"`
-	Parallel              uint          `mapstructure:"parallel" yaml:"parallel"`
-	Proxy                 string        `mapstructure:"proxy" yaml:"proxy"`
-	Range                 string        `mapstructure:"range" yaml:"range"`
-	ReadTimeout           time.Duration `mapstructure:"read-timeout" yaml:"read-timeout"`
-	Referer               string        `mapstructure:"referer" yaml:"referer"`
-	ResponseHeaderTimeout time.Duration `mapstructure:"response-header-timeout" yaml:"response-header-timeout"`
-	SkipETag              bool          `mapstructure:"skip-etag" yaml:"skip-etag"`
-	SkipLastModified      bool          `mapstructure:"skip-last-modified" yaml:"skip-last-modified"`
-	StreamCache           uint          `mapstructure:"stream-cache" yaml:"stream-cache"`
-	StreamRate            uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
-	SyncPeriod            time.Duration `mapstructure:"sync-period" yaml:"sync-period"`
-	Timeout               time.Duration `mapstructure:"timeout" yaml:"timeout"`
-	TimeoutIntolerant     bool          `mapstructure:"timeout-intolerant" yaml:"timeout-intolerant"`
-	TLSHandshakeTimeout   time.Duration `mapstructure:"tls-handshake-timeout" yaml:"tls-handshake-timeout"`
-	Truncate              bool          `mapstructure:"truncate" yaml:"truncate"`
-	URL                   string        `mapstructure:"url" yaml:"url"`
-	UserAgent             string        `mapstructure:"user-agent" yaml:"user-agent"`
-	Verbose               bool          `mapstructure:"verbose" yaml:"verbose"`
-	Verify                bool          `mapstructure:"verify" yaml:"verify"`
-}
 
 func main() {
 	var app App
@@ -220,6 +144,80 @@ func main() {
 	rootCmd.AddCommand(verifyCmd)
 
 	_ = rootCmd.Execute()
+}
+
+type Configuration struct {
+	Alloc                 bool          `mapstructure:"alloc" yaml:"alloc"`
+	Autoremove            bool          `mapstructure:"autoremove" yaml:"autoremove"`
+	Connections           uint          `mapstructure:"connections" yaml:"connections"`
+	CookieFile            string        `mapstructure:"cookie" yaml:"cookie"`
+	DisableKeepAlives     bool          `mapstructure:"disable-keep-alives" yaml:"disable-keep-alives"`
+	Interval              time.Duration `mapstructure:"interval" yaml:"interval"`
+	KeepAlive             time.Duration `mapstructure:"keep-alive" yaml:"keep-alive"`
+	LimitRate             string        `mapstructure:"limit-rate" yaml:"limit-rate"`
+	ListenAddress         string        `mapstructure:"listen" yaml:"listen"`
+	MaxSplitSize          uint          `mapstructure:"max-split" yaml:"max-split"`
+	MinDesiredRate        string        `mapstructure:"min-desired-rate" yaml:"min-desired-rate"`
+	MinSplitSize          uint          `mapstructure:"min-split" yaml:"min-split"`
+	OutputFile            string        `mapstructure:"output" yaml:"output"`
+	Parallel              uint          `mapstructure:"parallel" yaml:"parallel"`
+	Proxy                 string        `mapstructure:"proxy" yaml:"proxy"`
+	Range                 string        `mapstructure:"range" yaml:"range"`
+	ReadTimeout           time.Duration `mapstructure:"read-timeout" yaml:"read-timeout"`
+	Referer               string        `mapstructure:"referer" yaml:"referer"`
+	ResponseHeaderTimeout time.Duration `mapstructure:"response-header-timeout" yaml:"response-header-timeout"`
+	SkipETag              bool          `mapstructure:"skip-etag" yaml:"skip-etag"`
+	SkipLastModified      bool          `mapstructure:"skip-last-modified" yaml:"skip-last-modified"`
+	StreamCache           uint          `mapstructure:"stream-cache" yaml:"stream-cache"`
+	StreamRate            uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
+	SyncPeriod            time.Duration `mapstructure:"sync-period" yaml:"sync-period"`
+	Timeout               time.Duration `mapstructure:"timeout" yaml:"timeout"`
+	TimeoutIntolerant     bool          `mapstructure:"timeout-intolerant" yaml:"timeout-intolerant"`
+	TLSHandshakeTimeout   time.Duration `mapstructure:"tls-handshake-timeout" yaml:"tls-handshake-timeout"`
+	Truncate              bool          `mapstructure:"truncate" yaml:"truncate"`
+	URL                   string        `mapstructure:"url" yaml:"url"`
+	UserAgent             string        `mapstructure:"user-agent" yaml:"user-agent"`
+	Verbose               bool          `mapstructure:"verbose" yaml:"verbose"`
+	Verify                bool          `mapstructure:"verify" yaml:"verify"`
+}
+
+type App struct {
+	Configuration
+	workdir        string
+	conffile       string
+	noUserConfig   bool
+	showStatus     bool
+	showConfig     bool
+	verifyOnly     bool
+	fixCorrupted   bool
+	streamToStdout bool
+	minDesiredRate int64
+	retryCount     uint
+	retryForever   bool
+
+	file         *DataFile
+	client       *http.Client
+	canRequest   <-chan struct{}
+	rateLimiter  *rate.Limiter
+	streamOffset atomic.Int64
+
+	dl struct {
+		sync.WaitGroup
+		async.Executor
+	}
+
+	fws struct {
+		sync.WaitGroup
+		async.Executor
+	}
+
+	buf struct {
+		sync.Pool
+		sem chan struct{}
+	}
+
+	statusLine       string
+	statusLineBuffer bytes.Buffer
 }
 
 func (app *App) Main(cmd *cobra.Command, args []string) int {
@@ -396,34 +394,34 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		return exitCodeOpenDataFileFailed
 	}
 
-	file, err := openDataFile(filename)
+	app.file, err = openDataFile(filename)
 	if err != nil {
 		println(err)
 		return exitCodeOpenDataFileFailed
 	}
 
 	defer func() {
-		err := file.Close()
+		err := app.file.Close()
 		if err != nil {
 			println(err)
 		}
 
-		completeSize := file.CompleteSize()
+		completeSize := app.file.CompleteSize()
 		if completeSize == 0 && !fileexists {
 			os.Remove(filename)
-			os.Remove(file.HashFile())
+			os.Remove(app.file.HashFile())
 		}
 	}()
 
 	if fileexists {
-		if err := file.LoadHashFile(); err != nil {
+		if err := app.file.LoadHashFile(); err != nil {
 			if os.IsNotExist(err) {
 				filename := filename
 				if !filepath.IsAbs(filename) {
 					filename = filepath.Join(app.workdir, filename)
 				}
 
-				println("file already exists:", filename)
+				println("file exists:", filename)
 
 				return exitCodeOutputFileExists
 			}
@@ -435,7 +433,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	}
 
 	if app.showStatus {
-		app.status(file, os.Stdout)
+		app.status(os.Stdout)
 		return exitCodeOK
 	}
 
@@ -487,30 +485,16 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}
 
 		if len(s) > 0 {
-			file.SetRange(s)
+			app.file.SetRange(s)
 		}
 	}
 
-	mainCtx, mainCancel := rx.NewBackgroundContext().WithCancel()
-	defer mainCancel()
-
-	mainDone := mainCtx.Done()
-
-	interrupt := make(chan os.Signal, 1)
-	defer signal.Stop(interrupt)
-
-	signal.Notify(interrupt, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		select {
-		case <-interrupt:
-			mainCancel()
-		case <-mainDone:
-		}
-	}()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	done := ctx.Done()
+	defer stop()
 
 	if app.verifyOnly {
-		return app.verify(mainCtx, file)
+		return app.verify(ctx)
 	}
 
 	var (
@@ -547,22 +531,22 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 			for {
 				select {
-				case <-mainDone:
+				case <-done:
 					return
 				case <-streamTicker.C:
-					if n, err := file.ReadAt(streamBuffer, streamOffset); err == nil {
+					if n, err := app.file.ReadAt(streamBuffer, streamOffset); err == nil {
 						streamOffset += int64(n)
 						app.streamOffset.Store(streamOffset)
 
 						if _, err := os.Stdout.Write(streamBuffer[:n]); err != nil {
-							mainCancel() // Exiting.
+							stop() // Exiting.
 							return
 						}
 					}
 				case <-streamRest:
-					contentSize := file.ContentSize()
+					contentSize := app.file.ContentSize()
 					for streamOffset < contentSize {
-						if n, err := file.ReadAt(streamBuffer, streamOffset); err == nil {
+						if n, err := app.file.ReadAt(streamBuffer, streamOffset); err == nil {
 							streamOffset += int64(n)
 
 							if _, err := os.Stdout.Write(streamBuffer[:n]); err != nil {
@@ -572,7 +556,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 							break
 						}
 						select {
-						case <-mainDone:
+						case <-done:
 							return
 						default:
 						}
@@ -593,7 +577,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 		exitHandler := http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
-				mainCancel()
+				stop()
 			},
 		)
 		http.Handle("/exit", exitHandler)
@@ -601,51 +585,32 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 		http.Handle("/status", http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
-				app.status(file, w)
+				app.status(w)
 			},
 		))
 
-		streamCounter := rx.MulticastBuffer[int](1)
-		streamCounter.Next(0)
-
-		streamNotifier := rx.Unicast[int]()
-
-		rx.Pipe1(
-			streamNotifier.Observable,
-			rx.Scan(0, func(a, b int) int { return a + b }),
-		).Subscribe(
-			rx.NewBackgroundContext(),
-			streamCounter.Observer,
-		)
-
 		http.Handle("/stream", http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
-				if file.ContentSize() == 0 {
+				if app.file.ContentSize() == 0 {
 					http.Error(w, "download not started", http.StatusServiceUnavailable)
 					return
 				}
 
-				streamNotifier.Next(1)
-				defer streamNotifier.Next(-1)
-
-				done := r.Context().Done()
 				f := func(p []byte, off int64) (n int, err error) {
-					n, err = file.ReadAt(p, off)
+					n, err = app.file.ReadAt(p, off)
 
 					for err == ErrIncomplete {
 						select {
 						case <-done:
 							return
-						case <-mainDone:
-							return
 						case <-time.After(time.Second):
-							n, err = file.ReadAt(p, off)
+							n, err = app.file.ReadAt(p, off)
 						}
 					}
 
 					return
 				}
-				content := io.NewSectionReader(ReaderAtFunc(f), 0, file.ContentSize())
+				content := io.NewSectionReader(ReaderAtFunc(f), 0, app.file.ContentSize())
 				http.ServeContent(w, r, filepath.Base(filename), time.Time{}, content)
 			},
 		))
@@ -653,61 +618,17 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		srv := &http.Server{}
 
 		defer func() {
-			if streamCounter.BlockingFirst(mainCtx).Value > 0 {
-				// Wait until `streamCounter` remains zero for N seconds.
-				const N = 5
-
-				println("waiting for remote streaming to complete...")
-
-				_ = rx.Pipe3(
-					streamCounter.Observable,
-					rx.Filter(func(v int) bool { return v == 0 }),
-					rx.SwitchMapTo[int](
-						rx.Pipe2(
-							rx.Race(
-								rx.Pipe1(
-									rx.Timer(N*time.Second),
-									rx.MapTo[time.Time](-1),
-								),
-								rx.Pipe2(
-									streamCounter.Observable,
-									rx.Enumerate[int](0),
-									rx.FilterMap(
-										func(p rx.Pair[int, int]) (int, bool) {
-											// Exclude the first value that is zero.
-											if p.Key == 0 && p.Value == 0 {
-												return 0, false
-											}
-
-											return p.Value, true
-										},
-									),
-								),
-							),
-							rx.Take[int](1),
-							rx.Filter(
-								func(v int) bool {
-									// Check if this is the value from `rx.Timer`.
-									return v == -1
-								},
-							),
-						),
-					),
-					rx.Take[int](1),
-				).BlockingSingle(mainCtx)
-			}
-
 			timeout := make(chan bool, 1)
 			timeout <- true
 
-			time.AfterFunc(time.Second, func() {
+			time.AfterFunc(updateInterval, func() {
 				if <-timeout {
 					println("shuting down remote control server...")
 					close(timeout)
 				}
 			})
 
-			_ = srv.Shutdown(mainCtx.Context)
+			_ = srv.Shutdown(ctx)
 
 			if <-timeout {
 				close(timeout)
@@ -717,7 +638,8 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		go func() { _ = srv.Serve(l) }()
 	}
 
-	app.canRequest = make(chan struct{})
+	canRequest := make(chan struct{})
+	app.canRequest = canRequest
 
 	go func() {
 		var (
@@ -731,17 +653,16 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			}
 		}()
 
-		canRequest := app.canRequest
+		cr := canRequest
 
 		for {
 			select {
-			case <-mainDone:
+			case <-done:
 				return
 			case <-timerC:
-				canRequest = app.canRequest
-			case canRequest <- struct{}{}:
-				canRequest = nil
-
+				cr = canRequest
+			case cr <- struct{}{}:
+				cr = nil
 				if timer == nil {
 					timer = time.NewTimer(app.Interval)
 					timerC = timer.C
@@ -758,7 +679,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		DualStack: true,
 	}
 
-	client := &http.Client{
+	app.client = &http.Client{
 		Transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
 			DialContext:           dialer.DialContext, // Disables HTTP/2.
@@ -773,12 +694,31 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		Jar: cookieJar,
 	}
 
+	app.dl.Autorun(func() {
+		app.dl.Add(1)
+		go func() {
+			defer app.dl.Done()
+			app.dl.Run()
+		}()
+	})
+
+	app.fws.Autorun(func() {
+		app.fws.Add(1)
+		go func() {
+			defer app.fws.Done()
+			app.fws.Run()
+		}()
+	})
+
+	app.buf.New = func() any { return new(readWriteBuffer) }
+	app.buf.sem = make(chan struct{}, min(max(app.Connections*8, 32), 256))
+
 	for i := uint(0); i <= app.retryCount || app.retryForever; i++ {
-		contentSize := file.ContentSize()
-		completeSize := file.CompleteSize()
+		contentSize := app.file.ContentSize()
+		completeSize := app.file.CompleteSize()
 
 		if contentSize == 0 || completeSize != contentSize {
-			if exitCode := app.dl(mainCtx, file, client); exitCode != exitCodeOK {
+			if exitCode := app.download(ctx); exitCode != exitCodeOK {
 				if exitCode == exitCodeIncomplete {
 					continue
 				}
@@ -786,24 +726,11 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				return exitCode
 			}
 
-			contentSize = file.ContentSize()
-			completeSize = file.CompleteSize()
+			contentSize = app.file.ContentSize()
+			completeSize = app.file.CompleteSize()
 
 			if completeSize < contentSize {
 				return exitCodeOK // Successfully downloaded specified range.
-			}
-		}
-
-		if app.streamToStdout {
-			select {
-			case <-streamRest:
-			default:
-				close(streamRest)
-				select {
-				case <-mainDone:
-					return exitCodeCanceled
-				case <-streamDone:
-				}
 			}
 		}
 
@@ -811,897 +738,940 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			return exitCodeOK
 		}
 
-		return app.verify(mainCtx, file)
+		return app.verify(ctx)
 	}
 
 	return exitCodeIncomplete
 }
 
-func (app *App) dl(mainCtx rx.Context, file *DataFile, client *http.Client) int {
-	type (
-		UpdateTimer struct{}
-		ReportTimer struct{}
-		SyncTimer   struct{}
-
-		CancelMessage     struct{}
-		CanRequestMessage struct{}
-		QuitMessage       struct{}
-
-		ResponseMessage struct {
-			Tag any
-			URL string
-		}
-		ProgressMessage struct {
-			Tag any
-			N   int
-		}
-		CompleteMessage struct {
-			Tag       any
-			Err       error
-			Fatal     int
-			Responsed bool
-		}
-
-		UpdateMessage struct {
-			Connections     int
-			DownloadRate    int64
-			OngoingRequests int
-			WaitStreaming   bool
-		}
-		ReportMessage struct {
-			TimeUsed  time.Duration
-			TotalRecv int64
-		}
+func (app *App) download(ctx context.Context) int {
+	var (
+		firstRecvTime    time.Time
+		totalRecv        int64
+		requestPermitted async.State[bool]
+		numRequest       async.State[uint]
+		numResponse      async.State[uint]
+		errorCount       async.State[uint]
+		exitCode         async.State[int]
+		waitStreaming    bool
 	)
 
-	var writes rx.Observer[func()]
+	var alloc allocState
 
-	{
-		ctx := rx.NewBackgroundContext().WithNewWaitGroup()
+	var syn syncState
 
-		defer func() {
-			writes.Complete()
-			ctx.Wait()
-			_ = file.Sync()
-		}()
+	currentURL := app.URL
+	maxConnections := app.Connections
 
-		rx.Pipe1(
-			rx.NewObservable(
-				func(c rx.Context, o rx.Observer[func()]) {
-					writes = o // OnBackpressureCongest is safe for concurrent use.
-				},
-			),
-			rx.OnBackpressureCongest[func()](int(app.Connections*4)),
-		).Subscribe(ctx, func(n rx.Notification[func()]) {
-			if n.Kind == rx.KindNext {
-				n.Value()
+	re1 := regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+)$`)
+	re2 := regexp.MustCompile(`^bytes \*/(\d+)$`)
+	errConnTimeout := errors.New("connection timeout")
+	errReadTimeout := errors.New("read timeout")
+	errTryAgain := errors.New("try again")
+
+	isTimeoutError := func(err error) bool {
+		return errors.Is(err, errConnTimeout) || errors.Is(err, errReadTimeout)
+	}
+
+	const MaxHistory = 5
+
+	type Download struct {
+		CreateTime time.Time
+		Global     bool
+		Increment  struct {
+			History []int64
+			Current int64
+		}
+		Rate int64
+	}
+
+	newDownload := func(global bool) *Download {
+		return &Download{
+			CreateTime: time.Now(),
+			Global:     global,
+		}
+	}
+
+	ema := func(a, b int64) int64 {
+		return (4*a + b) / 5
+	}
+
+	sum := func(s []int64) int64 {
+		var tot int64
+		for _, v := range s {
+			tot += v
+		}
+		return tot
+	}
+
+	avg := func(s []int64) int64 {
+		return sum(s) / int64(len(s))
+	}
+
+	updateRate := func(d *Download) {
+		di := &d.Increment
+		newIncrement := di.Current
+		di.Current = 0
+
+		if newIncrement == 0 && len(di.History) == 0 {
+			return
+		}
+
+		if newIncrement == 0 && d.Global && numResponse.Get() == 0 {
+			di.History = di.History[:0]
+			d.Rate = 0
+			return
+		}
+
+		if len(di.History) < MaxHistory {
+			di.History = append(di.History, newIncrement)
+			d.Rate = avg(di.History)
+			return
+		}
+
+		di.History = slices.Delete(di.History, 0, 1)
+		di.History = append(di.History, newIncrement)
+		d.Rate = ema(d.Rate, avg(di.History))
+	}
+
+	gd := newDownload(true)
+
+	downloads := make(map[*Download]context.CancelCauseFunc)
+
+	var lowRateKill func()
+
+	if app.minDesiredRate > 0 {
+		errLowRate := errors.New("low rate")
+
+		aboutToComplete := func() bool {
+			rate := float64(gd.Rate) * (float64(time.Second) / float64(updateInterval))
+			etaSeconds := float64(app.file.IncompleteSize()) / rate
+			return etaSeconds < 30
+		}
+
+		n := 0
+
+		lowRateKill = func() {
+			ok := numRequest.Get() == 0 &&
+				(numResponse.Get() == maxConnections || !app.file.HasIncomplete()) &&
+				gd.Rate < app.minDesiredRate && !aboutToComplete()
+			if !ok {
+				n = 0
+				return
 			}
-		})
+
+			const N = 5
+			if n < N {
+				n++
+			}
+
+			if n == N {
+				for d, cancel := range downloads {
+					if d.Rate <= gd.Rate && time.Since(d.CreateTime) >= N*updateInterval {
+						cancel(errLowRate)
+						delete(downloads, d)
+					}
+				}
+			}
+		}
 	}
 
-	type Buffer [readBufferSize]byte
+	updateCount := 0
 
-	bufferPool := sync.Pool{
-		New: func() any { return new(Buffer) },
+	updateStatusLine := func() {
+		updateCount++
+
+		contentSize := app.file.ContentSize()
+		completeSize := app.file.CompleteSize()
+		progress := int(float64(completeSize) / float64(contentSize) * 100)
+
+		b := &app.statusLineBuffer
+		b.Reset()
+		b.WriteString(time.Now().Format("15:04:05"))
+		b.WriteString(fmt.Sprint(" ", strings.TrimSuffix(formatBytes(completeSize), "i")))
+		b.WriteString(fmt.Sprint("/", strings.TrimSuffix(formatBytes(contentSize), "i")))
+		b.WriteString(fmt.Sprint(" ", progress, "%"))
+
+		haveTrailing := waitStreaming || alloc.InProgress ||
+			syn.InProgress && time.Since(syn.StartTime) >= updateInterval
+
+		connections := numRequest.Get() + numResponse.Get()
+		canHaveTrailing := connections == 0 || updateCount%2 == 0
+
+		if connections != 0 {
+			b.WriteString(fmt.Sprint(" CN:", numResponse.Get()))
+			if numRequest.Get() != 0 {
+				b.WriteString(fmt.Sprintf("(%v)", numRequest.Get()))
+			}
+			if !haveTrailing || !canHaveTrailing {
+				rate := int64(float64(gd.Rate) * (float64(time.Second) / float64(updateInterval)))
+				if rate != 0 {
+					etaSeconds := int64(math.Ceil(float64(app.file.IncompleteSize()) / float64(rate)))
+					b.WriteString(fmt.Sprint(" DL:", strings.TrimSuffix(formatBytes(rate), "i")))
+					b.WriteString(fmt.Sprint(" ETA:", formatETA(time.Duration(etaSeconds)*time.Second)))
+				}
+				canHaveTrailing = rate == 0
+			}
+		}
+
+		if haveTrailing && canHaveTrailing {
+			switch {
+			case waitStreaming:
+				b.WriteString(" streaming...")
+			case alloc.InProgress:
+				b.WriteString(fmt.Sprintf(" allocating...%v%%", alloc.Progress.Load()))
+			case syn.InProgress && time.Since(syn.StartTime) >= updateInterval:
+				b.WriteString(" sync...")
+			}
+		}
+
+		app.setStatusLine(b.String())
 	}
 
-	readAndWrite := func(body io.Reader, offset, size int64) (n int, err error) {
-		if size == 0 {
-			return 0, io.EOF
-		}
+	reportProgress := func() {
+		timeUsed := max(time.Since(firstRecvTime), time.Second)
+		app.printMessage(fmt.Sprintf(
+			"recv %vB in %v, %vB/s, %v%% complete",
+			formatBytes(totalRecv),
+			formatTimeUsed(timeUsed),
+			formatBytes(int64(float64(totalRecv)/timeUsed.Seconds())),
+			int(float64(app.file.CompleteSize())/float64(app.file.ContentSize())*100),
+		))
+	}
 
-		if size > readBufferSize {
-			size = readBufferSize
-		}
+	end := make(chan struct{})
 
-		b := bufferPool.Get().(*Buffer)
-		n, err = body.Read((*b)[:size])
-		if n > 0 {
-			writes.Next(func() {
-				_, _ = file.WriteAt((*b)[:n], offset)
-				bufferPool.Put(b)
+	startTicker := func(d time.Duration, p string, op async.Operation) {
+		app.dl.Add(1)
+		go func() {
+			defer app.dl.Done()
+
+			tk := time.NewTicker(d)
+			defer tk.Stop()
+
+			for {
+				select {
+				case <-end:
+					return
+				case <-tk.C:
+					app.dl.Spawn(p, op)
+				}
+			}
+		}()
+	}
+
+	var startUpdateTimer async.State[bool]
+
+	if app.file.ContentSize() > 0 {
+		startUpdateTimer.Set(true)
+	}
+
+	app.dl.Spawn("update", func(t *async.Task) async.Result {
+		if !startUpdateTimer.Get() {
+			return t.Await(&startUpdateTimer)
+		}
+		startTicker(updateInterval, t.Path(), async.Do(func() {
+			for d := range downloads {
+				updateRate(d)
+			}
+			updateRate(gd)
+			updateStatusLine()
+			if lowRateKill != nil {
+				lowRateKill()
+			}
+		}))
+		return t.End()
+	})
+
+	onResponse := func(url string) {
+		numRequest.Set(numRequest.Get() - 1)
+		numResponse.Set(numResponse.Get() + 1)
+		errorCount.Set(0)
+		currentURL = url // Save the redirected one if redirection happens.
+		maxConnections = app.Connections
+		if firstRecvTime.IsZero() {
+			firstRecvTime = time.Now()
+			startUpdateTimer.Set(true)
+			startTicker(reportInterval, "report", async.Do(reportProgress))
+			startTicker(max(app.SyncPeriod, time.Minute), "sync", func(t *async.Task) async.Result {
+				if syn.InProgress {
+					return t.End()
+				}
+				return t.Switch(app.sync(&syn, false, false))
 			})
+		}
+	}
+
+	onProgress := func(d *Download, n int64) {
+		totalRecv += n
+		d.Increment.Current += n
+		gd.Increment.Current += n
+	}
+
+	onComplete := func(d *Download, err error, fatal int, responsed bool) {
+		delete(downloads, d)
+
+		if !responsed {
+			numRequest.Set(numRequest.Get() - 1)
 		} else {
-			bufferPool.Put(b)
+			numResponse.Set(numResponse.Get() - 1)
 		}
 
+		switch e := err.(type) {
+		case *net.OpError:
+			err = e.Err
+		case *url.Error:
+			err = e.Err
+		}
+
+		switch {
+		case err == nil:
+		case err == errTryAgain:
+		case errors.Is(err, context.Canceled):
+		case responsed && !app.Verbose:
+		default:
+			if fatal != 0 {
+				exitCode.Set(fatal)
+			}
+
+			verbose := app.Verbose || fatal != 0
+
+			if !responsed && (!isTimeoutError(err) || app.TimeoutIntolerant) {
+				errorCount.Set(errorCount.Get() + 1)
+				if numResponse.Get() == 0 {
+					verbose = true
+				}
+			}
+
+			if verbose {
+				app.printMessage(err)
+			}
+		}
+	}
+
+	app.dl.Spawn("main", async.Chain(
+		func(t *async.Task) async.Result {
+			if numRequest.Get()+numResponse.Get() == 0 && !app.file.HasIncomplete() {
+				exitCode.Set(exitCodeOK)
+				return t.End()
+			}
+
+			t.Watch(&numRequest, &numResponse)
+
+			if exitCode.Get() != 0 {
+				if numRequest.Get()+numResponse.Get() == 0 {
+					return t.End()
+				}
+				return t.Await()
+			}
+
+			t.Watch(&exitCode)
+
+			if errorCount.Get() != 0 {
+				if currentURL == app.URL { // No redirection.
+					if numRequest.Get() != 0 {
+						return t.Await()
+					}
+					if numResponse.Get() == 0 { // Failed to start any download.
+						exitCode.Set(exitCodeIncomplete)
+						return t.End() // Giving up.
+					}
+					errorCount.Set(0)
+					maxConnections = numResponse.Get() // Limit the number of parallel downloads.
+					return t.Await()
+				}
+				errorCount.Set(0)
+				currentURL = app.URL
+				maxConnections = app.Connections
+			}
+
+			t.Watch(&errorCount)
+
+			if !requestPermitted.Get() {
+				return t.Await(&requestPermitted)
+			}
+
+			goodToGo := numRequest.Get() < app.Parallel &&
+				numRequest.Get()+numResponse.Get() < maxConnections &&
+				(numRequest.Get() == 0 || app.file.ContentSize() > 0) &&
+				ctx.Err() == nil
+			if !goodToGo {
+				return t.Await()
+			}
+
+			offset, size := app.takeIncomplete()
+			if size == 0 {
+				return t.Await()
+			}
+
+			if app.streamToStdout && app.StreamCache > 0 {
+				streamCacheSize := int64(app.StreamCache) * 1024 * 1024
+				streamOffset := app.streamOffset.Load()
+				if offset >= streamOffset+streamCacheSize {
+					app.returnIncomplete(offset, size)
+					waitStreaming = true
+					return t.Await(&requestPermitted) // Recheck periodically.
+				}
+				waitStreaming = false
+			}
+
+			requestPermitted.Set(false)
+			numRequest.Set(numRequest.Get() + 1)
+
+			reqCtx, reqCancel := context.WithCancelCause(ctx)
+
+			d := newDownload(false)
+			downloads[d] = reqCancel
+
+			app.dl.Add(1)
+			go func() {
+				defer app.dl.Done()
+
+				var (
+					err       error
+					fatal     int
+					responsed bool
+				)
+
+				defer func() {
+					if responsed {
+						app.waitWriteDone()
+					}
+
+					if err != nil && errors.Is(err, context.Canceled) {
+						if ctxErr := reqCtx.Err(); ctxErr != nil {
+							if cause := context.Cause(reqCtx); cause != ctxErr {
+								err = cause
+							}
+						}
+					}
+
+					app.returnIncomplete(offset, size)
+					reqCancel(nil)
+
+					app.dl.Spawn("complete", async.Do(func() {
+						onComplete(d, err, fatal, responsed)
+					}))
+				}()
+
+				req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, currentURL, nil)
+				if err != nil {
+					return
+				}
+
+				req.Header.Set("Range", fmt.Sprintf("bytes=%v-%v", offset, offset+size-1))
+
+				if app.Referer != "" {
+					req.Header.Set("Referer", app.Referer)
+				}
+
+				req.Header.Set("User-Agent", app.UserAgent)
+
+				reqTimer := time.AfterFunc(app.Timeout, func() { reqCancel(errConnTimeout) })
+				defer reqTimer.Stop()
+
+				resp, err := app.client.Do(req)
+				if err != nil {
+					return
+				}
+
+				defer resp.Body.Close()
+
+				if !reqTimer.Stop() {
+					err = errTryAgain
+					return
+				}
+
+				var contentSize int64
+
+				switch resp.StatusCode {
+				case http.StatusOK:
+					if offset > 0 {
+						err = errors.New("fatal: this server does not support partial requests")
+						fatal = exitCodeFatal
+						return
+					}
+
+					contentSize = resp.ContentLength
+				case http.StatusPartialContent:
+					contentRange := resp.Header.Get("Content-Range")
+					if contentRange == "" {
+						err = errors.New("fatal: Content-Range not found in response header")
+						fatal = exitCodeFatal
+						return
+					}
+
+					slice := re1.FindStringSubmatch(contentRange)
+					if slice == nil {
+						err = fmt.Errorf("fatal: Content-Range unrecognized: %v", contentRange)
+						fatal = exitCodeFatal
+						return
+					}
+
+					contentSize, _ = strconv.ParseInt(slice[3], 10, 64)
+				case http.StatusRequestedRangeNotSatisfiable:
+					contentRange := resp.Header.Get("Content-Range")
+					if contentRange != "" && app.file.ContentSize() == 0 {
+						slice := re2.FindStringSubmatch(contentRange)
+						if slice != nil {
+							contentSize, _ = strconv.ParseInt(slice[1], 10, 64)
+							if contentSize > 0 {
+								app.file.SetContentSize(contentSize)
+								err = errTryAgain
+								return
+							}
+						}
+					}
+					err = errors.New("fatal: " + resp.Status)
+					fatal = exitCodeFatal
+					return
+				default:
+					err = errors.New(resp.Status)
+					return
+				}
+
+				if contentSize <= 0 {
+					err = errors.New("fatal: Content-Length unknown or zero")
+					fatal = exitCodeFatal
+					return
+				}
+
+				shouldAlloc := false
+				shouldSync := false
+
+				switch app.file.ContentSize() {
+				case contentSize:
+				case 0:
+					app.file.SetContentSize(contentSize)
+					shouldAlloc = app.Alloc
+					shouldSync = true
+				default:
+					err = errors.New("fatal: Content-Length mismatched")
+					fatal = exitCodeFatal
+					return
+				}
+
+				eTag := resp.Header.Get("ETag")
+				if eTag != "" {
+					switch app.file.EntityTag() {
+					case eTag:
+					case "":
+						app.file.SetEntityTag(eTag)
+						shouldSync = true
+					default:
+						if !app.SkipETag {
+							err = errors.New("fatal: ETag mismatched")
+							fatal = exitCodeFatal
+							return
+						}
+					}
+				}
+
+				lastModified := resp.Header.Get("Last-Modified")
+				if lastModified != "" {
+					switch app.file.LastModified() {
+					case lastModified:
+					case "":
+						app.file.SetLastModified(lastModified)
+						shouldSync = true
+					default:
+						if !app.SkipLastModified {
+							err = errors.New("fatal: Last-Modified mismatched")
+							fatal = exitCodeFatal
+							return
+						}
+					}
+				}
+
+				contentDisposition := resp.Header.Get("Content-Disposition")
+				if contentDisposition != "" {
+					_, params, _ := mime.ParseMediaType(contentDisposition)
+					if filename := params["filename"]; filename != "" {
+						if filename != app.file.Filename() {
+							app.file.SetFilename(filename)
+							shouldSync = true
+						}
+					}
+				}
+
+				responsed = true
+
+				url := resp.Request.URL.String()
+				app.dl.Spawn("response", async.Do(func() {
+					onResponse(url)
+				}))
+
+				if shouldAlloc {
+					var allocErr error
+
+					var wg sync.WaitGroup
+
+					wg.Add(1)
+
+					app.dl.Spawn("alloc", async.Chain(
+						app.alloc(ctx, &alloc),
+						async.Do(func() {
+							allocErr = alloc.Error
+							wg.Done()
+						}),
+					))
+
+					wg.Wait()
+
+					err = allocErr
+					if err != nil {
+						fatal = exitCodeFatal
+						return
+					}
+				}
+
+				if app.Truncate {
+					err = app.file.Truncate(contentSize)
+					if err != nil {
+						err = fmt.Errorf("truncate: %w", err)
+						fatal = exitCodeTruncateFailed
+						return
+					}
+				}
+
+				if shouldSync {
+					var synErr error
+
+					var wg sync.WaitGroup
+
+					wg.Add(1)
+
+					app.dl.Spawn("sync", async.Chain(
+						syn.Await(),
+						app.sync(&syn, false, true),
+						async.Do(func() {
+							synErr = syn.Error
+							wg.Done()
+						}),
+					))
+
+					wg.Wait()
+
+					err = synErr
+					if err != nil {
+						fatal = exitCodeSyncFailed
+						return
+					}
+				}
+
+				var increment atomic.Int64
+
+				progress := async.Do(func() {
+					onProgress(d, increment.Swap(0))
+				})
+
+				readTimer := time.AfterFunc(app.ReadTimeout, func() { reqCancel(errReadTimeout) })
+				resetTimer := false
+
+				for {
+					if resetTimer {
+						readTimer.Reset(app.ReadTimeout)
+					}
+
+					var n int
+
+					n, err = app.readAndWrite(resp.Body, offset, size)
+
+					readTimer.Stop()
+					resetTimer = true
+
+					if n > 0 {
+						n64 := int64(n)
+						offset, size = offset+n64, size-n64
+
+						if increment.Add(n64) == n64 {
+							app.dl.Spawn("progress", progress)
+						}
+
+						if err == nil && app.rateLimiter != nil {
+							err = app.rateLimiter.WaitN(reqCtx, n)
+						}
+					}
+
+					if err != nil {
+						if err == io.EOF {
+							err = nil
+							return
+						}
+
+						return
+					}
+				}
+			}()
+
+			return t.Await()
+		},
+		async.Do(func() { close(end) }),
+	))
+
+	app.dl.Add(1)
+	go func() {
+		defer app.dl.Done()
+
+		done := ctx.Done()
+
+		for {
+			select {
+			case <-end:
+				return
+			case <-done:
+				app.dl.Spawn("cancel", async.Do(func() {
+					exitCode.Set(exitCodeCanceled)
+				}))
+				return
+			case <-app.canRequest:
+				app.dl.Spawn("canrequest", async.Do(func() {
+					requestPermitted.Set(true)
+				}))
+			}
+		}
+	}()
+
+	app.dl.Wait()
+
+	if app.statusLine != "" && exitCode.Get() != 0 {
+		app.statusLine = ""
+		println()
+	}
+
+	if totalRecv != 0 {
+		reportProgress()
+	}
+
+	end = make(chan struct{})
+
+	startTicker(updateInterval, "update", async.Do(updateStatusLine))
+
+	app.dl.Spawn("sync", async.Chain(
+		app.sync(&syn, true, false),
+		async.Do(func() { close(end) }),
+	))
+
+	app.dl.Wait()
+
+	if err := syn.Error; err != nil {
+		app.printMessage(err)
+	}
+
+	if app.statusLine != "" {
+		app.statusLine = ""
+		println()
+	}
+
+	return exitCode.Get()
+}
+
+func (app *App) readAndWrite(body io.Reader, offset, size int64) (n int, err error) {
+	if size == 0 {
+		return 0, io.EOF
+	}
+
+	app.buf.sem <- struct{}{}
+
+	b := app.buf.Get().(*readWriteBuffer)
+	n, err = body.Read(b.Data[:min(size, readBufferSize)])
+
+	if n == 0 {
+		app.buf.Put(b)
+		<-app.buf.sem
 		return
 	}
 
-	waitWriteDone := func() {
-		q := make(chan struct{})
-		writes.Next(func() { close(q) })
-		<-q
+	b.N, b.Offset = n, offset
+
+	if b.Op == nil {
+		app, b := app, b
+		b.Op = async.Do(func() {
+			_, _ = app.file.WriteAt(b.Data[:b.N], b.Offset)
+			app.buf.Put(b)
+			<-app.buf.sem
+		})
 	}
 
-	takeIncomplete := func() (offset, size int64) {
-		splitSize := app.MinSplitSize
+	app.fws.Spawn("/", b.Op)
 
-		if incompleteSize := file.IncompleteSize(); incompleteSize > 0 {
-			average := float64(incompleteSize) / float64(app.Connections)
-			splitSize = uint(math.Ceil(average / (1024 * 1024)))
-			switch {
-			case splitSize > app.MaxSplitSize && app.MaxSplitSize > 0:
-				splitSize = app.MaxSplitSize
-			case splitSize < app.MinSplitSize && app.MinSplitSize > 0:
-				splitSize = app.MinSplitSize
-			}
-		}
-
-		return file.TakeIncomplete(int64(splitSize) * 1024 * 1024)
-	}
-
-	returnIncomplete := func(offset, size int64) {
-		file.ReturnIncomplete(offset, size)
-	}
-
-	ctx, cancel := rx.NewBackgroundContext().WithNewWaitGroup().WithCancel()
-
-	onDownloadStarted := rx.Multicast[any]()
-	onUpdateTimer := rx.Multicast[struct{}]()
-
-	defer func() {
-		onDownloadStarted.Unsubscribe()
-		onUpdateTimer.Unsubscribe()
-		cancel()
-		ctx.Wait()
-	}()
-
-	messages := rx.Unicast[any]()
-
-	startUpdateTimer := onDownloadStarted.Observable
-	if file.ContentSize() > 0 {
-		startUpdateTimer = rx.Empty[any]()
-	}
-
-	ob := rx.Pipe2(
-		messages.Observable,
-		rx.OnBackpressureCongest[any](int(app.Connections*4)),
-		rx.MergeWith(
-			rx.Concat(
-				startUpdateTimer,
-				rx.Pipe1(
-					rx.Ticker(updateInterval),
-					rx.MapTo[time.Time, any](UpdateTimer{}),
-				),
-			),
-			rx.Concat(
-				onDownloadStarted.Observable,
-				rx.Pipe1(
-					rx.Ticker(reportInterval),
-					rx.MapTo[time.Time, any](ReportTimer{}),
-				),
-			),
-			rx.Pipe1(
-				rx.Ticker(max(app.SyncPeriod, time.Minute)),
-				rx.MapTo[time.Time, any](SyncTimer{}),
-			),
-			rx.Pipe1(
-				rx.NewObservable(
-					func(c rx.Context, o rx.Observer[any]) {
-						done := c.Done()
-						mainDone := mainCtx.Done()
-						for {
-							select {
-							case <-done:
-								o.Complete()
-								return
-							case <-mainDone:
-								o.Next(CancelMessage{})
-								o.Complete()
-								return
-							case <-app.canRequest:
-								o.Next(CanRequestMessage{})
-							}
-						}
-					},
-				),
-				rx.Go[any](),
-			),
-		),
-	)
-
-	{
-		type DownloadInfo struct {
-			DownloadRate int64 // bytes per updateInterval
-			RecentRecv   int64
-			UpdateCount  int
-		}
-
-		var (
-			connections    uint
-			maxConnections = app.Connections
-		)
-
-		newDownloadInfo := func(ctx rx.Context, global bool) *DownloadInfo {
-			di := &DownloadInfo{}
-
-			rx.Pipe3(
-				onUpdateTimer.Observable,
-				rx.Map(
-					func(struct{}) int64 {
-						v := di.RecentRecv
-						di.RecentRecv = 0
-						di.UpdateCount++
-						return v
-					},
-				),
-				rx.Connect(
-					func(source rx.Observable[int64]) rx.Observable[int64] {
-						const N = 5
-
-						if global {
-							source = rx.Pipe2(
-								source,
-								rx.SkipWhile(func(v int64) bool { return v == 0 }),
-								rx.TakeWhile(func(v int64) bool { return v > 0 || connections > 0 }),
-							)
-						}
-
-						ob := rx.Pipe2(
-							rx.Empty[int64](),
-							rx.MergeWith(
-								rx.Pipe4(
-									source,
-									rx.Scan(0, func(a, b int64) int64 { return a + b }),
-									rx.Enumerate[int64](1),
-									rx.Map(
-										func(p rx.Pair[int, int64]) int64 {
-											// For the first `N * updateInterval`, we average the speed.
-											return p.Value / int64(p.Key)
-										},
-									),
-									rx.Take[int64](N),
-								),
-								rx.Pipe3(
-									source,
-									rx.BufferCount[int64](N).WithStartBufferEvery(1),
-									rx.Map(
-										func(s []int64) int64 {
-											sum := int64(0)
-											for _, v := range s {
-												sum += v
-											}
-											return sum / int64(len(s))
-										},
-									),
-									rx.Scan(-1, func(a, b int64) int64 {
-										if a < 0 {
-											return b
-										}
-										// After `N * updateInterval`, we calculate the speed by using
-										// exponential moving average (EMA).
-										const ia = 5 // Inverse of alpha.
-										return (b + (ia-1)*a) / ia
-									}),
-								),
-							),
-							rx.EndWith[int64](0),
-						)
-
-						if global {
-							ob = rx.Pipe1(ob, rx.RepeatForever[int64]())
-						}
-
-						return ob
-					},
-				),
-				rx.DoOnNext(
-					func(v int64) {
-						di.DownloadRate = v
-					},
-				),
-			).Subscribe(ctx, rx.Noop[int64])
-
-			return di
-		}
-
-		gdi := newDownloadInfo(ctx, true)
-		tags := make(map[any]rx.CancelCauseFunc)
-
-		var postUpdateTimer rx.Observer[struct{}]
-
-		var ongoingRequests uint
-
-		if app.minDesiredRate > 0 {
-			const N = 5
-
-			errLowRate := errors.New("low rate")
-
-			aboutToComplete := func() bool {
-				downloadRate := float64(gdi.DownloadRate) * (float64(time.Second) / float64(updateInterval))
-				etaSeconds := float64(file.IncompleteSize()) / downloadRate
-				return etaSeconds < 30
-			}
-
-			cond := func(struct{}) bool {
-				return ongoingRequests == 0 &&
-					(connections == maxConnections || !file.HasIncomplete()) &&
-					gdi.DownloadRate < app.minDesiredRate && !aboutToComplete()
-			}
-
-			m := rx.Multicast[struct{}]()
-			defer m.Unsubscribe()
-
-			rx.Pipe7(
-				m.Observable,
-				rx.SkipWhile(func(v struct{}) bool { return !cond(v) }),
-				rx.TakeWhile(cond),
-				rx.Take[struct{}](N),
-				rx.Scan(0, func(a int, _ struct{}) int { return a + 1 }),
-				rx.Filter(func(v int) bool { return v == N }),
-				rx.DoOnNext(
-					func(int) {
-						for tag, cancel := range tags {
-							di := tag.(*DownloadInfo)
-							if di.UpdateCount >= N && di.DownloadRate <= gdi.DownloadRate {
-								cancel(errLowRate)
-							}
-						}
-					},
-				),
-				rx.RepeatForever[int](),
-			).Subscribe(ctx, rx.Noop[int])
-
-			postUpdateTimer = m.Observer
-		}
-
-		var (
-			firstRecvTime    time.Time
-			totalRecv        int64
-			requestPermitted bool
-			waitStreaming    bool
-			errorCount       uint
-			fatalCode        int
-		)
-
-		currentURL := app.URL
-
-		re1 := regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+)$`)
-		re2 := regexp.MustCompile(`^bytes \*/(\d+)$`)
-		errConnTimeout := errors.New("connection timeout")
-		errReadTimeout := errors.New("read timeout")
-		errTryAgain := errors.New("try again")
-
-		report := func() rx.Observable[any] {
-			return rx.Just[any](ReportMessage{
-				TimeUsed:  max(time.Since(firstRecvTime), time.Second),
-				TotalRecv: totalRecv,
-			})
-		}
-
-		var canQuit, sentQuitMessage bool
-
-		quit := func(code int) rx.Observable[any] {
-			if !sentQuitMessage {
-				messages.Next(QuitMessage{})
-				messages.Complete()
-				sentQuitMessage = true
-			}
-
-			if !canQuit {
-				return rx.Empty[any]()
-			}
-
-			ob := rx.Throw[any](exitCodeError(code))
-			if totalRecv > 0 {
-				ob = rx.Concat(report(), ob)
-			}
-
-			return ob
-		}
-
-		ob = rx.Pipe1(
-			ob,
-			rx.MergeMap(
-				func(v any) rx.Observable[any] {
-					switch w := v.(type) {
-					case ProgressMessage:
-						firstRecv := totalRecv == 0
-						totalRecv += int64(w.N)
-						if firstRecv {
-							firstRecvTime = time.Now()
-							onDownloadStarted.Complete()
-						}
-						gdi.RecentRecv += int64(w.N)
-						w.Tag.(*DownloadInfo).RecentRecv += int64(w.N)
-						return rx.Empty[any]()
-					case UpdateTimer:
-						onUpdateTimer.Next(struct{}{})
-						if postUpdateTimer != nil {
-							postUpdateTimer.Next(struct{}{})
-						}
-						return rx.Just[any](UpdateMessage{
-							Connections:     int(connections),
-							DownloadRate:    int64(float64(gdi.DownloadRate) * (float64(time.Second) / float64(updateInterval))),
-							OngoingRequests: int(ongoingRequests),
-							WaitStreaming:   waitStreaming,
-						})
-					case ReportTimer:
-						return report()
-					case SyncTimer:
-						if err := file.Sync(); err != nil {
-							return rx.Just[any](fmt.Sprintf("sync failed: %v", err))
-						}
-						return rx.Empty[any]()
-					case CancelMessage:
-						fatalCode = exitCodeCanceled
-					case CanRequestMessage:
-						requestPermitted = true
-					case QuitMessage:
-						canQuit = true
-					case ResponseMessage:
-						connections++
-						ongoingRequests--
-						errorCount = 0
-						currentURL = w.URL // Save the redirected one if redirection happens.
-						maxConnections = app.Connections
-					case CompleteMessage:
-						delete(tags, w.Tag)
-						if w.Responsed {
-							connections--
-						} else {
-							ongoingRequests--
-						}
-						switch {
-						case w.Err == nil:
-						case w.Err == errTryAgain:
-						case errors.Is(w.Err, context.Canceled):
-						case w.Responsed && !app.Verbose:
-						default:
-							if w.Fatal != 0 {
-								fatalCode = w.Fatal
-							}
-							verbose := app.Verbose || w.Fatal != 0
-							if w.Err != errConnTimeout && w.Err != errReadTimeout || app.TimeoutIntolerant {
-								errorCount++
-								if connections == 0 {
-									verbose = true
-								}
-							}
-							if verbose {
-								err := w.Err
-								switch e := err.(type) {
-								case *net.OpError:
-									err = e.Err
-								case *url.Error:
-									err = e.Err
-								}
-								messages.Next(err)
-							}
-						}
-					default:
-						return rx.Just(v)
-					}
-
-					if connections == 0 && ongoingRequests == 0 && !file.HasIncomplete() {
-						return quit(exitCodeOK)
-					}
-
-					if fatalCode != 0 {
-						if connections == 0 && ongoingRequests == 0 {
-							return quit(fatalCode)
-						}
-						return rx.Empty[any]()
-					}
-
-					if errorCount != 0 {
-						if currentURL == app.URL { // No redirection.
-							if ongoingRequests != 0 {
-								return rx.Empty[any]()
-							}
-							if connections == 0 { // Failed to start any download.
-								return quit(exitCodeIncomplete) // Giving up.
-							}
-							errorCount = 0
-							maxConnections = connections // Limit the number of parallel downloads.
-							return rx.Empty[any]()
-						}
-						errorCount = 0
-						currentURL = app.URL
-						maxConnections = app.Connections
-					}
-
-					{
-						requestPermitted := requestPermitted &&
-							ongoingRequests < app.Parallel &&
-							connections+ongoingRequests < maxConnections &&
-							(ongoingRequests == 0 || file.ContentSize() > 0) &&
-							mainCtx.Context.Err() == nil
-						if !requestPermitted {
-							return rx.Empty[any]()
-						}
-					}
-
-					offset, size := takeIncomplete()
-					if size == 0 {
-						return rx.Empty[any]()
-					}
-
-					if app.streamToStdout && app.StreamCache > 0 {
-						streamCacheSize := int64(app.StreamCache) * 1024 * 1024
-						streamOffset := app.streamOffset.Load()
-						if offset >= streamOffset+streamCacheSize {
-							returnIncomplete(offset, size)
-							waitStreaming = true
-							return rx.Empty[any]()
-						}
-						waitStreaming = false
-					}
-
-					requestPermitted = false
-					ongoingRequests++
-
-					reqCtx, reqCancel := mainCtx.WithCancelCause()
-
-					var tag any = newDownloadInfo(reqCtx, false)
-
-					tags[tag] = reqCancel
-
-					return rx.Pipe1(
-						rx.NewObservable(
-							func(c rx.Context, o rx.Observer[any]) {
-								var (
-									err       error
-									fatal     int
-									responsed bool
-								)
-
-								defer func() {
-									if responsed {
-										waitWriteDone()
-									}
-
-									if err != nil && errors.Is(err, context.Canceled) {
-										if ctxErr := reqCtx.Context.Err(); ctxErr != nil {
-											if cause := reqCtx.Cause(); cause != ctxErr {
-												err = cause
-											}
-										}
-									}
-
-									returnIncomplete(offset, size)
-									messages.Next(CompleteMessage{tag, err, fatal, responsed})
-									o.Complete()
-									reqCancel(nil)
-								}()
-
-								req, err := http.NewRequestWithContext(reqCtx.Context, http.MethodGet, currentURL, nil)
-								if err != nil {
-									return
-								}
-
-								req.Header.Set("Range", fmt.Sprintf("bytes=%v-%v", offset, offset+size-1))
-
-								if app.Referer != "" {
-									req.Header.Set("Referer", app.Referer)
-								}
-
-								req.Header.Set("User-Agent", app.UserAgent)
-
-								reqTimer := time.AfterFunc(app.Timeout, func() { reqCancel(errConnTimeout) })
-								defer reqTimer.Stop()
-
-								resp, err := client.Do(req)
-								if err != nil {
-									return
-								}
-
-								defer resp.Body.Close()
-
-								if !reqTimer.Stop() {
-									err = errTryAgain
-									return
-								}
-
-								var contentSize int64
-
-								switch resp.StatusCode {
-								case http.StatusOK:
-									if offset > 0 {
-										err = errors.New("fatal: this server does not support partial requests")
-										fatal = exitCodeFatal
-										return
-									}
-
-									contentSize = resp.ContentLength
-								case http.StatusPartialContent:
-									contentRange := resp.Header.Get("Content-Range")
-									if contentRange == "" {
-										err = errors.New("fatal: Content-Range not found in response header")
-										fatal = exitCodeFatal
-										return
-									}
-
-									slice := re1.FindStringSubmatch(contentRange)
-									if slice == nil {
-										err = fmt.Errorf("fatal: Content-Range unrecognized: %v", contentRange)
-										fatal = exitCodeFatal
-										return
-									}
-
-									contentSize, _ = strconv.ParseInt(slice[3], 10, 64)
-								case http.StatusRequestedRangeNotSatisfiable:
-									contentRange := resp.Header.Get("Content-Range")
-									if contentRange != "" && file.ContentSize() == 0 {
-										slice := re2.FindStringSubmatch(contentRange)
-										if slice != nil {
-											contentSize, _ = strconv.ParseInt(slice[1], 10, 64)
-											if contentSize > 0 {
-												file.SetContentSize(contentSize)
-												err = errTryAgain
-												return
-											}
-										}
-									}
-									err = errors.New("fatal: " + resp.Status)
-									fatal = exitCodeFatal
-									return
-								default:
-									err = errors.New(resp.Status)
-									return
-								}
-
-								if contentSize <= 0 {
-									err = errors.New("fatal: Content-Length unknown or zero")
-									fatal = exitCodeFatal
-									return
-								}
-
-								shouldAlloc := false
-								shouldSync := false
-
-								switch file.ContentSize() {
-								case contentSize:
-								case 0:
-									file.SetContentSize(contentSize)
-									shouldAlloc = app.Alloc
-									shouldSync = true
-								default:
-									err = errors.New("fatal: Content-Length mismatched")
-									fatal = exitCodeFatal
-									return
-								}
-
-								eTag := resp.Header.Get("ETag")
-								if eTag != "" {
-									switch file.EntityTag() {
-									case eTag:
-									case "":
-										file.SetEntityTag(eTag)
-										shouldSync = true
-									default:
-										if !app.SkipETag {
-											err = errors.New("fatal: ETag mismatched")
-											fatal = exitCodeFatal
-											return
-										}
-									}
-								}
-
-								lastModified := resp.Header.Get("Last-Modified")
-								if lastModified != "" {
-									switch file.LastModified() {
-									case lastModified:
-									case "":
-										file.SetLastModified(lastModified)
-										shouldSync = true
-									default:
-										if !app.SkipLastModified {
-											err = errors.New("fatal: Last-Modified mismatched")
-											fatal = exitCodeFatal
-											return
-										}
-									}
-								}
-
-								contentDisposition := resp.Header.Get("Content-Disposition")
-								if contentDisposition != "" {
-									_, params, _ := mime.ParseMediaType(contentDisposition)
-									if filename := params["filename"]; filename != "" {
-										if filename != file.Filename() {
-											file.SetFilename(filename)
-											shouldSync = true
-										}
-									}
-								}
-
-								if shouldAlloc {
-									err = app.alloc(mainCtx, file)
-									if err != nil {
-										fatal = exitCodeFatal
-										return
-									}
-								}
-
-								if app.Truncate {
-									err = file.Truncate(contentSize)
-									if err != nil {
-										err = fmt.Errorf("truncate failed: %w", err)
-										fatal = exitCodeTruncateFailed
-										return
-									}
-								}
-
-								if shouldSync {
-									err = file.SyncNow()
-									if err != nil {
-										err = fmt.Errorf("sync failed: %w", err)
-										fatal = exitCodeSyncFailed
-										return
-									}
-								}
-
-								messages.Next(ResponseMessage{tag, resp.Request.URL.String()})
-								responsed = true
-
-								readTimer := time.AfterFunc(app.ReadTimeout, func() { reqCancel(errReadTimeout) })
-								resetTimer := false
-
-								for {
-									if resetTimer {
-										readTimer.Reset(app.ReadTimeout)
-									}
-
-									var n int
-
-									n, err = readAndWrite(resp.Body, offset, size)
-
-									readTimer.Stop()
-									resetTimer = true
-
-									if n > 0 {
-										offset, size = offset+int64(n), size-int64(n)
-
-										messages.Next(ProgressMessage{tag, n})
-
-										if err == nil && app.rateLimiter != nil {
-											err = app.rateLimiter.WaitN(reqCtx.Context, n)
-										}
-									}
-
-									if err != nil {
-										if err == io.EOF {
-											err = nil
-											return
-										}
-
-										return
-									}
-								}
-							},
-						),
-						rx.Go[any](),
-					)
-				},
-			),
-		)
-	}
-
-	{
-		var statusLine string
-
-		var b bytes.Buffer
-
-		ob = rx.Pipe2(
-			ob,
-			rx.DoOnNext(
-				func(v any) {
-					switch w := v.(type) {
-					case UpdateMessage:
-						contentSize := file.ContentSize()
-						completeSize := file.CompleteSize()
-						progress := int(float64(completeSize) / float64(contentSize) * 100)
-
-						b.Reset()
-						b.WriteString(time.Now().Format("15:04:05"))
-						b.WriteString(fmt.Sprint(" ", strings.TrimSuffix(formatBytes(completeSize), "i")))
-						b.WriteString(fmt.Sprint("/", strings.TrimSuffix(formatBytes(contentSize), "i")))
-						b.WriteString(fmt.Sprint(" ", progress, "%"))
-
-						switch {
-						case w.Connections > 0 || w.OngoingRequests > 0:
-							b.WriteString(fmt.Sprint(" CN:", w.Connections))
-							if w.OngoingRequests > 0 {
-								b.WriteString(fmt.Sprintf("(%v)", w.OngoingRequests))
-							}
-							if w.DownloadRate > 0 {
-								etaSeconds := int64(math.Ceil(float64(file.IncompleteSize()) / float64(w.DownloadRate)))
-								b.WriteString(fmt.Sprint(" DL:", strings.TrimSuffix(formatBytes(w.DownloadRate), "i")))
-								b.WriteString(fmt.Sprint(" ETA:", formatETA(time.Duration(etaSeconds)*time.Second)))
-							}
-						case w.WaitStreaming:
-							b.WriteString(" streaming...")
-						}
-
-						if s := b.String(); s != statusLine {
-							statusLine = s
-							print("\033[1K\r")
-							print(s)
-						}
-					case ReportMessage:
-						statusLine = ""
-						print("\033[1K\r")
-						print(time.Now().Format("15:04:05"))
-						printf(
-							" recv %vB in %v, %vB/s, %v%% completed\n",
-							formatBytes(w.TotalRecv),
-							formatTimeUsed(w.TimeUsed),
-							formatBytes(int64(float64(w.TotalRecv)/w.TimeUsed.Seconds())),
-							int(float64(file.CompleteSize())/float64(file.ContentSize())*100),
-						)
-					default:
-						statusLine = ""
-						print("\033[1K\r")
-						println(time.Now().Format("15:04:05"), v)
-					}
-				},
-			),
-			rx.DoOnTermination[any](
-				func() {
-					if statusLine != "" {
-						println()
-					}
-				},
-			),
-		)
-	}
-
-	return int(ob.BlockingSubscribe(ctx, rx.Noop[any]).Error.(exitCodeError))
+	return
 }
 
-type exitCodeError int
-
-func (e exitCodeError) Error() string {
-	return fmt.Sprintf("exit code: %v", int(e))
+func (app *App) waitWriteDone() {
+	c := make(chan struct{})
+	app.fws.Spawn("/", async.Do(func() { close(c) }))
+	<-c
 }
 
-func (app *App) verify(mainCtx rx.Context, file *DataFile) int {
-	contentSize := file.ContentSize()
-	completeSize := file.CompleteSize()
+func (app *App) takeIncomplete() (offset, size int64) {
+	splitSize := app.MinSplitSize
 
-	var vs rx.Observer[int]
-
-	rx.Pipe2(
-		rx.NewObservable(
-			func(c rx.Context, o rx.Observer[int]) {
-				vs = o
-			},
-		),
-		rx.SkipUntil[int](rx.Timer(time.Second)),
-		rx.ThrowIfEmpty[int](),
-	).Subscribe(mainCtx, func(n rx.Notification[int]) {
-		switch n.Kind {
-		case rx.KindNext:
-			print("\033[1K\r")
-			printf("verifying...%v%%", n.Value)
-		case rx.KindComplete:
-			print("\033[1K\r")
-			println("verifying...DONE")
-		case rx.KindError, rx.KindStop:
-			if n.Error != rx.ErrEmpty {
-				print("\033[1K\r")
-				printf("verifying...%v\n", n.Error)
-			}
+	if incompleteSize := app.file.IncompleteSize(); incompleteSize > 0 {
+		average := float64(incompleteSize) / float64(app.Connections)
+		splitSize = uint(math.Ceil(average / (1024 * 1024)))
+		switch {
+		case splitSize > app.MaxSplitSize && app.MaxSplitSize > 0:
+			splitSize = app.MaxSplitSize
+		case splitSize < app.MinSplitSize && app.MinSplitSize > 0:
+			splitSize = app.MinSplitSize
 		}
-	})
+	}
+
+	return app.file.TakeIncomplete(int64(splitSize) * 1024 * 1024)
+}
+
+func (app *App) returnIncomplete(offset, size int64) {
+	app.file.ReturnIncomplete(offset, size)
+}
+
+type allocState struct {
+	async.Signal
+	InProgress bool
+	Progress   atomic.Uint32
+	Error      error
+}
+
+func (s *allocState) Await() async.Operation {
+	return func(t *async.Task) async.Result {
+		if s.InProgress {
+			return t.Await(s)
+		}
+		return t.End()
+	}
+}
+
+func (app *App) alloc(ctx context.Context, s *allocState) async.Operation {
+	return func(t *async.Task) async.Result {
+		if !s.InProgress {
+			s.InProgress = true
+			s.Progress.Store(0)
+
+			var wg sync.WaitGroup
+
+			progress := make(chan int64, 1)
+			contentSize := app.file.ContentSize()
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				p := int64(0)
+
+				for v := range progress {
+					if v*100 >= (p+1)*contentSize {
+						p = v * 100 / contentSize
+						s.Progress.Store(uint32(p))
+					}
+				}
+			}()
+
+			app.dl.Add(1)
+			go func() {
+				defer app.dl.Done()
+
+				err := app.file.Alloc(ctx, progress)
+
+				close(progress)
+				wg.Wait()
+
+				if err != nil {
+					err = fmt.Errorf("alloc: %w", err)
+				}
+
+				app.dl.Spawn("/", async.Do(func() {
+					s.InProgress = false
+					s.Error = err
+					s.Notify()
+				}))
+			}()
+		}
+
+		return t.Switch(s.Await())
+	}
+}
+
+type syncState struct {
+	async.Signal
+	InProgress bool
+	StartTime  time.Time
+	Error      error
+}
+
+func (s *syncState) Await() async.Operation {
+	return func(t *async.Task) async.Result {
+		if s.InProgress {
+			return t.Await(s)
+		}
+		return t.End()
+	}
+}
+
+func (app *App) sync(s *syncState, waitWrite, syncNow bool) async.Operation {
+	return func(t *async.Task) async.Result {
+		if !s.InProgress {
+			s.InProgress = true
+			s.StartTime = time.Now()
+
+			app.dl.Add(1)
+			go func() {
+				defer app.dl.Done()
+
+				if waitWrite {
+					app.fws.Wait()
+				}
+
+				var err error
+
+				if !syncNow {
+					err = app.file.Sync()
+				} else {
+					err = app.file.SyncNow()
+				}
+
+				if err != nil {
+					err = fmt.Errorf("sync: %w", err)
+				}
+
+				app.dl.Spawn("/", async.Do(func() {
+					s.InProgress = false
+					s.Error = err
+					s.Notify()
+				}))
+			}()
+		}
+
+		return t.Switch(s.Await())
+	}
+}
+
+func (app *App) verify(ctx context.Context) int {
+	contentSize := app.file.ContentSize()
+	completeSize := app.file.CompleteSize()
+
+	t := time.Now().Add(updateInterval)
 
 	p := int(-1)
 	s := int64(0)
 	w := func(b []byte) (n int, err error) {
 		n = len(b)
 		s += int64(n)
+
 		if s*100 >= int64(p+1)*contentSize {
 			p = int(s * 100 / contentSize)
-			vs.Next(p)
+			if time.Now().After(t) {
+				app.setStatusLine(fmt.Sprintf("verifying...%v%%", p))
+				t = t.Add(updateInterval)
+			}
 		}
+
 		return
 	}
 
-	if err := file.Verify(mainCtx.Context, WriterFunc(w)); err != nil {
-		vs.Error(err)
+	if err := app.file.Verify(ctx, WriterFunc(w)); err != nil {
+		app.printMessage(fmt.Sprintf("verify: %v", err))
 
-		if mainCtx.Context.Err() != nil {
+		if ctx.Err() != nil {
 			return exitCodeCanceled
 		}
 
@@ -1709,75 +1679,49 @@ func (app *App) verify(mainCtx rx.Context, file *DataFile) int {
 	}
 
 	oldCompleteSize := completeSize
-	newCompleteSize := file.CompleteSize()
+	newCompleteSize := app.file.CompleteSize()
 
 	if oldCompleteSize > newCompleteSize {
-		vs.Error(errors.New("BAD: file corrupted"))
+		app.printMessage("verify: file corrupted")
 
 		if app.fixCorrupted {
-			if err := file.SyncNow(); err != nil {
-				println("sync failed:", err)
+			if err := app.file.SyncNow(); err != nil {
+				app.printMessage(fmt.Sprintf("sync: %v", err))
 				return exitCodeSyncFailed
 			}
 
-			println("Successfully marked corrupted parts as not downloaded.")
+			app.printMessage("Successfully marked corrupted parts as not downloaded.")
 
 			return exitCodeOK
 		}
 
 		corruptedSize := oldCompleteSize - newCompleteSize
-		printf("About %v%% (%vB) are corrupted.\n", 100*corruptedSize/contentSize, formatBytes(corruptedSize))
-		println(`Consider run "resume verify --fix" to mark corrupted parts as not downloaded.`)
+		app.printMessage(fmt.Sprintf(
+			"About %v%% (%vB) are corrupted.",
+			100*corruptedSize/contentSize,
+			formatBytes(corruptedSize),
+		))
+		app.printMessage(`Consider run "resume verify --fix" to mark corrupted parts as not downloaded.`)
 
 		return exitCodeCorruptionDetected
 	}
 
-	if app.Autoremove && !app.verifyOnly {
-		os.Remove(file.HashFile())
+	if app.statusLine != "" {
+		app.printMessage("verify: all good")
 	}
 
-	vs.Complete()
+	if app.Autoremove && !app.verifyOnly {
+		if err := os.Remove(app.file.HashFile()); err != nil {
+			app.printMessage(fmt.Sprintf("autoremove: %v", err))
+		}
+	}
 
 	return exitCodeOK
 }
 
-func (app *App) alloc(mainCtx rx.Context, file *DataFile) error {
-	done := make(chan struct{})
-
-	defer func() {
-		<-done
-		print("\033[1K\r")
-	}()
-
-	progress := make(chan int64, 1)
-	defer close(progress)
-
-	contentSize := file.ContentSize()
-
-	go func() {
-		p := int64(0)
-
-		print("\033[1K\r")
-		printf("allocating...%v%%", p)
-
-		for s := range progress {
-			if s*100 >= (p+1)*contentSize {
-				p = s * 100 / contentSize
-
-				print("\033[1K\r")
-				printf("allocating...%v%%", p)
-			}
-		}
-
-		close(done)
-	}()
-
-	return file.Alloc(mainCtx.Context, progress)
-}
-
-func (app *App) status(file *DataFile, writer io.Writer) {
-	contentSize := file.ContentSize()
-	completeSize := file.CompleteSize()
+func (app *App) status(writer io.Writer) {
+	contentSize := app.file.ContentSize()
+	completeSize := app.file.CompleteSize()
 
 	if contentSize > 0 {
 		progress := int(float64(completeSize) / float64(contentSize) * 100)
@@ -1788,40 +1732,62 @@ func (app *App) status(file *DataFile, writer io.Writer) {
 		fmt.Fprintln(writer, "Completed:", completeSize)
 	}
 
-	var items []string
-
-	for _, r := range file.Incomplete() {
-		i := int(r.Low / (1024 * 1024))
-
-		if r.High == math.MaxInt64 {
-			items = append(items, fmt.Sprintf("%v-", i))
-			break
-		}
-
-		j := int(math.Ceil(float64(r.High)/(1024*1024))) - 1
-		if i == j {
-			items = append(items, strconv.Itoa(i))
-			continue
-		}
-
-		items = append(items, fmt.Sprintf("%v-%v", i, j))
+	if s := app.file.Incomplete(); len(s) != 0 {
+		fmt.Fprintln(writer, "Incomplete(MiB):", formatSet(s))
 	}
 
-	if len(items) > 0 {
-		fmt.Fprintln(writer, "Incomplete(MiB):", strings.Join(items, ","))
-	}
-
-	if entityTag := file.EntityTag(); entityTag != "" {
+	if entityTag := app.file.EntityTag(); entityTag != "" {
 		fmt.Fprintln(writer, "ETag:", entityTag)
 	}
 
-	if lastModified := file.LastModified(); lastModified != "" {
+	if lastModified := app.file.LastModified(); lastModified != "" {
 		fmt.Fprintln(writer, "Last-Modified:", lastModified)
 	}
 
-	if filename := file.Filename(); filename != "" {
+	if filename := app.file.Filename(); filename != "" {
 		fmt.Fprintln(writer, "Filename:", filename)
 	}
+}
+
+func (app *App) setStatusLine(s string) {
+	app.statusLine = s
+	print("\033[1K\r")
+	print(s)
+}
+
+func (app *App) printMessage(v any) {
+	app.statusLine = ""
+	print("\033[1K\r")
+	println(time.Now().Format("15:04:05"), v)
+}
+
+func print(a ...any) {
+	fmt.Fprint(os.Stderr, a...)
+}
+
+func println(a ...any) {
+	fmt.Fprintln(os.Stderr, a...)
+}
+
+func formatSet(s intervals.Set[elems.Int64]) string {
+	var b strings.Builder
+	for i, r := range s {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		lo := int(r.Low / (1024 * 1024))
+		b.WriteString(strconv.Itoa(lo))
+		if r.High == math.MaxInt64 {
+			b.WriteByte('-')
+			break
+		}
+		hi := int(math.Ceil(float64(r.High)/(1024*1024))) - 1
+		if lo < hi {
+			b.WriteByte('-')
+			b.WriteString(strconv.Itoa(hi))
+		}
+	}
+	return b.String()
 }
 
 func formatBytes(n int64) string {
@@ -1920,18 +1886,6 @@ func isDir(name string) bool {
 	return stat.IsDir()
 }
 
-func print(a ...any) {
-	fmt.Fprint(os.Stderr, a...)
-}
-
-func printf(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, format, a...)
-}
-
-func println(a ...any) {
-	fmt.Fprintln(os.Stderr, a...)
-}
-
 func guestFilename(rawurl string) (name string) {
 	i := strings.LastIndexAny(rawurl, "/\\?#")
 	if i != -1 && (rawurl[i] == '/' || rawurl[i] == '\\') {
@@ -2013,3 +1967,34 @@ func loadCookies(name string, jar http.CookieJar) (err error) {
 
 	return
 }
+
+type readWriteBuffer struct {
+	Data   [readBufferSize]byte
+	N      int
+	Offset int64
+	Op     async.Operation
+}
+
+const (
+	readBufferSize = 32 << 10
+	updateInterval = 1500 * time.Millisecond
+	reportInterval = 10 * time.Minute
+)
+
+const (
+	exitCodeOK                   = 0
+	exitCodeFatal                = 1
+	exitCodeCanceled             = 2
+	exitCodeIncomplete           = 3
+	exitCodeURLDeficient         = 4
+	exitCodeVerificationFailed   = 5
+	_                            = 6
+	exitCodeCorruptionDetected   = 7
+	exitCodeOutputFileExists     = 8
+	exitCodeOpenDataFileFailed   = 9
+	exitCodeLoadHashFileFailed   = 10
+	exitCodeLoadConfigFileFailed = 11
+	exitCodeLoadCookieFileFailed = 12
+	exitCodeTruncateFailed       = 13
+	exitCodeSyncFailed           = 14
+)
