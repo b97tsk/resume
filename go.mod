@@ -3,12 +3,12 @@ module github.com/b97tsk/resume
 go 1.23.0
 
 require (
-	github.com/b97tsk/async v0.1.1
+	github.com/b97tsk/async v0.1.2
 	github.com/b97tsk/intervals v0.4.0
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/viper v1.19.0
-	golang.org/x/net v0.28.0
-	golang.org/x/time v0.6.0
+	golang.org/x/net v0.33.0
+	golang.org/x/time v0.8.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -29,7 +29,7 @@ require (
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/multierr v1.9.0 // indirect
 	golang.org/x/exp v0.0.0-20240416160154-fe59bbe5cc7f // indirect
-	golang.org/x/sys v0.23.0 // indirect
-	golang.org/x/text v0.17.0 // indirect
+	golang.org/x/sys v0.28.0 // indirect
+	golang.org/x/text v0.21.0 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 )
