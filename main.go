@@ -941,7 +941,7 @@ func (app *App) download(ctx context.Context) int {
 
 	end := make(chan struct{})
 
-	startTicker := func(d time.Duration, p string, op async.Operation) {
+	startTicker := func(d time.Duration, p string, t async.Task) {
 		app.dl.Add(1)
 		go func() {
 			defer app.dl.Done()
@@ -954,7 +954,7 @@ func (app *App) download(ctx context.Context) int {
 				case <-end:
 					return
 				case <-tk.C:
-					app.dl.Spawn(p, op)
+					app.dl.Spawn(p, t)
 				}
 			}
 		}()
@@ -966,11 +966,11 @@ func (app *App) download(ctx context.Context) int {
 		startUpdateTimer.Set(true)
 	}
 
-	app.dl.Spawn("update", func(t *async.Task) async.Result {
+	app.dl.Spawn("update", func(co *async.Coroutine) async.Result {
 		if !startUpdateTimer.Get() {
-			return t.Await(&startUpdateTimer)
+			return co.Await(&startUpdateTimer)
 		}
-		startTicker(updateInterval, t.Path(), async.Do(func() {
+		startTicker(updateInterval, co.Path(), async.Do(func() {
 			for d := range downloads {
 				updateRate(d)
 			}
@@ -980,7 +980,7 @@ func (app *App) download(ctx context.Context) int {
 				lowRateKill()
 			}
 		}))
-		return t.End()
+		return co.End()
 	})
 
 	onResponse := func(url string) {
@@ -993,11 +993,11 @@ func (app *App) download(ctx context.Context) int {
 			firstRecvTime = time.Now()
 			startUpdateTimer.Set(true)
 			startTicker(reportInterval, "report", async.Do(reportProgress))
-			startTicker(max(app.SyncPeriod, time.Minute), "sync", func(t *async.Task) async.Result {
+			startTicker(max(app.SyncPeriod, time.Minute), "sync", func(co *async.Coroutine) async.Result {
 				if syn.InProgress {
-					return t.End()
+					return co.End()
 				}
-				return t.Switch(app.sync(&syn, false, false))
+				return co.Switch(app.sync(&syn, false, false))
 			})
 		}
 	}
@@ -1050,45 +1050,45 @@ func (app *App) download(ctx context.Context) int {
 	}
 
 	app.dl.Spawn("main", async.Chain(
-		func(t *async.Task) async.Result {
+		func(co *async.Coroutine) async.Result {
 			if numRequest.Get()+numResponse.Get() == 0 && !app.file.HasIncomplete() {
 				exitCode.Set(exitCodeOK)
-				return t.End()
+				return co.End()
 			}
 
-			t.Watch(&numRequest, &numResponse)
+			co.Watch(&numRequest, &numResponse)
 
 			if exitCode.Get() != 0 {
 				if numRequest.Get()+numResponse.Get() == 0 {
-					return t.End()
+					return co.End()
 				}
-				return t.Await()
+				return co.Await()
 			}
 
-			t.Watch(&exitCode)
+			co.Watch(&exitCode)
 
 			if errorCount.Get() != 0 {
 				if currentURL == app.URL { // No redirection.
 					if numRequest.Get() != 0 {
-						return t.Await()
+						return co.Await()
 					}
 					if numResponse.Get() == 0 { // Failed to start any download.
 						exitCode.Set(exitCodeIncomplete)
-						return t.End() // Giving up.
+						return co.End() // Giving up.
 					}
 					errorCount.Set(0)
 					maxConnections = numResponse.Get() // Limit the number of parallel downloads.
-					return t.Await()
+					return co.Await()
 				}
 				errorCount.Set(0)
 				currentURL = app.URL
 				maxConnections = app.Connections
 			}
 
-			t.Watch(&errorCount)
+			co.Watch(&errorCount)
 
 			if !requestPermitted.Get() {
-				return t.Await(&requestPermitted)
+				return co.Await(&requestPermitted)
 			}
 
 			goodToGo := numRequest.Get() < app.Parallel &&
@@ -1096,12 +1096,12 @@ func (app *App) download(ctx context.Context) int {
 				(numRequest.Get() == 0 || app.file.ContentSize() > 0) &&
 				ctx.Err() == nil
 			if !goodToGo {
-				return t.Await()
+				return co.Await()
 			}
 
 			offset, size := app.takeIncomplete()
 			if size == 0 {
-				return t.Await()
+				return co.Await()
 			}
 
 			if app.streamToStdout && app.StreamCache > 0 {
@@ -1110,7 +1110,7 @@ func (app *App) download(ctx context.Context) int {
 				if offset >= streamOffset+streamCacheSize {
 					app.returnIncomplete(offset, size)
 					waitStreaming = true
-					return t.Await(&requestPermitted) // Recheck periodically.
+					return co.Await(&requestPermitted) // Recheck periodically.
 				}
 				waitStreaming = false
 			}
@@ -1404,7 +1404,7 @@ func (app *App) download(ctx context.Context) int {
 				}
 			}()
 
-			return t.Await()
+			return co.Await()
 		},
 		async.Do(func() { close(end) }),
 	))
@@ -1484,16 +1484,16 @@ func (app *App) readAndWrite(body io.Reader, offset, size int64) (n int, err err
 
 	b.N, b.Offset = n, offset
 
-	if b.Op == nil {
+	if b.Task == nil {
 		app, b := app, b
-		b.Op = async.Do(func() {
+		b.Task = async.Do(func() {
 			_, _ = app.file.WriteAt(b.Data[:b.N], b.Offset)
 			app.buf.Put(b)
 			<-app.buf.sem
 		})
 	}
 
-	app.fws.Spawn("/", b.Op)
+	app.fws.Spawn("/", b.Task)
 
 	return
 }
@@ -1532,17 +1532,17 @@ type allocState struct {
 	Error      error
 }
 
-func (s *allocState) Await() async.Operation {
-	return func(t *async.Task) async.Result {
+func (s *allocState) Await() async.Task {
+	return func(co *async.Coroutine) async.Result {
 		if s.InProgress {
-			return t.Await(s)
+			return co.Await(s)
 		}
-		return t.End()
+		return co.End()
 	}
 }
 
-func (app *App) alloc(ctx context.Context, s *allocState) async.Operation {
-	return func(t *async.Task) async.Result {
+func (app *App) alloc(ctx context.Context, s *allocState) async.Task {
+	return func(co *async.Coroutine) async.Result {
 		if !s.InProgress {
 			s.InProgress = true
 			s.Progress.Store(0)
@@ -1587,7 +1587,7 @@ func (app *App) alloc(ctx context.Context, s *allocState) async.Operation {
 			}()
 		}
 
-		return t.Switch(s.Await())
+		return co.Switch(s.Await())
 	}
 }
 
@@ -1598,17 +1598,17 @@ type syncState struct {
 	Error      error
 }
 
-func (s *syncState) Await() async.Operation {
-	return func(t *async.Task) async.Result {
+func (s *syncState) Await() async.Task {
+	return func(co *async.Coroutine) async.Result {
 		if s.InProgress {
-			return t.Await(s)
+			return co.Await(s)
 		}
-		return t.End()
+		return co.End()
 	}
 }
 
-func (app *App) sync(s *syncState, waitWrite, syncNow bool) async.Operation {
-	return func(t *async.Task) async.Result {
+func (app *App) sync(s *syncState, waitWrite, syncNow bool) async.Task {
+	return func(co *async.Coroutine) async.Result {
 		if !s.InProgress {
 			s.InProgress = true
 			s.StartTime = time.Now()
@@ -1641,7 +1641,7 @@ func (app *App) sync(s *syncState, waitWrite, syncNow bool) async.Operation {
 			}()
 		}
 
-		return t.Switch(s.Await())
+		return co.Switch(s.Await())
 	}
 }
 
@@ -1972,7 +1972,7 @@ type readWriteBuffer struct {
 	Data   [readBufferSize]byte
 	N      int
 	Offset int64
-	Op     async.Operation
+	Task   async.Task
 }
 
 const (
