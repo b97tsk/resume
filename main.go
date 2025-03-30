@@ -62,6 +62,7 @@ func main() {
 	flags.BoolVar(&app.Truncate, "truncate", false, "truncate output file before the first write")
 	flags.BoolVar(&app.Verify, "verify", true, "verify output file after download completes")
 	flags.BoolVarP(&app.DisableKeepAlives, "disable-keep-alives", "D", false, "disable HTTP keep alives")
+	flags.BoolVarP(&app.IgnoreErrors, "ignore-errors", "g", false, "ignore non-fatal errors")
 	flags.BoolVarP(&app.SkipETag, "skip-etag", "E", false, "skip unreliable ETag field")
 	flags.BoolVarP(&app.SkipLastModified, "skip-last-modified", "M", false, "skip unreliable Last-Modified field")
 	flags.BoolVarP(&app.TimeoutIntolerant, "timeout-intolerant", "T", false, "treat timeouts as errors")
@@ -152,6 +153,7 @@ type Configuration struct {
 	Connections           uint          `mapstructure:"connections" yaml:"connections"`
 	CookieFile            string        `mapstructure:"cookie" yaml:"cookie"`
 	DisableKeepAlives     bool          `mapstructure:"disable-keep-alives" yaml:"disable-keep-alives"`
+	IgnoreErrors          bool          `mapstructure:"ignore-errors" yaml:"ignore-errors"`
 	Interval              time.Duration `mapstructure:"interval" yaml:"interval"`
 	KeepAlive             time.Duration `mapstructure:"keep-alive" yaml:"keep-alive"`
 	LimitRate             string        `mapstructure:"limit-rate" yaml:"limit-rate"`
@@ -1041,11 +1043,10 @@ func (app *App) download(ctx context.Context) int {
 
 			verbose := app.Verbose || fatal != 0
 
-			if !responsed && (!isTimeoutError(err) || app.TimeoutIntolerant) {
+			if !responsed && !app.IgnoreErrors && (!isTimeoutError(err) || app.TimeoutIntolerant) {
 				errorCount.Set(errorCount.Get() + 1)
-				if numResponse.Get() == 0 {
-					verbose = true
-				}
+				err = fmt.Errorf("error: %w", err)
+				verbose = true
 			}
 
 			if verbose {
