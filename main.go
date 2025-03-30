@@ -65,7 +65,6 @@ func main() {
 	flags.BoolVarP(&app.IgnoreErrors, "ignore-errors", "g", false, "ignore non-fatal errors")
 	flags.BoolVarP(&app.SkipETag, "skip-etag", "E", false, "skip unreliable ETag field")
 	flags.BoolVarP(&app.SkipLastModified, "skip-last-modified", "M", false, "skip unreliable Last-Modified field")
-	flags.BoolVarP(&app.TimeoutIntolerant, "timeout-intolerant", "T", false, "treat timeouts as errors")
 	flags.BoolVarP(&app.Verbose, "verbose", "v", false, "write additional information to stderr")
 	flags.DurationVar(&app.KeepAlive, "keep-alive", 30*time.Second, "keep-alive duration")
 	flags.DurationVar(&app.ReadTimeout, "read-timeout", 30*time.Second, "read timeout")
@@ -174,7 +173,6 @@ type Configuration struct {
 	StreamRate            uint          `mapstructure:"stream-rate" yaml:"stream-rate"`
 	SyncPeriod            time.Duration `mapstructure:"sync-period" yaml:"sync-period"`
 	Timeout               time.Duration `mapstructure:"timeout" yaml:"timeout"`
-	TimeoutIntolerant     bool          `mapstructure:"timeout-intolerant" yaml:"timeout-intolerant"`
 	TLSHandshakeTimeout   time.Duration `mapstructure:"tls-handshake-timeout" yaml:"tls-handshake-timeout"`
 	Truncate              bool          `mapstructure:"truncate" yaml:"truncate"`
 	URL                   string        `mapstructure:"url" yaml:"url"`
@@ -1043,7 +1041,7 @@ func (app *App) download(ctx context.Context) int {
 
 			verbose := app.Verbose || fatal != 0
 
-			if !responsed && !app.IgnoreErrors && (!isTimeoutError(err) || app.TimeoutIntolerant) {
+			if !responsed && !app.IgnoreErrors && !isTimeoutError(err) {
 				errorCount.Set(errorCount.Get() + 1)
 				err = fmt.Errorf("error: %w", err)
 				verbose = true

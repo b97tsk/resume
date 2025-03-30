@@ -64,7 +64,6 @@ A config file is an YAML document that can specify following options:
 - `stream-rate` maximum number of stream rate (MiB/s) (Default: 12).
 - `sync-period` sync-to-disk period (Default: 10m).
 - `timeout` timeout for all, low priority (Default: 30s).
-- `timeout-intolerant` treat timeouts as errors.
 - `tls-handshake-timeout` tls handshake timeout (Default: 10s).
 - `truncate` truncate output file before the first write.
 - `url` the URL to download.
