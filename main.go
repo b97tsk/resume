@@ -534,7 +534,8 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				case <-done:
 					return
 				case <-streamTicker.C:
-					if n, err := app.file.ReadAt(streamBuffer, streamOffset); err == nil {
+					n, err := app.file.ReadAt(streamBuffer, streamOffset)
+					if n > 0 {
 						streamOffset += int64(n)
 						app.streamOffset.Store(streamOffset)
 
@@ -543,17 +544,21 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 							return
 						}
 					}
+					if err == io.EOF {
+						return
+					}
 				case <-streamRest:
 					contentSize := app.file.ContentSize()
 					for streamOffset < contentSize {
-						if n, err := app.file.ReadAt(streamBuffer, streamOffset); err == nil {
+						n, err := app.file.ReadAt(streamBuffer, streamOffset)
+						if n > 0 {
 							streamOffset += int64(n)
-
 							if _, err := os.Stdout.Write(streamBuffer[:n]); err != nil {
 								return
 							}
-						} else {
-							break
+						}
+						if err != nil {
+							return
 						}
 						select {
 						case <-done:
@@ -888,9 +893,9 @@ func (app *App) download(ctx context.Context) int {
 		b := &app.statusLineBuffer
 		b.Reset()
 		b.WriteString(time.Now().Format("15:04:05"))
-		b.WriteString(fmt.Sprint(" ", strings.TrimSuffix(formatBytes(completeSize), "i")))
-		b.WriteString(fmt.Sprint("/", strings.TrimSuffix(formatBytes(contentSize), "i")))
-		b.WriteString(fmt.Sprint(" ", progress, "%"))
+		fmt.Fprint(b, " ", strings.TrimSuffix(formatBytes(completeSize), "i"))
+		fmt.Fprint(b, "/", strings.TrimSuffix(formatBytes(contentSize), "i"))
+		fmt.Fprint(b, " ", progress, "%")
 
 		haveTrailing := waitStreaming || alloc.InProgress ||
 			syn.InProgress && time.Since(syn.StartTime) >= updateInterval
@@ -899,16 +904,16 @@ func (app *App) download(ctx context.Context) int {
 		canHaveTrailing := connections == 0 || updateCount%2 == 0
 
 		if connections != 0 {
-			b.WriteString(fmt.Sprint(" CN:", numResponse.Get()))
+			fmt.Fprint(b, " CN:", numResponse.Get())
 			if numRequest.Get() != 0 {
-				b.WriteString(fmt.Sprintf("(%v)", numRequest.Get()))
+				fmt.Fprintf(b, "(%v)", numRequest.Get())
 			}
 			if !haveTrailing || !canHaveTrailing {
 				rate := int64(float64(gd.Rate) * (float64(time.Second) / float64(updateInterval)))
 				if rate != 0 {
 					etaSeconds := int64(math.Ceil(float64(app.file.IncompleteSize()) / float64(rate)))
-					b.WriteString(fmt.Sprint(" DL:", strings.TrimSuffix(formatBytes(rate), "i")))
-					b.WriteString(fmt.Sprint(" ETA:", formatETA(time.Duration(etaSeconds)*time.Second)))
+					fmt.Fprint(b, " DL:", strings.TrimSuffix(formatBytes(rate), "i"))
+					fmt.Fprint(b, " ETA:", formatETA(time.Duration(etaSeconds)*time.Second))
 				}
 				canHaveTrailing = rate == 0
 			}
@@ -919,7 +924,7 @@ func (app *App) download(ctx context.Context) int {
 			case waitStreaming:
 				b.WriteString(" streaming...")
 			case alloc.InProgress:
-				b.WriteString(fmt.Sprintf(" allocating...%v%%", alloc.Progress.Load()))
+				fmt.Fprintf(b, " allocating...%v%%", alloc.Progress.Load())
 			case syn.InProgress && time.Since(syn.StartTime) >= updateInterval:
 				b.WriteString(" sync...")
 			}
@@ -1078,11 +1083,11 @@ func (app *App) download(ctx context.Context) int {
 					}
 					errorCount.Set(0)
 					maxConnections = numResponse.Get() // Limit the number of parallel downloads.
-					return co.Await()
+				} else {
+					errorCount.Set(0)
+					currentURL = app.URL
+					maxConnections = app.Connections
 				}
-				errorCount.Set(0)
-				currentURL = app.URL
-				maxConnections = app.Connections
 			}
 
 			co.Watch(&errorCount)
