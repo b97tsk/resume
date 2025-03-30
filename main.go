@@ -1133,9 +1133,11 @@ func (app *App) download(ctx context.Context) int {
 					responsed bool
 				)
 
+				var fws *sync.WaitGroup
+
 				defer func() {
-					if responsed {
-						app.waitWriteDone()
+					if fws != nil {
+						fws.Wait()
 					}
 
 					if err != nil && errors.Is(err, context.Canceled) {
@@ -1368,6 +1370,8 @@ func (app *App) download(ctx context.Context) int {
 				readTimer := time.AfterFunc(app.ReadTimeout, func() { reqCancel(errReadTimeout) })
 				resetTimer := false
 
+				fws = new(sync.WaitGroup)
+
 				for {
 					if resetTimer {
 						readTimer.Reset(app.ReadTimeout)
@@ -1375,7 +1379,7 @@ func (app *App) download(ctx context.Context) int {
 
 					var n int
 
-					n, err = app.readAndWrite(resp.Body, offset, size)
+					n, err = app.readAndWrite(resp.Body, offset, size, fws)
 
 					readTimer.Stop()
 					resetTimer = true
@@ -1466,7 +1470,7 @@ func (app *App) download(ctx context.Context) int {
 	return exitCode.Get()
 }
 
-func (app *App) readAndWrite(body io.Reader, offset, size int64) (n int, err error) {
+func (app *App) readAndWrite(body io.Reader, offset, size int64, wg *sync.WaitGroup) (n int, err error) {
 	if size == 0 {
 		return 0, io.EOF
 	}
@@ -1482,12 +1486,15 @@ func (app *App) readAndWrite(body io.Reader, offset, size int64) (n int, err err
 		return
 	}
 
-	b.N, b.Offset = n, offset
+	b.N, b.Offset, b.WaitGroup = n, offset, wg
+
+	wg.Add(1)
 
 	if b.Task == nil {
 		app, b := app, b
 		b.Task = async.Do(func() {
 			_, _ = app.file.WriteAt(b.Data[:b.N], b.Offset)
+			b.WaitGroup.Done()
 			app.buf.Put(b)
 			<-app.buf.sem
 		})
@@ -1496,12 +1503,6 @@ func (app *App) readAndWrite(body io.Reader, offset, size int64) (n int, err err
 	app.fws.Spawn("/", b.Task)
 
 	return
-}
-
-func (app *App) waitWriteDone() {
-	c := make(chan struct{})
-	app.fws.Spawn("/", async.Do(func() { close(c) }))
-	<-c
 }
 
 func (app *App) takeIncomplete() (offset, size int64) {
@@ -1969,10 +1970,11 @@ func loadCookies(name string, jar http.CookieJar) (err error) {
 }
 
 type readWriteBuffer struct {
-	Data   [readBufferSize]byte
-	N      int
-	Offset int64
-	Task   async.Task
+	Data      [readBufferSize]byte
+	N         int
+	Offset    int64
+	WaitGroup *sync.WaitGroup
+	Task      async.Task
 }
 
 const (
