@@ -89,11 +89,9 @@ func main() {
 
 	must(viper.BindPFlags(flags))
 
-	flags.BoolVarP(&app.retryForever, "retry-forever", "Y", false, "retry forever")
 	flags.BoolVarP(&app.noUserConfig, "no-user-config", "n", false, "do not load .resumerc file")
 	flags.StringVarP(&app.workdir, "workdir", "w", ".", "working directory")
 	flags.StringVarP(&app.conffile, "config", "f", "resume.yaml", "configuration file")
-	flags.UintVarP(&app.retryCount, "retry", "y", 0, "retry count")
 
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "status",
@@ -192,8 +190,6 @@ type App struct {
 	fixCorrupted   bool
 	streamToStdout bool
 	minDesiredRate int64
-	retryCount     uint
-	retryForever   bool
 
 	file         *DataFile
 	client       *http.Client
@@ -718,35 +714,27 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	app.buf.New = func() any { return new(readWriteBuffer) }
 	app.buf.sem = make(chan struct{}, min(max(app.Connections*8, 32), 256))
 
-	for i := uint(0); i <= app.retryCount || app.retryForever; i++ {
-		contentSize := app.file.ContentSize()
-		completeSize := app.file.CompleteSize()
+	contentSize := app.file.ContentSize()
+	completeSize := app.file.CompleteSize()
 
-		if contentSize == 0 || completeSize != contentSize {
-			if exitCode := app.download(ctx); exitCode != exitCodeOK {
-				if exitCode == exitCodeIncomplete {
-					continue
-				}
-
-				return exitCode
-			}
-
-			contentSize = app.file.ContentSize()
-			completeSize = app.file.CompleteSize()
-
-			if completeSize < contentSize {
-				return exitCodeOK // Successfully downloaded specified range.
-			}
+	if contentSize == 0 || completeSize != contentSize {
+		if exitCode := app.download(ctx); exitCode != exitCodeOK {
+			return exitCode
 		}
 
-		if !app.Verify {
-			return exitCodeOK
-		}
+		contentSize = app.file.ContentSize()
+		completeSize = app.file.CompleteSize()
 
-		return app.verify(ctx)
+		if completeSize < contentSize {
+			return exitCodeOK // Successfully downloaded specified range.
+		}
 	}
 
-	return exitCodeIncomplete
+	if !app.Verify {
+		return exitCodeOK
+	}
+
+	return app.verify(ctx)
 }
 
 func (app *App) download(ctx context.Context) int {
