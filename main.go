@@ -990,7 +990,7 @@ func (app *App) download(ctx context.Context) int {
 				if syn.InProgress {
 					return co.End()
 				}
-				return co.Switch(app.sync(&syn, false, false))
+				return co.Transit(app.sync(&syn, false, false))
 			})
 		}
 	}
@@ -1041,7 +1041,7 @@ func (app *App) download(ctx context.Context) int {
 		}
 	}
 
-	app.dl.Spawn("main", async.Chain(
+	app.dl.Spawn("main", async.Block(
 		func(co *async.Coroutine) async.Result {
 			if numRequest.Get()+numResponse.Get() == 0 && !app.file.HasIncomplete() {
 				exitCode.Set(exitCodeOK)
@@ -1302,7 +1302,7 @@ func (app *App) download(ctx context.Context) int {
 
 					wg.Add(1)
 
-					app.dl.Spawn("alloc", async.Chain(
+					app.dl.Spawn("alloc", async.Block(
 						app.alloc(ctx, &alloc),
 						async.Do(func() {
 							allocErr = alloc.Error
@@ -1335,7 +1335,7 @@ func (app *App) download(ctx context.Context) int {
 
 					wg.Add(1)
 
-					app.dl.Spawn("sync", async.Chain(
+					app.dl.Spawn("sync", async.Block(
 						syn.Await(),
 						app.sync(&syn, false, true),
 						async.Do(func() {
@@ -1443,7 +1443,7 @@ func (app *App) download(ctx context.Context) int {
 
 	startTicker(updateInterval, "update", async.Do(updateStatusLine))
 
-	app.dl.Spawn("sync", async.Chain(
+	app.dl.Spawn("sync", async.Block(
 		app.sync(&syn, true, false),
 		async.Do(func() { close(end) }),
 	))
@@ -1580,7 +1580,7 @@ func (app *App) alloc(ctx context.Context, s *allocState) async.Task {
 			}()
 		}
 
-		return co.Switch(s.Await())
+		return co.Transit(s.Await())
 	}
 }
 
@@ -1634,7 +1634,7 @@ func (app *App) sync(s *syncState, waitWrite, syncNow bool) async.Task {
 			}()
 		}
 
-		return co.Switch(s.Await())
+		return co.Transit(s.Await())
 	}
 }
 
