@@ -934,7 +934,7 @@ func (app *App) download(ctx context.Context) int {
 
 	end := make(chan struct{})
 
-	startTicker := func(d time.Duration, p string, t async.Task) {
+	startTicker := func(d time.Duration, t async.Task) {
 		app.dl.Add(1)
 		go func() {
 			defer app.dl.Done()
@@ -947,7 +947,7 @@ func (app *App) download(ctx context.Context) int {
 				case <-end:
 					return
 				case <-tk.C:
-					app.dl.Spawn(p, t)
+					app.dl.Spawn(t)
 				}
 			}
 		}()
@@ -959,11 +959,11 @@ func (app *App) download(ctx context.Context) int {
 		startUpdateTimer.Set(true)
 	}
 
-	app.dl.Spawn("update", func(co *async.Coroutine) async.Result {
+	app.dl.Spawn(func(co *async.Coroutine) async.Result {
 		if !startUpdateTimer.Get() {
-			return co.Await(&startUpdateTimer)
+			return co.Yield(&startUpdateTimer)
 		}
-		startTicker(updateInterval, co.Path(), async.Do(func() {
+		startTicker(updateInterval, async.Do(func() {
 			for d := range downloads {
 				updateRate(d)
 			}
@@ -985,12 +985,12 @@ func (app *App) download(ctx context.Context) int {
 		if firstRecvTime.IsZero() {
 			firstRecvTime = time.Now()
 			startUpdateTimer.Set(true)
-			startTicker(reportInterval, "report", async.Do(reportProgress))
-			startTicker(max(app.SyncPeriod, time.Minute), "sync", func(co *async.Coroutine) async.Result {
+			startTicker(reportInterval, async.Do(reportProgress))
+			startTicker(max(app.SyncPeriod, time.Minute), func(co *async.Coroutine) async.Result {
 				if syn.InProgress {
 					return co.End()
 				}
-				return co.Switch(app.sync(&syn, false, false))
+				return co.Transition(app.sync(&syn, false, false))
 			})
 		}
 	}
@@ -1041,7 +1041,7 @@ func (app *App) download(ctx context.Context) int {
 		}
 	}
 
-	app.dl.Spawn("main", async.Chain(
+	app.dl.Spawn(async.Block(
 		func(co *async.Coroutine) async.Result {
 			if numRequest.Get()+numResponse.Get() == 0 && !app.file.HasIncomplete() {
 				exitCode.Set(exitCodeOK)
@@ -1054,7 +1054,7 @@ func (app *App) download(ctx context.Context) int {
 				if numRequest.Get()+numResponse.Get() == 0 {
 					return co.End()
 				}
-				return co.Await()
+				return co.Yield()
 			}
 
 			co.Watch(&exitCode)
@@ -1062,7 +1062,7 @@ func (app *App) download(ctx context.Context) int {
 			if errorCount.Get() != 0 {
 				if currentURL == app.URL { // No redirection.
 					if numRequest.Get() != 0 {
-						return co.Await()
+						return co.Yield()
 					}
 					if numResponse.Get() == 0 { // Failed to start any download.
 						exitCode.Set(exitCodeIncomplete)
@@ -1080,7 +1080,7 @@ func (app *App) download(ctx context.Context) int {
 			co.Watch(&errorCount)
 
 			if !requestPermitted.Get() {
-				return co.Await(&requestPermitted)
+				return co.Yield(&requestPermitted)
 			}
 
 			goodToGo := numRequest.Get() < app.Parallel &&
@@ -1088,12 +1088,12 @@ func (app *App) download(ctx context.Context) int {
 				(numRequest.Get() == 0 || app.file.ContentSize() > 0) &&
 				ctx.Err() == nil
 			if !goodToGo {
-				return co.Await()
+				return co.Yield()
 			}
 
 			offset, size := app.takeIncomplete()
 			if size == 0 {
-				return co.Await()
+				return co.Yield()
 			}
 
 			if app.streamToStdout && app.StreamCache > 0 {
@@ -1102,7 +1102,7 @@ func (app *App) download(ctx context.Context) int {
 				if offset >= streamOffset+streamCacheSize {
 					app.returnIncomplete(offset, size)
 					waitStreaming = true
-					return co.Await(&requestPermitted) // Recheck periodically.
+					return co.Yield(&requestPermitted) // Recheck periodically.
 				}
 				waitStreaming = false
 			}
@@ -1143,7 +1143,7 @@ func (app *App) download(ctx context.Context) int {
 					app.returnIncomplete(offset, size)
 					reqCancel(nil)
 
-					app.dl.Spawn("complete", async.Do(func() {
+					app.dl.Spawn(async.Do(func() {
 						onComplete(d, err, fatal, responsed)
 					}))
 				}()
@@ -1291,7 +1291,7 @@ func (app *App) download(ctx context.Context) int {
 				responsed = true
 
 				url := resp.Request.URL.String()
-				app.dl.Spawn("response", async.Do(func() {
+				app.dl.Spawn(async.Do(func() {
 					onResponse(url)
 				}))
 
@@ -1302,7 +1302,7 @@ func (app *App) download(ctx context.Context) int {
 
 					wg.Add(1)
 
-					app.dl.Spawn("alloc", async.Chain(
+					app.dl.Spawn(async.Block(
 						app.alloc(ctx, &alloc),
 						async.Do(func() {
 							allocErr = alloc.Error
@@ -1335,7 +1335,7 @@ func (app *App) download(ctx context.Context) int {
 
 					wg.Add(1)
 
-					app.dl.Spawn("sync", async.Chain(
+					app.dl.Spawn(async.Block(
 						syn.Await(),
 						app.sync(&syn, false, true),
 						async.Do(func() {
@@ -1381,7 +1381,7 @@ func (app *App) download(ctx context.Context) int {
 						offset, size = offset+n64, size-n64
 
 						if increment.Add(n64) == n64 {
-							app.dl.Spawn("progress", progress)
+							app.dl.Spawn(progress)
 						}
 
 						if err == nil && app.rateLimiter != nil {
@@ -1400,7 +1400,7 @@ func (app *App) download(ctx context.Context) int {
 				}
 			}()
 
-			return co.Await()
+			return co.Yield()
 		},
 		async.Do(func() { close(end) }),
 	))
@@ -1416,12 +1416,12 @@ func (app *App) download(ctx context.Context) int {
 			case <-end:
 				return
 			case <-done:
-				app.dl.Spawn("cancel", async.Do(func() {
+				app.dl.Spawn(async.Do(func() {
 					exitCode.Set(exitCodeCanceled)
 				}))
 				return
 			case <-app.canRequest:
-				app.dl.Spawn("canrequest", async.Do(func() {
+				app.dl.Spawn(async.Do(func() {
 					requestPermitted.Set(true)
 				}))
 			}
@@ -1441,9 +1441,9 @@ func (app *App) download(ctx context.Context) int {
 
 	end = make(chan struct{})
 
-	startTicker(updateInterval, "update", async.Do(updateStatusLine))
+	startTicker(updateInterval, async.Do(updateStatusLine))
 
-	app.dl.Spawn("sync", async.Chain(
+	app.dl.Spawn(async.Block(
 		app.sync(&syn, true, false),
 		async.Do(func() { close(end) }),
 	))
@@ -1483,7 +1483,6 @@ func (app *App) readAndWrite(body io.Reader, offset, size int64, wg *sync.WaitGr
 	wg.Add(1)
 
 	if b.Task == nil {
-		app, b := app, b
 		b.Task = async.Do(func() {
 			_, _ = app.file.WriteAt(b.Data[:b.N], b.Offset)
 			b.WaitGroup.Done()
@@ -1492,7 +1491,7 @@ func (app *App) readAndWrite(body io.Reader, offset, size int64, wg *sync.WaitGr
 		})
 	}
 
-	app.fws.Spawn("/", b.Task)
+	app.fws.Spawn(b.Task)
 
 	return
 }
@@ -1528,7 +1527,7 @@ type allocState struct {
 func (s *allocState) Await() async.Task {
 	return func(co *async.Coroutine) async.Result {
 		if s.InProgress {
-			return co.Await(s)
+			return co.Yield(s)
 		}
 		return co.End()
 	}
@@ -1572,7 +1571,7 @@ func (app *App) alloc(ctx context.Context, s *allocState) async.Task {
 					err = fmt.Errorf("alloc: %w", err)
 				}
 
-				app.dl.Spawn("/", async.Do(func() {
+				app.dl.Spawn(async.Do(func() {
 					s.InProgress = false
 					s.Error = err
 					s.Notify()
@@ -1580,7 +1579,7 @@ func (app *App) alloc(ctx context.Context, s *allocState) async.Task {
 			}()
 		}
 
-		return co.Switch(s.Await())
+		return co.Transition(s.Await())
 	}
 }
 
@@ -1594,7 +1593,7 @@ type syncState struct {
 func (s *syncState) Await() async.Task {
 	return func(co *async.Coroutine) async.Result {
 		if s.InProgress {
-			return co.Await(s)
+			return co.Yield(s)
 		}
 		return co.End()
 	}
@@ -1626,7 +1625,7 @@ func (app *App) sync(s *syncState, waitWrite, syncNow bool) async.Task {
 					err = fmt.Errorf("sync: %w", err)
 				}
 
-				app.dl.Spawn("/", async.Do(func() {
+				app.dl.Spawn(async.Do(func() {
 					s.InProgress = false
 					s.Error = err
 					s.Notify()
@@ -1634,7 +1633,7 @@ func (app *App) sync(s *syncState, waitWrite, syncNow bool) async.Task {
 			}()
 		}
 
-		return co.Switch(s.Await())
+		return co.Transition(s.Await())
 	}
 }
 
