@@ -31,9 +31,9 @@ import (
 	"github.com/b97tsk/intervals/elems"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"go.yaml.in/yaml/v3"
 	"golang.org/x/net/publicsuffix"
 	"golang.org/x/time/rate"
-	"gopkg.in/yaml.v3"
 )
 
 func main() {
