@@ -1,5 +1,5 @@
-github.com/b97tsk/async v0.2.1 h1:1mNF3eC3ODR1kD6c9K/C56Ao8e4NK7+mAnoAyU+Zm0U=
-github.com/b97tsk/async v0.2.1/go.mod h1:X3B7ZSoOwxtZQ7S8yuo1i7whpbu7eF/DPg3CxRHhxuI=
+github.com/b97tsk/async v0.17.0 h1:SuHhfz5ocaAWLImnLH+aq0C6DcSFFPv+6lokfEx5AnM=
+github.com/b97tsk/async v0.17.0/go.mod h1:cO78NJamBk0WdejvzxR50LS0EXibgSOM84uWWsGR0o0=
 github.com/b97tsk/intervals v0.4.0 h1:iEKnTAgvE3bKXQKWNurdnGUz23TBUZ8Kh0G+JeYnE+w=
 github.com/b97tsk/intervals v0.4.0/go.mod h1:CF/oCS3HIIXVhJYXcJHwSjuzE4hkvHmY37ziMwiU9yQ=
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
