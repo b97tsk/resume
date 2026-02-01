@@ -141,7 +141,7 @@ func main() {
 	}
 	rootCmd.AddCommand(verifyCmd)
 
-	_ = rootCmd.Execute()
+	rootCmd.Execute()
 }
 
 type Configuration struct {
@@ -181,6 +181,7 @@ type Configuration struct {
 
 type App struct {
 	Configuration
+
 	workdir        string
 	conffile       string
 	noUserConfig   bool
@@ -233,7 +234,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			viper.SetConfigType("yaml")
 
 			if err := viper.ReadInConfig(); err == nil {
-				_ = viper.Unmarshal(&app.Configuration)
+				viper.Unmarshal(&app.Configuration)
 			}
 		}
 	}
@@ -241,15 +242,13 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	if app.conffile != "" {
 		viper.SetConfigFile(app.conffile)
 		viper.SetConfigType("yaml")
-
 		if err := viper.ReadInConfig(); err != nil {
 			if cmd.Flags().Changed("conf") || !os.IsNotExist(err) && !isDir(app.conffile) {
 				println(err)
 				return exitCodeLoadConfigFileFailed
 			}
 		}
-
-		_ = viper.Unmarshal(&app.Configuration)
+		viper.Unmarshal(&app.Configuration)
 	}
 
 	if app.Connections == 0 {
@@ -295,24 +294,15 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		}
 	}
 
-	if app.Timeout > 0 {
-		timeoutFlagProvided := cmd.Flags().Changed("timeout")
-		if !cmd.Flags().Changed("read-timeout") {
-			if timeoutFlagProvided || !viper.InConfig("read-timeout") {
-				app.ReadTimeout = app.Timeout
-			}
+	if cmd.Flags().Changed("timeout") {
+		if name := "read-timeout"; !cmd.Flags().Changed(name) && !viper.InConfig(name) {
+			app.ReadTimeout = app.Timeout
 		}
-
-		if !cmd.Flags().Changed("response-header-timeout") {
-			if timeoutFlagProvided || !viper.InConfig("response-header-timeout") {
-				app.ResponseHeaderTimeout = app.Timeout
-			}
+		if name := "response-header-timeout"; !cmd.Flags().Changed(name) && !viper.InConfig(name) {
+			app.ResponseHeaderTimeout = app.Timeout
 		}
-
-		if !cmd.Flags().Changed("tls-handshake-timeout") {
-			if timeoutFlagProvided || !viper.InConfig("tls-handshake-timeout") {
-				app.TLSHandshakeTimeout = app.Timeout
-			}
+		if name := "tls-handshake-timeout"; !cmd.Flags().Changed(name) && !viper.InConfig(name) {
+			app.TLSHandshakeTimeout = app.Timeout
 		}
 	}
 
@@ -322,9 +312,8 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 	if app.showConfig {
 		enc := yaml.NewEncoder(os.Stdout)
-		_ = enc.Encode(&app.Configuration)
+		enc.Encode(&app.Configuration)
 		enc.Close()
-
 		return exitCodeOK
 	}
 
@@ -341,12 +330,10 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			if stat, _ := os.Stdin.Stat(); (stat.Mode() & os.ModeCharDevice) != 0 {
 				print("Enter url: ")
 			}
-
 			stdin := bufio.NewScanner(os.Stdin)
 			if !stdin.Scan() {
 				return exitCodeURLDeficient
 			}
-
 			app.URL = strings.TrimSpace(stdin.Text())
 			if app.URL == "" {
 				return exitCodeURLDeficient
@@ -363,7 +350,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 		if app.CookieFile != "" {
 			cookiefile := os.ExpandEnv(app.CookieFile)
-
 			err := loadCookies(cookiefile, cookieJar)
 			if err != nil && !os.IsNotExist(err) {
 				println(err)
@@ -401,7 +387,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		if err != nil {
 			println(err)
 		}
-
 		completeSize := app.file.CompleteSize()
 		if completeSize == 0 && !fileexists {
 			os.Remove(filename)
@@ -416,14 +401,10 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				if !filepath.IsAbs(filename) {
 					filename = filepath.Join(app.workdir, filename)
 				}
-
 				println("file exists:", filename)
-
 				return exitCodeOutputFileExists
 			}
-
 			println(err)
-
 			return exitCodeLoadHashFileFailed
 		}
 	}
@@ -438,7 +419,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		os.Unsetenv("HTTP_PROXY")
 		os.Unsetenv("https_proxy")
 		os.Unsetenv("HTTPS_PROXY")
-
 		if strings.ToUpper(app.Proxy) != "DIRECT" {
 			os.Setenv("HTTP_PROXY", app.Proxy)
 			os.Setenv("HTTPS_PROXY", app.Proxy)
@@ -447,39 +427,32 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 	if app.Range != "" {
 		var s intervals.Set[elems.Int64]
-
-		for _, r0 := range strings.Split(app.Range, ",") {
+		for r0 := range strings.SplitSeq(app.Range, ",") {
 			r := strings.Split(r0, "-")
 			if len(r) > 2 {
 				println("fatal: invalid range:", r0)
 				return exitCodeFatal
 			}
-
 			i, err := strconv.ParseInt(r[0], 10, 32)
 			if err != nil {
 				println("fatal: invalid range:", r0)
 				return exitCodeFatal
 			}
-
 			if len(r) == 1 {
-				s = intervals.Add(s, intervals.Range(elems.Int64(i*1024*1024), elems.Int64((i+1)*1024*1024)))
+				s = intervals.Add(s, intervals.Range(elems.Int64(i<<20), elems.Int64((i+1)<<20)))
 				continue
 			}
-
 			if r[1] == "" {
-				s = intervals.Add(s, intervals.Range(elems.Int64(i*1024*1024), math.MaxInt64))
+				s = intervals.Add(s, intervals.Range(elems.Int64(i<<20), math.MaxInt64))
 				continue
 			}
-
 			j, err := strconv.ParseInt(r[1], 10, 32)
 			if err != nil || j < i {
 				println("fatal: invalid range:", r0)
 				return exitCodeFatal
 			}
-
-			s = intervals.Add(s, intervals.Range(elems.Int64(i*1024*1024), elems.Int64((j+1)*1024*1024)))
+			s = intervals.Add(s, intervals.Range(elems.Int64(i<<20), elems.Int64((j+1)<<20)))
 		}
-
 		if len(s) > 0 {
 			app.file.SetRange(s)
 		}
@@ -519,7 +492,7 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				streamInterval = time.Second / time.Duration(app.StreamRate)
 			}
 
-			streamBuffer := make([]byte, 1024*1024)
+			streamBuffer := make([]byte, 1<<20)
 			streamOffset := int64(0)
 
 			streamTicker := time.NewTicker(streamInterval)
@@ -534,7 +507,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 					if n > 0 {
 						streamOffset += int64(n)
 						app.streamOffset.Store(streamOffset)
-
 						if _, err := os.Stdout.Write(streamBuffer[:n]); err != nil {
 							stop() // Exiting.
 							return
@@ -562,7 +534,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 						default:
 						}
 					}
-
 					return
 				}
 			}
@@ -583,23 +554,19 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		)
 		http.Handle("/exit", exitHandler)
 		http.Handle("/quit", exitHandler)
-
 		http.Handle("/status", http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
 				app.status(w)
 			},
 		))
-
 		http.Handle("/stream", http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
 				if app.file.ContentSize() == 0 {
 					http.Error(w, "download not started", http.StatusServiceUnavailable)
 					return
 				}
-
 				f := func(p []byte, off int64) (n int, err error) {
 					n, err = app.file.ReadAt(p, off)
-
 					for err == ErrIncomplete {
 						select {
 						case <-done:
@@ -608,7 +575,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 							n, err = app.file.ReadAt(p, off)
 						}
 					}
-
 					return
 				}
 				content := io.NewSectionReader(ReaderAtFunc(f), 0, app.file.ContentSize())
@@ -621,22 +587,19 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 		defer func() {
 			timeout := make(chan bool, 1)
 			timeout <- true
-
 			time.AfterFunc(updateInterval, func() {
 				if <-timeout {
 					println("shuting down remote control server...")
 					close(timeout)
 				}
 			})
-
-			_ = srv.Shutdown(ctx)
-
+			srv.Shutdown(ctx)
 			if <-timeout {
 				close(timeout)
 			}
 		}()
 
-		go func() { _ = srv.Serve(l) }()
+		go srv.Serve(l)
 	}
 
 	canRequest := make(chan struct{})
@@ -647,15 +610,12 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 			timer  *time.Timer
 			timerC <-chan time.Time
 		)
-
 		defer func() {
 			if timer != nil {
 				timer.Stop()
 			}
 		}()
-
 		cr := canRequest
-
 		for {
 			select {
 			case <-done:
@@ -703,15 +663,12 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 
 	contentSize := app.file.ContentSize()
 	completeSize := app.file.CompleteSize()
-
 	if contentSize == 0 || completeSize != contentSize {
 		if exitCode := app.download(ctx); exitCode != exitCodeOK {
 			return exitCode
 		}
-
 		contentSize = app.file.ContentSize()
 		completeSize = app.file.CompleteSize()
-
 		if completeSize < contentSize {
 			return exitCodeOK // Successfully downloaded specified range.
 		}
@@ -736,9 +693,9 @@ func (app *App) download(ctx context.Context) int {
 		waitStreaming    bool
 	)
 
-	var alloc allocState
+	var allocState allocState
 
-	var syn syncState
+	var syncState syncState
 
 	currentURL := app.URL
 	maxConnections := app.Connections
@@ -759,10 +716,11 @@ func (app *App) download(ctx context.Context) int {
 		CreateTime time.Time
 		Global     bool
 		Increment  struct {
-			History []int64
 			Current int64
+			History []int64
 		}
-		Rate int64
+		Rate   int64
+		Cancel context.CancelCauseFunc
 	}
 
 	newDownload := func(global bool) *Download {
@@ -792,45 +750,37 @@ func (app *App) download(ctx context.Context) int {
 		di := &d.Increment
 		newIncrement := di.Current
 		di.Current = 0
-
 		if newIncrement == 0 && len(di.History) == 0 {
 			return
 		}
-
 		if newIncrement == 0 && d.Global && numResponse.Get() == 0 {
 			di.History = di.History[:0]
 			d.Rate = 0
 			return
 		}
-
 		if len(di.History) < MaxHistory {
 			di.History = append(di.History, newIncrement)
 			d.Rate = avg(di.History)
 			return
 		}
-
 		di.History = slices.Delete(di.History, 0, 1)
 		di.History = append(di.History, newIncrement)
 		d.Rate = ema(d.Rate, avg(di.History))
 	}
 
 	gd := newDownload(true)
-
-	downloads := make(map[*Download]context.CancelCauseFunc)
+	downloads := make(map[*Download]struct{})
 
 	var lowRateKill func()
 
 	if app.minDesiredRate > 0 {
 		errLowRate := errors.New("low rate")
-
 		aboutToComplete := func() bool {
 			rate := float64(gd.Rate) * (float64(time.Second) / float64(updateInterval))
 			etaSeconds := float64(app.file.IncompleteSize()) / rate
 			return etaSeconds < 30
 		}
-
 		n := 0
-
 		lowRateKill = func() {
 			ok := numRequest.Get() == 0 &&
 				(numResponse.Get() == maxConnections || !app.file.HasIncomplete()) &&
@@ -839,16 +789,14 @@ func (app *App) download(ctx context.Context) int {
 				n = 0
 				return
 			}
-
 			const N = 5
 			if n < N {
 				n++
 			}
-
 			if n == N {
-				for d, cancel := range downloads {
+				for d := range downloads {
 					if d.Rate <= gd.Rate && time.Since(d.CreateTime) >= N*updateInterval {
-						cancel(errLowRate)
+						d.Cancel(errLowRate)
 						delete(downloads, d)
 					}
 				}
@@ -872,8 +820,8 @@ func (app *App) download(ctx context.Context) int {
 		fmt.Fprint(b, "/", strings.TrimSuffix(formatBytes(contentSize), "i"))
 		fmt.Fprint(b, " ", progress, "%")
 
-		haveTrailing := waitStreaming || alloc.InProgress ||
-			syn.InProgress && time.Since(syn.StartTime) >= updateInterval
+		haveTrailing := waitStreaming || allocState.InProgress ||
+			syncState.InProgress && time.Since(syncState.StartTime) >= updateInterval
 
 		connections := numRequest.Get() + numResponse.Get()
 		canHaveTrailing := connections == 0 || updateCount%2 == 0
@@ -898,9 +846,9 @@ func (app *App) download(ctx context.Context) int {
 			switch {
 			case waitStreaming:
 				b.WriteString(" streaming...")
-			case alloc.InProgress:
-				fmt.Fprintf(b, " allocating...%v%%", alloc.Progress.Load())
-			case syn.InProgress && time.Since(syn.StartTime) >= updateInterval:
+			case allocState.InProgress:
+				fmt.Fprintf(b, " allocating...%v%%", allocState.Progress.Load())
+			case syncState.InProgress && time.Since(syncState.StartTime) >= updateInterval:
 				b.WriteString(" sync...")
 			}
 		}
@@ -970,10 +918,10 @@ func (app *App) download(ctx context.Context) int {
 			startUpdateTimer.Set(true)
 			startTicker(reportInterval, async.Do(reportProgress))
 			startTicker(max(app.SyncPeriod, time.Minute), func(co *async.Coroutine) async.Result {
-				if syn.InProgress {
+				if syncState.InProgress {
 					return co.End()
 				}
-				return co.Transition(app.sync(&syn, false, false))
+				return co.Transition(app.sync(&syncState, false, false))
 			})
 		}
 	}
@@ -1009,15 +957,12 @@ func (app *App) download(ctx context.Context) int {
 			if fatal != 0 {
 				exitCode.Set(fatal)
 			}
-
 			verbose := app.Verbose || fatal != 0
-
 			if !responsed && !app.IgnoreErrors && !isTimeoutError(err) {
 				errorCount.Set(errorCount.Get() + 1)
 				err = fmt.Errorf("error: %w", err)
 				verbose = true
 			}
-
 			if verbose {
 				app.printMessage(err)
 			}
@@ -1080,7 +1025,7 @@ func (app *App) download(ctx context.Context) int {
 			}
 
 			if app.streamToStdout && app.StreamCache > 0 {
-				streamCacheSize := int64(app.StreamCache) * 1024 * 1024
+				streamCacheSize := int64(app.StreamCache) << 20
 				streamOffset := app.streamOffset.Load()
 				if offset >= streamOffset+streamCacheSize {
 					app.returnIncomplete(offset, size)
@@ -1096,7 +1041,8 @@ func (app *App) download(ctx context.Context) int {
 			reqCtx, reqCancel := context.WithCancelCause(ctx)
 
 			d := newDownload(false)
-			downloads[d] = reqCancel
+			d.Cancel = reqCancel
+			downloads[d] = struct{}{}
 
 			app.dl.Go(func() {
 				var (
@@ -1134,11 +1080,9 @@ func (app *App) download(ctx context.Context) int {
 				}
 
 				req.Header.Set("Range", fmt.Sprintf("bytes=%v-%v", offset, offset+size-1))
-
 				if app.Referer != "" {
 					req.Header.Set("Referer", app.Referer)
 				}
-
 				req.Header.Set("User-Agent", app.UserAgent)
 
 				reqTimer := time.AfterFunc(app.Timeout, func() { reqCancel(errConnTimeout) })
@@ -1165,7 +1109,6 @@ func (app *App) download(ctx context.Context) int {
 						fatal = exitCodeFatal
 						return
 					}
-
 					contentSize = resp.ContentLength
 				case http.StatusPartialContent:
 					contentRange := resp.Header.Get("Content-Range")
@@ -1174,14 +1117,12 @@ func (app *App) download(ctx context.Context) int {
 						fatal = exitCodeFatal
 						return
 					}
-
 					slice := re1.FindStringSubmatch(contentRange)
 					if slice == nil {
 						err = fmt.Errorf("fatal: Content-Range unrecognized: %v", contentRange)
 						fatal = exitCodeFatal
 						return
 					}
-
 					contentSize, _ = strconv.ParseInt(slice[3], 10, 64)
 				case http.StatusRequestedRangeNotSatisfiable:
 					contentRange := resp.Header.Get("Content-Range")
@@ -1276,23 +1217,18 @@ func (app *App) download(ctx context.Context) int {
 				}))
 
 				if shouldAlloc {
-					var allocErr error
-
+					var allocError error
 					var wg sync.WaitGroup
-
 					wg.Add(1)
-
 					app.dl.Spawn(async.Block(
-						app.alloc(ctx, &alloc),
+						app.alloc(ctx, &allocState),
 						async.Do(func() {
-							allocErr = alloc.Error
+							allocError = allocState.Error
 							wg.Done()
 						}),
 					))
-
 					wg.Wait()
-
-					err = allocErr
+					err = allocError
 					if err != nil {
 						fatal = exitCodeFatal
 						return
@@ -1309,24 +1245,19 @@ func (app *App) download(ctx context.Context) int {
 				}
 
 				if shouldSync {
-					var synErr error
-
+					var synError error
 					var wg sync.WaitGroup
-
 					wg.Add(1)
-
 					app.dl.Spawn(async.Block(
-						syn.Await(),
-						app.sync(&syn, false, true),
+						syncState.Await(),
+						app.sync(&syncState, false, true),
 						async.Do(func() {
-							synErr = syn.Error
+							synError = syncState.Error
 							wg.Done()
 						}),
 					))
-
 					wg.Wait()
-
-					err = synErr
+					err = synError
 					if err != nil {
 						fatal = exitCodeSyncFailed
 						return
@@ -1359,11 +1290,9 @@ func (app *App) download(ctx context.Context) int {
 					if n > 0 {
 						n64 := int64(n)
 						offset, size = offset+n64, size-n64
-
 						if increment.Add(n64) == n64 {
 							app.dl.Spawn(progress)
 						}
-
 						if err == nil && app.rateLimiter != nil {
 							err = app.rateLimiter.WaitN(reqCtx, n)
 						}
@@ -1374,7 +1303,6 @@ func (app *App) download(ctx context.Context) int {
 							err = nil
 							return
 						}
-
 						return
 					}
 				}
@@ -1420,13 +1348,13 @@ func (app *App) download(ctx context.Context) int {
 	startTicker(updateInterval, async.Do(updateStatusLine))
 
 	app.dl.Spawn(async.Block(
-		app.sync(&syn, true, false),
+		app.sync(&syncState, true, false),
 		async.Do(func() { close(end) }),
 	))
 
 	app.dl.Wait()
 
-	if err := syn.Error; err != nil {
+	if err := syncState.Error; err != nil {
 		app.printMessage(err)
 	}
 
@@ -1447,7 +1375,6 @@ func (app *App) readAndWrite(body io.Reader, offset, size int64, wg *sync.WaitGr
 
 	b := app.buf.Get().(*readWriteBuffer)
 	n, err = body.Read(b.Data[:min(size, readBufferSize)])
-
 	if n == 0 {
 		app.buf.Put(b)
 		<-app.buf.sem
@@ -1460,7 +1387,7 @@ func (app *App) readAndWrite(body io.Reader, offset, size int64, wg *sync.WaitGr
 
 	if b.Task == nil {
 		b.Task = async.Do(func() {
-			_, _ = app.file.WriteAt(b.Data[:b.N], b.Offset)
+			app.file.WriteAt(b.Data[:b.N], b.Offset)
 			b.WaitGroup.Done()
 			app.buf.Put(b)
 			<-app.buf.sem
@@ -1495,6 +1422,7 @@ func (app *App) returnIncomplete(offset, size int64) {
 
 type allocState struct {
 	async.Signal
+
 	InProgress bool
 	Progress   atomic.Uint32
 	Error      error
@@ -1554,6 +1482,7 @@ func (app *App) alloc(ctx context.Context, s *allocState) async.Task {
 
 type syncState struct {
 	async.Signal
+
 	InProgress bool
 	StartTime  time.Time
 	Error      error
@@ -1605,38 +1534,32 @@ func (app *App) sync(s *syncState, waitWrite, syncNow bool) async.Task {
 
 func (app *App) verify(ctx context.Context) int {
 	contentSize := app.file.ContentSize()
-	completeSize := app.file.CompleteSize()
-
 	t := time.Now().Add(updateInterval)
-
 	p := int(-1)
 	s := int64(0)
 	w := func(b []byte) (n int, err error) {
 		n = len(b)
 		s += int64(n)
-
 		if s*100 >= int64(p+1)*contentSize {
 			p = int(s * 100 / contentSize)
 			if time.Now().After(t) {
-				app.setStatusLine(fmt.Sprintf("verifying...%v%%", p))
 				t = t.Add(updateInterval)
+				app.setStatusLine(fmt.Sprintf("verifying...%v%%", p))
 			}
 		}
-
 		return
 	}
 
+	oldCompleteSize := app.file.CompleteSize()
+
 	if err := app.file.Verify(ctx, WriterFunc(w)); err != nil {
 		app.printMessage(fmt.Sprintf("verify: %v", err))
-
 		if ctx.Err() != nil {
 			return exitCodeCanceled
 		}
-
 		return exitCodeVerificationFailed
 	}
 
-	oldCompleteSize := completeSize
 	newCompleteSize := app.file.CompleteSize()
 
 	if oldCompleteSize > newCompleteSize {
@@ -1647,9 +1570,7 @@ func (app *App) verify(ctx context.Context) int {
 				app.printMessage(fmt.Sprintf("sync: %v", err))
 				return exitCodeSyncFailed
 			}
-
 			app.printMessage("Successfully marked corrupted parts as not downloaded.")
-
 			return exitCodeOK
 		}
 
@@ -1680,7 +1601,6 @@ func (app *App) verify(ctx context.Context) int {
 func (app *App) status(writer io.Writer) {
 	contentSize := app.file.ContentSize()
 	completeSize := app.file.CompleteSize()
-
 	if contentSize > 0 {
 		progress := int(float64(completeSize) / float64(contentSize) * 100)
 		fmt.Fprintln(writer, "Size:", contentSize)
@@ -1689,19 +1609,15 @@ func (app *App) status(writer io.Writer) {
 		fmt.Fprintln(writer, "Size: unknown")
 		fmt.Fprintln(writer, "Completed:", completeSize)
 	}
-
 	if s := app.file.Incomplete(); len(s) != 0 {
 		fmt.Fprintln(writer, "Incomplete(MiB):", formatSet(s))
 	}
-
 	if entityTag := app.file.EntityTag(); entityTag != "" {
 		fmt.Fprintln(writer, "ETag:", entityTag)
 	}
-
 	if lastModified := app.file.LastModified(); lastModified != "" {
 		fmt.Fprintln(writer, "Last-Modified:", lastModified)
 	}
-
 	if filename := app.file.Filename(); filename != "" {
 		fmt.Fprintln(writer, "Filename:", filename)
 	}
@@ -1733,13 +1649,13 @@ func formatSet(s intervals.Set[elems.Int64]) string {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		lo := int(r.Low / (1024 * 1024))
+		lo := int(r.Low >> 20)
 		b.WriteString(strconv.Itoa(lo))
 		if r.High == math.MaxInt64 {
 			b.WriteByte('-')
 			break
 		}
-		hi := int(math.Ceil(float64(r.High)/(1024*1024))) - 1
+		hi := int((r.High+1<<20-1)>>20) - 1
 		if lo < hi {
 			b.WriteByte('-')
 			b.WriteString(strconv.Itoa(hi))
@@ -1752,23 +1668,18 @@ func formatBytes(n int64) string {
 	if n == 0 {
 		return "0"
 	}
-
 	if n < 1024 {
 		return strconv.FormatInt(n, 10)
 	}
-
-	kilobytes := int64(math.Ceil(float64(n) / 1024))
-	if kilobytes < 1000 {
-		return strconv.FormatInt(kilobytes, 10) + "Ki"
+	kB := (n + 1<<10 - 1) >> 10
+	if kB < 1000 {
+		return strconv.FormatInt(kB, 10) + "Ki"
 	}
-
-	if kilobytes < 102400 {
-		return strconv.FormatFloat(float64(n)/(1024*1024), 'f', 1, 64) + "Mi"
+	if kB < 102400 {
+		return strconv.FormatFloat(float64(n)/(1<<20), 'f', 1, 64) + "Mi"
 	}
-
-	megabytes := int64(math.Ceil(float64(n) / (1024 * 1024)))
-
-	return strconv.FormatInt(megabytes, 10) + "Mi"
+	mB := (n + 1<<20 - 1) >> 20
+	return strconv.FormatInt(mB, 10) + "Mi"
 }
 
 func formatTimeUsed(d time.Duration) (s string) {
@@ -1778,15 +1689,12 @@ func formatTimeUsed(d time.Duration) (s string) {
 	default:
 		s = d.Round(time.Minute).String()
 	}
-
 	if strings.HasSuffix(s, "m0s") {
 		s = s[:len(s)-2]
 	}
-
 	if strings.HasSuffix(s, "h0m") {
 		s = s[:len(s)-2]
 	}
-
 	return
 }
 
@@ -1799,21 +1707,17 @@ func formatETA(d time.Duration) (s string) {
 	default:
 		s = d.Round(time.Hour).String()
 	}
-
 	if strings.HasSuffix(s, "m0s") {
 		s = s[:len(s)-2]
 	}
-
 	if strings.HasSuffix(s, "h0m") {
 		s = s[:len(s)-2]
 	}
-
 	return
 }
 
 func parseBytes(s string) (i int64, ok bool) {
 	n := 0
-
 	switch s[len(s)-1] {
 	case 'K', 'k':
 		n = 10
@@ -1822,16 +1726,13 @@ func parseBytes(s string) (i int64, ok bool) {
 	case 'G', 'g':
 		n = 30
 	}
-
 	if n > 0 {
 		s = s[:len(s)-1]
 	}
-
 	i, err := strconv.ParseInt(s, 10, 64)
 	if err != nil || i < 0 {
 		return 0, false
 	}
-
 	return i << n, true
 }
 
@@ -1840,7 +1741,6 @@ func isDir(name string) bool {
 	if err != nil {
 		return false
 	}
-
 	return stat.IsDir()
 }
 
@@ -1852,7 +1752,6 @@ func guestFilename(rawurl string) (name string) {
 			name = s
 		}
 	}
-
 	return
 }
 

@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	pieceSize   = 1024 * 1024
+	pieceSize   = 1 << 20
 	zipFileName = "11f56ab8-f1a2-4db7-8bdc-aa5c1ef976cc"
 )
 
@@ -34,7 +34,6 @@ type DataFile struct {
 	contentSize     atomic.Int64
 	completeSize    atomic.Int64
 	recentIncrement int64
-	autoSyncSize    int64
 }
 
 type HashInfo struct {
@@ -57,15 +56,12 @@ func (p *PieceInfo) Reset() {
 
 func openDataFile(name string) (f *DataFile, err error) {
 	file, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		return
+	if err == nil {
+		f = &DataFile{
+			file:       file,
+			incomplete: intervals.Range[elems.Int64](0, math.MaxInt64).Set(),
+		}
 	}
-
-	f = &DataFile{
-		file:       file,
-		incomplete: intervals.Range[elems.Int64](0, math.MaxInt64).Set(),
-	}
-
 	return
 }
 
@@ -120,10 +116,8 @@ func (f *DataFile) LoadHashFile() (err error) {
 		if p.Size > 0 && p.Size <= pieceSize && p.HashCode > 0 {
 			offset := pieceSize * int64(i)
 			completed = intervals.Add(completed, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(p.Size))))
-
 			continue
 		}
-
 		p.Reset()
 	}
 
@@ -146,24 +140,21 @@ func (f *DataFile) loadHashFileFailed() error {
 func (f *DataFile) Incomplete() intervals.Set[elems.Int64] {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
 	return f.getIncompleteLocked()
 }
 
 func (f *DataFile) getIncompleteLocked() intervals.Set[elems.Int64] {
-	high := int64(math.MaxInt64)
+	hi := int64(math.MaxInt64)
 	if contentSize := f.ContentSize(); contentSize > 0 {
-		high = contentSize
+		hi = contentSize
 	}
-
-	return intervals.Range(0, elems.Int64(high)).Set().Difference(f.completed)
+	return intervals.Range(0, elems.Int64(hi)).Set().Difference(f.completed)
 }
 
 func (f *DataFile) IncompleteSize() int64 {
 	if contentSize := f.ContentSize(); contentSize > 0 {
 		return contentSize - f.CompleteSize() - f.IgnoreSize()
 	}
-
 	return -1
 }
 
@@ -184,44 +175,33 @@ func (f *DataFile) SetContentSize(size int64) {
 func (f *DataFile) setContentSizeLocked(size int64) {
 	f.hash.ContentSize = size
 	f.contentSize.Store(size)
-
-	pieceCount := int(math.Ceil(float64(size) / pieceSize))
-	if len(f.hash.Pieces) != pieceCount {
+	if n := int((size + pieceSize - 1) / pieceSize); n != len(f.hash.Pieces) {
 		pieces := f.hash.Pieces
-		f.hash.Pieces = make([]PieceInfo, pieceCount)
+		f.hash.Pieces = make([]PieceInfo, n)
 		copy(f.hash.Pieces, pieces)
 	}
-
 	f.incomplete = intervals.Delete(f.incomplete, intervals.Range(elems.Int64(size), math.MaxInt64))
 	f.updateIgnoreSizeLocked()
 }
 
 func (f *DataFile) updateIgnoreSizeLocked() {
 	ignoreSize := int64(0)
-
 	if f.requested != nil {
 		ignored := f.getIncompleteLocked().Difference(f.requested)
 		ignoreSize = sum(ignored)
 	}
-
 	f.ignoreSize.Store(ignoreSize)
 }
 
 func (f *DataFile) Truncate(size int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
 	offsetSave, _ := f.file.Seek(0, io.SeekCurrent)
-
-	defer func() {
-		_, _ = f.file.Seek(offsetSave, io.SeekStart)
-	}()
-
+	defer f.file.Seek(offsetSave, io.SeekStart)
 	fileSize, _ := f.file.Seek(0, io.SeekEnd)
 	if size == fileSize {
 		return nil
 	}
-
 	return f.file.Truncate(size)
 }
 
@@ -238,7 +218,6 @@ func (f *DataFile) SetEntityTag(entityTag string) {
 func (f *DataFile) EntityTag() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
 	return f.hash.EntityTag
 }
 
@@ -251,7 +230,6 @@ func (f *DataFile) SetLastModified(lastModified string) {
 func (f *DataFile) LastModified() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
 	return f.hash.LastModified
 }
 
@@ -264,7 +242,6 @@ func (f *DataFile) SetFilename(filename string) {
 func (f *DataFile) Filename() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
 	return f.hash.Filename
 }
 
@@ -283,7 +260,6 @@ func (f *DataFile) SetRange(s intervals.Set[elems.Int64]) {
 func (f *DataFile) HasIncomplete() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
 	return len(f.incomplete) > 0
 }
 
@@ -339,7 +315,6 @@ func (f *DataFile) ReadAt(b []byte, offset int64) (n int, err error) {
 		if available < len(b) {
 			b = b[:available]
 		}
-
 		return f.file.ReadAt(b, offset)
 	}
 
@@ -359,7 +334,7 @@ func (f *DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 	p := &f.hash.Pieces[i]
 
 	if offset != pieceSize*int64(i)+int64(p.Size) {
-		panic("WriteAt failed")
+		panic("internal error: WriteAt: offset mismatched")
 	}
 
 	f.completed = intervals.Add(f.completed, intervals.Range(elems.Int64(offset), elems.Int64(offset+int64(n))))
@@ -367,27 +342,20 @@ func (f *DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 
 	completeSize := f.CompleteSize()
 
-	defer func() {
-		f.recentIncrement += f.CompleteSize() - completeSize
-		if f.autoSyncSize > 0 && f.recentIncrement >= f.autoSyncSize {
-			f.recentIncrement = 0
-			_ = f.syncLocked()
-		}
-	}()
+	defer func() { f.recentIncrement += f.CompleteSize() - completeSize }()
 
 	pieceSizeRequired := pieceSize - int(p.Size)
 	if n < pieceSizeRequired {
 		f.completeSize.Add(int64(n))
-
 		p.HashCode = crc32.Update(p.HashCode, crc32.IEEETable, b)
 		p.Size += uint32(n)
-
 		return
 	}
 
 	f.completeSize.Add(int64(pieceSizeRequired))
 	p.HashCode = crc32.Update(p.HashCode, crc32.IEEETable, b[:pieceSizeRequired])
 	p.Size = pieceSize
+
 	b, i = b[pieceSizeRequired:], i+1
 
 	for len(b) >= pieceSize {
@@ -397,7 +365,6 @@ func (f *DataFile) WriteAt(b []byte, offset int64) (n int, err error) {
 			p.HashCode = crc32.ChecksumIEEE(b[:pieceSize])
 			p.Size = pieceSize
 		}
-
 		b, i = b[pieceSize:], i+1
 	}
 
@@ -417,8 +384,7 @@ func (f *DataFile) Alloc(ctx context.Context, progress chan<- int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	const NB = 1024 * 1024
-	buf := make([]byte, NB)
+	buf := make([]byte, 1<<20)
 	done := ctx.Done()
 
 	for _, r := range f.incomplete {
@@ -426,20 +392,18 @@ func (f *DataFile) Alloc(ctx context.Context, progress chan<- int64) error {
 			break
 		}
 
-		offset := r.Low.Unwrap()
-		_, _ = f.file.Seek(offset, io.SeekStart)
+		offset := int64(r.Low)
+		f.file.Seek(offset, io.SeekStart)
 
-		size := (r.High - r.Low).Unwrap()
-
-		for size > NB {
+		size := int64(r.High - r.Low)
+		buflen := int64(len(buf))
+		for size > buflen {
 			n, err := f.file.Write(buf)
 			if err != nil {
 				return err
 			}
-
 			size -= int64(n)
 			offset += int64(n)
-
 			select {
 			case <-done:
 				return ctx.Err()
@@ -456,7 +420,7 @@ func (f *DataFile) Alloc(ctx context.Context, progress chan<- int64) error {
 		select {
 		case <-done:
 			return ctx.Err()
-		case progress <- r.High.Unwrap():
+		case progress <- int64(r.High):
 		default:
 		}
 	}
@@ -498,7 +462,6 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 		if n < pieceSizeRequired {
 			offset += int64(n)
 			hashCode = crc32.Update(hashCode, crc32.IEEETable, b)
-
 			return
 		}
 
@@ -539,11 +502,9 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 	var err error
 
 	for _, r := range f.completed {
-		offset, hashCode = r.Low.Unwrap(), 0
-
-		_, _ = f.file.Seek(offset, io.SeekStart)
-
-		_, err = io.Copy(WriterFunc(w), io.LimitReader(f.file, (r.High-r.Low).Unwrap()))
+		offset, hashCode = int64(r.Low), 0
+		f.file.Seek(offset, io.SeekStart)
+		_, err = io.Copy(WriterFunc(w), io.LimitReader(f.file, int64(r.High-r.Low)))
 		if err != nil {
 			break
 		}
@@ -551,7 +512,6 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 
 	if err == nil && hashCode > 0 {
 		i := int(offset / pieceSize)
-
 		p := &f.hash.Pieces[i]
 		if hashCode != p.HashCode {
 			offset := pieceSize * int64(i)
@@ -568,19 +528,16 @@ func (f *DataFile) Verify(ctx context.Context, digest io.Writer) error {
 func (f *DataFile) Sync() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
 	if f.recentIncrement > 0 {
 		f.recentIncrement = 0
 		return f.syncLocked()
 	}
-
 	return nil
 }
 
 func (f *DataFile) SyncNow() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
 	return f.syncLocked()
 }
 
@@ -624,12 +581,6 @@ func (f *DataFile) syncLocked() error {
 	return serr
 }
 
-func (f *DataFile) SetAutoSyncSize(size int64) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.autoSyncSize = size
-}
-
 func (f *DataFile) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -652,11 +603,9 @@ func (f *DataFile) Close() error {
 
 func sum(s intervals.Set[elems.Int64]) int64 {
 	var n int64
-
 	for _, r := range s {
-		n += (r.High - r.Low).Unwrap()
+		n += int64(r.High - r.Low)
 	}
-
 	return n
 }
 
