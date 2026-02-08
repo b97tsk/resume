@@ -1,7 +1,8 @@
 package main
 
 import (
-	"archive/zip"
+	"cmp"
+	"compress/gzip"
 	"context"
 	"encoding/gob"
 	"errors"
@@ -18,10 +19,7 @@ import (
 	"github.com/b97tsk/intervals/elems"
 )
 
-const (
-	pieceSize   = 1 << 20
-	zipFileName = "11f56ab8-f1a2-4db7-8bdc-aa5c1ef976cc"
-)
+const pieceSize = 1 << 20
 
 type DataFile struct {
 	mu              sync.Mutex
@@ -83,30 +81,16 @@ func (f *DataFile) LoadHashFile() (err error) {
 	}
 	defer file.Close()
 
-	fi, err := file.Stat()
+	zr, err := gzip.NewReader(file)
 	if err != nil {
-		return
+		return fmt.Errorf("open %v: tampered or incompatible", file.Name())
 	}
-
-	zr, err := zip.NewReader(file, fi.Size())
-	if err != nil {
-		return f.loadHashFileFailed()
-	}
-
-	if len(zr.File) != 1 || zr.File[0].Name != zipFileName {
-		return f.loadHashFileFailed()
-	}
-
-	rc, err := zr.File[0].Open()
-	if err != nil {
-		return f.loadHashFileFailed()
-	}
-	defer rc.Close()
+	defer zr.Close()
 
 	var hash HashInfo
 
-	if err := gob.NewDecoder(rc).Decode(&hash); err != nil {
-		return f.loadHashFileFailed()
+	if err := gob.NewDecoder(zr).Decode(&hash); err != nil {
+		return fmt.Errorf("open %v: tampered or incompatible", file.Name())
 	}
 
 	var completed intervals.Set[elems.Int64]
@@ -131,10 +115,6 @@ func (f *DataFile) LoadHashFile() (err error) {
 	}
 
 	return
-}
-
-func (f *DataFile) loadHashFileFailed() error {
-	return fmt.Errorf("open %v: tampered or incompatible", f.HashFile())
 }
 
 func (f *DataFile) Incomplete() intervals.Set[elems.Int64] {
@@ -542,63 +522,31 @@ func (f *DataFile) SyncNow() error {
 }
 
 func (f *DataFile) syncLocked() error {
-	serr := f.file.Sync()
-
+	syncError := f.file.Sync()
 	file, err := os.Create(f.TempHashFile())
 	if err != nil {
 		return err
 	}
-
-	defer os.Remove(f.TempHashFile())
-
-	zw := zip.NewWriter(file)
-
-	w, err := zw.Create(zipFileName)
-	if err == nil {
-		err = gob.NewEncoder(w).Encode(&f.hash)
-	}
-
-	if cerr := zw.Close(); err == nil {
-		err = cerr
-	}
-
-	if err == nil {
-		err = file.Sync()
-	}
-
-	if cerr := file.Close(); err == nil {
-		err = cerr
-	}
-
+	defer os.Remove(file.Name())
+	zw := gzip.NewWriter(file)
+	err = gob.NewEncoder(zw).Encode(&f.hash)
+	err = cmp.Or(err, zw.Close(), file.Close())
 	if err != nil {
 		return err
 	}
-
-	if err := os.Rename(f.TempHashFile(), f.HashFile()); err != nil {
-		return err
-	}
-
-	return serr
+	err = os.Rename(file.Name(), f.HashFile())
+	return cmp.Or(err, syncError)
 }
 
 func (f *DataFile) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
-	var serr error
-
+	var syncError error
 	if f.recentIncrement > 0 {
 		f.recentIncrement = 0
-		serr = f.syncLocked()
+		syncError = f.syncLocked()
 	}
-
-	cerr := f.file.Close()
-
-	if serr != nil {
-		return serr
-	}
-
-	return cerr
+	return cmp.Or(syncError, f.file.Close())
 }
 
 func sum(s intervals.Set[elems.Int64]) int64 {
