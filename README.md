@@ -47,7 +47,6 @@ A config file is an YAML document that can specify following options:
 - `interval` request interval (Default: 2s).
 - `keep-alive` keep-alive duration (Default: 30s).
 - `limit-rate` limit download rate to this value (B/s).
-- `listen` HTTP listen address for remote control.
 - `max-split` maximum split size (MiB).
 - `min-desired-rate` minimum desired download rate (B/s).
 - `min-split` minimum split size (MiB).

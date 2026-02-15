@@ -75,7 +75,6 @@ func main() {
 	flags.DurationVarP(&app.Timeout, "timeout", "t", 30*time.Second, "timeout for all, low priority")
 	flags.StringVar(&app.CookieFile, "cookie", "", "cookie file")
 	flags.StringVarP(&app.LimitRate, "limit-rate", "l", "", "limit download rate to this value (B/s), e.g., 32K")
-	flags.StringVarP(&app.ListenAddress, "listen", "L", "", "HTTP listen address for remote control")
 	flags.StringVarP(&app.MinDesiredRate, "min-desired-rate", "d", "", "minimum desired download rate (B/s), e.g., 32K")
 	flags.StringVarP(&app.OutputFile, "output", "o", "", "output file")
 	flags.StringVarP(&app.Proxy, "proxy", "x", "", "a shorthand for setting http(s)_proxy environment variables")
@@ -154,7 +153,6 @@ type Configuration struct {
 	Interval              time.Duration `mapstructure:"interval" yaml:"interval"`
 	KeepAlive             time.Duration `mapstructure:"keep-alive" yaml:"keep-alive"`
 	LimitRate             string        `mapstructure:"limit-rate" yaml:"limit-rate"`
-	ListenAddress         string        `mapstructure:"listen" yaml:"listen"`
 	MaxSplitSize          uint          `mapstructure:"max-split" yaml:"max-split"`
 	MinDesiredRate        string        `mapstructure:"min-desired-rate" yaml:"min-desired-rate"`
 	MinSplitSize          uint          `mapstructure:"min-split" yaml:"min-split"`
@@ -538,68 +536,6 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 				}
 			}
 		}()
-	}
-
-	if app.ListenAddress != "" {
-		l, err := net.Listen("tcp", app.ListenAddress)
-		if err != nil {
-			println("fatal:", err)
-			return exitCodeFatal
-		}
-
-		exitHandler := http.HandlerFunc(
-			func(w http.ResponseWriter, r *http.Request) {
-				stop()
-			},
-		)
-		http.Handle("/exit", exitHandler)
-		http.Handle("/quit", exitHandler)
-		http.Handle("/status", http.HandlerFunc(
-			func(w http.ResponseWriter, r *http.Request) {
-				app.status(w)
-			},
-		))
-		http.Handle("/stream", http.HandlerFunc(
-			func(w http.ResponseWriter, r *http.Request) {
-				if app.file.ContentSize() == 0 {
-					http.Error(w, "download not started", http.StatusServiceUnavailable)
-					return
-				}
-				f := func(p []byte, off int64) (n int, err error) {
-					n, err = app.file.ReadAt(p, off)
-					for err == ErrIncomplete {
-						select {
-						case <-done:
-							return
-						case <-time.After(time.Second):
-							n, err = app.file.ReadAt(p, off)
-						}
-					}
-					return
-				}
-				content := io.NewSectionReader(ReaderAtFunc(f), 0, app.file.ContentSize())
-				http.ServeContent(w, r, filepath.Base(filename), time.Time{}, content)
-			},
-		))
-
-		srv := &http.Server{}
-
-		defer func() {
-			timeout := make(chan bool, 1)
-			timeout <- true
-			time.AfterFunc(updateInterval, func() {
-				if <-timeout {
-					println("shuting down remote control server...")
-					close(timeout)
-				}
-			})
-			srv.Shutdown(ctx)
-			if <-timeout {
-				close(timeout)
-			}
-		}()
-
-		go srv.Serve(l)
 	}
 
 	canRequest := make(chan struct{})
