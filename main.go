@@ -617,6 +617,33 @@ func (app *App) Main(cmd *cobra.Command, args []string) int {
 	return app.verify(ctx)
 }
 
+var (
+	re1            = regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+)$`)
+	re2            = regexp.MustCompile(`^bytes \*/(\d+)$`)
+	errConnTimeout = errors.New("connection timeout")
+	errReadTimeout = errors.New("read timeout")
+	errTryAgain    = errors.New("try again")
+)
+
+func isTimeoutError(err error) bool {
+	return errors.Is(err, errConnTimeout) || errors.Is(err, errReadTimeout)
+}
+
+func avg(s []int64) int64 {
+	var tot int64
+	for _, v := range s {
+		tot += v
+	}
+	if tot == 0 {
+		return 0
+	}
+	return tot / int64(len(s))
+}
+
+func ema(a, b int64) int64 {
+	return (4*a + b) / 5
+}
+
 func (app *App) download(ctx context.Context) int {
 	var (
 		firstRecvTime    time.Time
@@ -636,16 +663,6 @@ func (app *App) download(ctx context.Context) int {
 	currentURL := app.URL
 	maxConnections := app.Connections
 
-	re1 := regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+)$`)
-	re2 := regexp.MustCompile(`^bytes \*/(\d+)$`)
-	errConnTimeout := errors.New("connection timeout")
-	errReadTimeout := errors.New("read timeout")
-	errTryAgain := errors.New("try again")
-
-	isTimeoutError := func(err error) bool {
-		return errors.Is(err, errConnTimeout) || errors.Is(err, errReadTimeout)
-	}
-
 	const MaxHistory = 5
 
 	type Download struct {
@@ -659,8 +676,11 @@ func (app *App) download(ctx context.Context) int {
 			Current int64
 			History []int64
 		}
-		Rate   int64
-		Cancel context.CancelCauseFunc
+		Rate        int64
+		Context     context.Context
+		Cancel      context.CancelCauseFunc
+		Requests    map[context.Context]context.CancelCauseFunc
+		GotResponse bool
 	}
 
 	newDownload := func(global bool) *Download {
@@ -668,22 +688,6 @@ func (app *App) download(ctx context.Context) int {
 			CreateTime: time.Now(),
 			Global:     global,
 		}
-	}
-
-	ema := func(a, b int64) int64 {
-		return (4*a + b) / 5
-	}
-
-	sum := func(s []int64) int64 {
-		var tot int64
-		for _, v := range s {
-			tot += v
-		}
-		return tot
-	}
-
-	avg := func(s []int64) int64 {
-		return sum(s) / int64(len(s))
 	}
 
 	updateRate := func(d *Download) {
@@ -981,11 +985,12 @@ func (app *App) download(ctx context.Context) int {
 
 			goodToGo := numRequest.Get() < app.Parallel &&
 				numRequest.Get()+numResponse.Get() < maxConnections &&
-				(numRequest.Get() == 0 || app.file.ContentSize() > 0) &&
 				ctx.Err() == nil
 			if !goodToGo {
 				return co.Yield()
 			}
+
+			var dd *Download
 
 			max := int64(math.MaxInt64)
 			if n := int64(app.MaxSplitSize); n > 0 {
@@ -993,16 +998,27 @@ func (app *App) download(ctx context.Context) int {
 			}
 			lo, hi := app.file.TakeIncomplete(max)
 			if lo == hi {
-				var dd *Download
 				for d := range downloads {
 					if l, h := stealWork(d); h-l > hi-lo {
 						lo, hi, dd = l, h, d
 					}
 				}
-				if dd != nil {
+				if dd != nil && dd.GotResponse {
 					stealFrom.Store(dd)
+					return co.Yield(&stealSignal)
 				}
-				return co.Yield(&stealSignal)
+				if dd == nil {
+					n := math.MaxInt
+					for d := range downloads {
+						if !d.GotResponse && len(d.Requests) < n {
+							n, dd = len(d.Requests), d
+						}
+					}
+				}
+				if dd == nil {
+					return co.Yield(&stealSignal)
+				}
+				lo, hi = dd.Pos.Low, dd.Pos.High
 			}
 
 			if app.streamToStdout && app.StreamCache > 0 {
@@ -1019,13 +1035,19 @@ func (app *App) download(ctx context.Context) int {
 			requestPermitted.Set(false)
 			numRequest.Set(numRequest.Get() + 1)
 
-			reqCtx, reqCancel := context.WithCancelCause(ctx)
+			ld := dd
+			if ld == nil {
+				ctx, cancel := context.WithCancelCause(ctx)
+				ld = newDownload(false)
+				ld.Pos.Current = lo
+				ld.Pos.Low, ld.Pos.High = lo, hi
+				ld.Context, ld.Cancel = ctx, cancel
+				ld.Requests = make(map[context.Context]context.CancelCauseFunc)
+				downloads[ld] = struct{}{}
+			}
 
-			d := newDownload(false)
-			d.Pos.Current = lo
-			d.Pos.Low, d.Pos.High = lo, hi
-			d.Cancel = reqCancel
-			downloads[d] = struct{}{}
+			ctxRequest, cancelRequest := context.WithCancelCause(ld.Context)
+			ld.Requests[ctxRequest] = cancelRequest
 
 			app.dl.Go(func() {
 				var (
@@ -1042,22 +1064,26 @@ func (app *App) download(ctx context.Context) int {
 					}
 
 					if err != nil && errors.Is(err, context.Canceled) {
-						if ctxErr := reqCtx.Err(); ctxErr != nil {
-							if cause := context.Cause(reqCtx); cause != ctxErr {
+						if ctxErr := ctxRequest.Err(); ctxErr != nil {
+							if cause := context.Cause(ctxRequest); cause != ctxErr {
 								err = cause
 							}
 						}
 					}
 
-					reqCancel(nil)
-					app.file.ReturnIncomplete(lo, hi)
+					cancelRequest(nil)
 					app.dl.Spawn(async.Do(func() {
-						delete(downloads, d)
+						delete(ld.Requests, ctxRequest)
+						if len(ld.Requests) == 0 {
+							ld.Cancel(nil)
+							delete(downloads, ld)
+							app.file.ReturnIncomplete(lo, hi)
+						}
 						onComplete(err, fatal, responsed)
 					}))
 				}()
 
-				req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, currentURL, nil)
+				req, err := http.NewRequestWithContext(ctxRequest, http.MethodGet, currentURL, nil)
 				if err != nil {
 					return
 				}
@@ -1072,19 +1098,37 @@ func (app *App) download(ctx context.Context) int {
 				}
 				req.Header.Set("User-Agent", app.UserAgent)
 
-				reqTimer := time.AfterFunc(app.Timeout, func() { reqCancel(errConnTimeout) })
+				reqTimer := time.AfterFunc(app.Timeout, func() { cancelRequest(errConnTimeout) })
 				defer reqTimer.Stop()
 
 				resp, err := app.client.Do(req)
 				if err != nil {
 					return
 				}
-
 				defer resp.Body.Close()
 
 				if !reqTimer.Stop() {
 					err = errTryAgain
 					return
+				}
+
+				switch resp.StatusCode {
+				case http.StatusOK, http.StatusPartialContent, http.StatusRequestedRangeNotSatisfiable:
+					app.dl.SpawnBlocking(async.Do(func() {
+						if ld.GotResponse {
+							err = context.Canceled
+							return
+						}
+						ld.GotResponse = true
+						for ctx, cancel := range ld.Requests {
+							if ctx != ctxRequest {
+								cancel(nil)
+							}
+						}
+					}))
+					if err != nil {
+						return
+					}
 				}
 
 				var contentSize int64
@@ -1201,7 +1245,7 @@ func (app *App) download(ctx context.Context) int {
 				if hi == math.MaxInt64 {
 					hi = contentSize
 					app.dl.Spawn(async.Do(func() {
-						d.Pos.High = hi
+						ld.Pos.High = hi
 					}))
 				}
 
@@ -1212,16 +1256,12 @@ func (app *App) download(ctx context.Context) int {
 
 				if shouldAlloc {
 					var allocError error
-					var wg sync.WaitGroup
-					wg.Add(1)
-					app.dl.Spawn(async.Block(
+					app.dl.SpawnBlocking(async.Block(
 						app.alloc(ctx, &allocState),
 						async.Do(func() {
 							allocError = allocState.Error
-							wg.Done()
 						}),
 					))
-					wg.Wait()
 					err = allocError
 					if err != nil {
 						fatal = exitCodeFatal
@@ -1240,17 +1280,13 @@ func (app *App) download(ctx context.Context) int {
 
 				if shouldSync {
 					var synError error
-					var wg sync.WaitGroup
-					wg.Add(1)
-					app.dl.Spawn(async.Block(
+					app.dl.SpawnBlocking(async.Block(
 						syncState.Await(),
 						app.sync(&syncState, false, true),
 						async.Do(func() {
 							synError = syncState.Error
-							wg.Done()
 						}),
 					))
-					wg.Wait()
 					err = synError
 					if err != nil {
 						fatal = exitCodeSyncFailed
@@ -1261,28 +1297,24 @@ func (app *App) download(ctx context.Context) int {
 				var increment atomic.Int64
 
 				progress := async.Do(func() {
-					onProgress(d, increment.Swap(0))
+					onProgress(ld, increment.Swap(0))
 				})
 
-				readTimer := time.AfterFunc(app.ReadTimeout, func() { reqCancel(errReadTimeout) })
+				readTimer := time.AfterFunc(app.ReadTimeout, func() { cancelRequest(errReadTimeout) })
 				resetTimer := false
 
 				fws = new(sync.WaitGroup)
 
 				for {
-					if stealFrom.CompareAndSwap(d, nil) && !app.file.HasIncomplete() {
-						var wg sync.WaitGroup
-						wg.Add(1)
-						app.dl.Spawn(async.Do(func() {
-							l, h := stealWork(d)
+					if stealFrom.CompareAndSwap(ld, nil) && !app.file.HasIncomplete() {
+						app.dl.SpawnBlocking(async.Do(func() {
+							l, h := stealWork(ld)
 							if l < h {
-								hi, d.Pos.High = l, l
+								hi, ld.Pos.High = l, l
 								app.file.ReturnIncomplete(l, h)
 							}
-							wg.Done()
 							stealSignal.Notify()
 						}))
-						wg.Wait()
 					}
 
 					if resetTimer {
@@ -1303,7 +1335,7 @@ func (app *App) download(ctx context.Context) int {
 							app.dl.Spawn(progress)
 						}
 						if err == nil && app.rateLimiter != nil {
-							err = app.rateLimiter.WaitN(reqCtx, n)
+							err = app.rateLimiter.WaitN(ctxRequest, n)
 						}
 					}
 
