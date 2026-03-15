@@ -243,7 +243,7 @@ func (f *DataFile) HasIncomplete() bool {
 	return len(f.incomplete) > 0
 }
 
-func (f *DataFile) TakeIncomplete(max int64) (offset, size int64) {
+func (f *DataFile) TakeIncomplete(max int64) (lo, hi int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -257,29 +257,27 @@ func (f *DataFile) TakeIncomplete(max int64) (offset, size int64) {
 
 	r := f.incomplete[0]
 
-	low, high := r.Low, elems.Int64((r.Low.Unwrap()+max+pieceSize-1)/pieceSize*pieceSize)
-	if low >= high {
-		return
+	if max < int64(r.High-r.Low) {
+		h := elems.Int64((int64(r.Low) + max + pieceSize - 1) / pieceSize * pieceSize)
+		if r.Low < h && h < r.High {
+			r.High = h
+		}
 	}
 
-	if high > r.High {
-		high = r.High
-	}
+	f.incomplete = intervals.Delete(f.incomplete, r)
 
-	f.incomplete = intervals.Delete(f.incomplete, intervals.Range(low, high))
-
-	return int64(low), int64(high - low)
+	return int64(r.Low), int64(r.High)
 }
 
-func (f *DataFile) ReturnIncomplete(offset, size int64) {
+func (f *DataFile) ReturnIncomplete(lo, hi int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	f.incomplete = intervals.Add(f.incomplete, intervals.Range(elems.Int64(offset), elems.Int64(offset+size)))
-
-	if contentSize := f.ContentSize(); contentSize > 0 {
-		f.incomplete = intervals.Delete(f.incomplete, intervals.Range(elems.Int64(contentSize), math.MaxInt64))
+	if contentSize := f.ContentSize(); contentSize > 0 && hi > contentSize {
+		hi = contentSize
 	}
+
+	f.incomplete = intervals.Add(f.incomplete, intervals.Range(elems.Int64(lo), elems.Int64(hi)))
 }
 
 func (f *DataFile) ReadAt(b []byte, offset int64) (n int, err error) {

@@ -651,7 +651,11 @@ func (app *App) download(ctx context.Context) int {
 	type Download struct {
 		CreateTime time.Time
 		Global     bool
-		Increment  struct {
+		Pos        struct {
+			Current   int64
+			Low, High int64
+		}
+		Increment struct {
 			Current int64
 			History []int64
 		}
@@ -704,6 +708,35 @@ func (app *App) download(ctx context.Context) int {
 		d.Rate = ema(d.Rate, avg(di.History))
 	}
 
+	incompleteSize := func(d *Download) int64 {
+		if d.Global {
+			return app.file.IncompleteSize()
+		}
+		return d.Pos.High - d.Pos.Current
+	}
+
+	aboutToComplete := func(d *Download) bool {
+		rate := float64(d.Rate) * (float64(time.Second) / float64(updateInterval))
+		etaSeconds := float64(incompleteSize(d)) / rate
+		return etaSeconds < 30
+	}
+
+	stealWork := func(d *Download) (lo, hi int64) {
+		if aboutToComplete(d) {
+			return 0, 0
+		}
+		i := (d.Pos.Current + 1<<20 - 1) >> 20
+		j := (d.Pos.High + 1<<20 - 1) >> 20
+		if j-i < int64(max(app.MinSplitSize, 1))*2 {
+			return 0, 0
+		}
+		k := (i + j) >> 1
+		if n := int64(app.MaxSplitSize); n > 0 {
+			k = max(k, j-n)
+		}
+		return k << 20, d.Pos.High
+	}
+
 	gd := newDownload(true)
 	downloads := make(map[*Download]struct{})
 
@@ -711,16 +744,11 @@ func (app *App) download(ctx context.Context) int {
 
 	if app.minDesiredRate > 0 {
 		errLowRate := errors.New("low rate")
-		aboutToComplete := func() bool {
-			rate := float64(gd.Rate) * (float64(time.Second) / float64(updateInterval))
-			etaSeconds := float64(app.file.IncompleteSize()) / rate
-			return etaSeconds < 30
-		}
 		n := 0
 		lowRateKill = func() {
 			ok := numRequest.Get() == 0 &&
 				(numResponse.Get() == maxConnections || !app.file.HasIncomplete()) &&
-				gd.Rate < app.minDesiredRate && !aboutToComplete()
+				gd.Rate < app.minDesiredRate && !aboutToComplete(gd)
 			if !ok {
 				n = 0
 				return
@@ -864,13 +892,12 @@ func (app *App) download(ctx context.Context) int {
 
 	onProgress := func(d *Download, n int64) {
 		totalRecv += n
+		d.Pos.Current += n
 		d.Increment.Current += n
 		gd.Increment.Current += n
 	}
 
-	onComplete := func(d *Download, err error, fatal int, responsed bool) {
-		delete(downloads, d)
-
+	onComplete := func(err error, fatal int, responsed bool) {
 		if !responsed {
 			numRequest.Set(numRequest.Get() - 1)
 		} else {
@@ -904,6 +931,11 @@ func (app *App) download(ctx context.Context) int {
 			}
 		}
 	}
+
+	var (
+		stealFrom   atomic.Pointer[Download]
+		stealSignal async.Signal
+	)
 
 	app.dl.Spawn(async.Block(
 		func(co *async.Coroutine) async.Result {
@@ -955,16 +987,29 @@ func (app *App) download(ctx context.Context) int {
 				return co.Yield()
 			}
 
-			offset, size := app.takeIncomplete()
-			if size == 0 {
-				return co.Yield()
+			max := int64(math.MaxInt64)
+			if n := int64(app.MaxSplitSize); n > 0 {
+				max = n << 20
+			}
+			lo, hi := app.file.TakeIncomplete(max)
+			if lo == hi {
+				var dd *Download
+				for d := range downloads {
+					if l, h := stealWork(d); h-l > hi-lo {
+						lo, hi, dd = l, h, d
+					}
+				}
+				if dd != nil {
+					stealFrom.Store(dd)
+				}
+				return co.Yield(&stealSignal)
 			}
 
 			if app.streamToStdout && app.StreamCache > 0 {
 				streamCacheSize := int64(app.StreamCache) << 20
 				streamOffset := app.streamOffset.Load()
-				if offset >= streamOffset+streamCacheSize {
-					app.returnIncomplete(offset, size)
+				if lo >= streamOffset+streamCacheSize {
+					app.file.ReturnIncomplete(lo, hi)
 					waitStreaming = true
 					return co.Yield(&requestPermitted) // Recheck periodically.
 				}
@@ -977,6 +1022,8 @@ func (app *App) download(ctx context.Context) int {
 			reqCtx, reqCancel := context.WithCancelCause(ctx)
 
 			d := newDownload(false)
+			d.Pos.Current = lo
+			d.Pos.Low, d.Pos.High = lo, hi
 			d.Cancel = reqCancel
 			downloads[d] = struct{}{}
 
@@ -1002,11 +1049,11 @@ func (app *App) download(ctx context.Context) int {
 						}
 					}
 
-					app.returnIncomplete(offset, size)
 					reqCancel(nil)
-
+					app.file.ReturnIncomplete(lo, hi)
 					app.dl.Spawn(async.Do(func() {
-						onComplete(d, err, fatal, responsed)
+						delete(downloads, d)
+						onComplete(err, fatal, responsed)
 					}))
 				}()
 
@@ -1015,7 +1062,11 @@ func (app *App) download(ctx context.Context) int {
 					return
 				}
 
-				req.Header.Set("Range", fmt.Sprintf("bytes=%v-%v", offset, offset+size-1))
+				if hi < math.MaxInt64 {
+					req.Header.Set("Range", fmt.Sprintf("bytes=%v-%v", lo, hi-1))
+				} else if lo > 0 {
+					req.Header.Set("Range", fmt.Sprintf("bytes=%v-", lo))
+				}
 				if app.Referer != "" {
 					req.Header.Set("Referer", app.Referer)
 				}
@@ -1040,7 +1091,7 @@ func (app *App) download(ctx context.Context) int {
 
 				switch resp.StatusCode {
 				case http.StatusOK:
-					if offset > 0 {
+					if lo > 0 {
 						err = errors.New("fatal: this server does not support partial requests")
 						fatal = exitCodeFatal
 						return
@@ -1147,6 +1198,13 @@ func (app *App) download(ctx context.Context) int {
 
 				responsed = true
 
+				if hi == math.MaxInt64 {
+					hi = contentSize
+					app.dl.Spawn(async.Do(func() {
+						d.Pos.High = hi
+					}))
+				}
+
 				url := resp.Request.URL.String()
 				app.dl.Spawn(async.Do(func() {
 					onResponse(url)
@@ -1212,20 +1270,35 @@ func (app *App) download(ctx context.Context) int {
 				fws = new(sync.WaitGroup)
 
 				for {
+					if stealFrom.CompareAndSwap(d, nil) && !app.file.HasIncomplete() {
+						var wg sync.WaitGroup
+						wg.Add(1)
+						app.dl.Spawn(async.Do(func() {
+							l, h := stealWork(d)
+							if l < h {
+								hi, d.Pos.High = l, l
+								app.file.ReturnIncomplete(l, h)
+							}
+							wg.Done()
+							stealSignal.Notify()
+						}))
+						wg.Wait()
+					}
+
 					if resetTimer {
 						readTimer.Reset(app.ReadTimeout)
 					}
 
 					var n int
 
-					n, err = app.readAndWrite(resp.Body, offset, size, fws)
+					n, err = app.readAndWrite(resp.Body, lo, hi, fws)
 
 					readTimer.Stop()
 					resetTimer = true
 
 					if n > 0 {
 						n64 := int64(n)
-						offset, size = offset+n64, size-n64
+						lo += n64
 						if increment.Add(n64) == n64 {
 							app.dl.Spawn(progress)
 						}
@@ -1302,22 +1375,22 @@ func (app *App) download(ctx context.Context) int {
 	return exitCode.Get()
 }
 
-func (app *App) readAndWrite(body io.Reader, offset, size int64, wg *sync.WaitGroup) (n int, err error) {
-	if size == 0 {
+func (app *App) readAndWrite(body io.Reader, lo, hi int64, wg *sync.WaitGroup) (n int, err error) {
+	if lo == hi {
 		return 0, io.EOF
 	}
 
 	app.buf.sem <- struct{}{}
 
 	b := app.buf.Get().(*readWriteBuffer)
-	n, err = body.Read(b.Data[:min(size, readBufferSize)])
+	n, err = body.Read(b.Data[:min(hi-lo, readBufferSize)])
 	if n == 0 {
 		app.buf.Put(b)
 		<-app.buf.sem
 		return
 	}
 
-	b.N, b.Offset, b.WaitGroup = n, offset, wg
+	b.N, b.Offset, b.WaitGroup = n, lo, wg
 
 	wg.Add(1)
 
@@ -1333,27 +1406,6 @@ func (app *App) readAndWrite(body io.Reader, offset, size int64, wg *sync.WaitGr
 	app.fws.Spawn(b.Task)
 
 	return
-}
-
-func (app *App) takeIncomplete() (offset, size int64) {
-	splitSize := app.MinSplitSize
-
-	if incompleteSize := app.file.IncompleteSize(); incompleteSize > 0 {
-		average := float64(incompleteSize) / float64(app.Connections)
-		splitSize = uint(math.Ceil(average / (1024 * 1024)))
-		switch {
-		case splitSize > app.MaxSplitSize && app.MaxSplitSize > 0:
-			splitSize = app.MaxSplitSize
-		case splitSize < app.MinSplitSize && app.MinSplitSize > 0:
-			splitSize = app.MinSplitSize
-		}
-	}
-
-	return app.file.TakeIncomplete(int64(splitSize) * 1024 * 1024)
-}
-
-func (app *App) returnIncomplete(offset, size int64) {
-	app.file.ReturnIncomplete(offset, size)
 }
 
 type allocState struct {
