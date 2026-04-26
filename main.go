@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -666,9 +668,8 @@ func (app *App) download(ctx context.Context) int {
 	const MaxHistory = 5
 
 	type Download struct {
-		CreateTime time.Time
-		Global     bool
-		Pos        struct {
+		Global bool
+		Pos    struct {
 			Current   int64
 			Low, High int64
 		}
@@ -684,10 +685,7 @@ func (app *App) download(ctx context.Context) int {
 	}
 
 	newDownload := func(global bool) *Download {
-		return &Download{
-			CreateTime: time.Now(),
-			Global:     global,
-		}
+		return &Download{Global: global}
 	}
 
 	updateRate := func(d *Download) {
@@ -761,13 +759,27 @@ func (app *App) download(ctx context.Context) int {
 			if n < N {
 				n++
 			}
-			if n == N {
-				for d := range downloads {
-					if d.Rate <= gd.Rate && time.Since(d.CreateTime) >= N*updateInterval {
-						d.Cancel(errLowRate)
-						delete(downloads, d)
-					}
+			if n < N {
+				return
+			}
+			s := make([]*Download, 0, 50)
+			for d := range downloads {
+				if !aboutToComplete(d) {
+					s = append(s, d)
 				}
+			}
+			slices.SortFunc(s, func(a, b *Download) int {
+				return cmp.Compare(a.Rate, b.Rate)
+			})
+			if n := len(s); n >= 2 {
+				s = s[:int(math.Round(float64(n)*0.382))]
+			}
+			s = s[:sort.Search(len(s), func(i int) bool { return s[i].Rate > gd.Rate })]
+			for _, d := range s {
+				d.Cancel(errLowRate)
+			}
+			if len(s) != 0 {
+				n = 0
 			}
 		}
 	}
